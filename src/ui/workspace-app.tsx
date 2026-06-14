@@ -335,7 +335,6 @@ function FilePayload({
       }}
       options={fileOptions}
       className="pierre-file"
-      disableWorkerPool
     />
   );
 }
@@ -352,7 +351,6 @@ function DiffPayload({
       patch={patch}
       options={diffOptions}
       className="pierre-diff"
-      disableWorkerPool
     />
   );
 }
