@@ -183,9 +183,9 @@ body {
 
 .pierre-diff,
 .pierre-file {
-  --diffs-bg: var(--color-background-primary, #18191d);
+  --diffs-bg: var(--tool-payload-bg, var(--color-background-primary, #101114));
   --diffs-light-bg: var(--color-background-primary, #ffffff);
-  --diffs-dark-bg: var(--color-background-primary, #18191d);
+  --diffs-dark-bg: var(--tool-payload-bg, var(--color-background-primary, #101114));
   --diffs-font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   --diffs-header-font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   --diffs-font-size: var(--font-text-sm-size, 12px);
