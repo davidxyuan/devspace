@@ -7,6 +7,7 @@ export interface ServerConfig {
   allowedRoots: string[];
   allowedHosts: string[];
   publicBaseUrl: string;
+  minimalTools: boolean;
 }
 
 function parsePort(value: string | undefined): number {
@@ -41,6 +42,14 @@ function parseAllowedHosts(value: string | undefined): string[] {
   return rawHosts.length > 0 ? rawHosts : ["localhost", "127.0.0.1"];
 }
 
+function parseBoolean(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
+}
+
+function parseMinimalTools(env: NodeJS.ProcessEnv): boolean {
+  return env.PI_ON_MCP_TOOL_MODE === "minimal" || parseBoolean(env.PI_ON_MCP_MINIMAL_TOOLS);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host: env.HOST ?? "127.0.0.1",
@@ -49,5 +58,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     allowedRoots: parseAllowedRoots(env.PI_ON_MCP_ALLOWED_ROOTS),
     allowedHosts: parseAllowedHosts(env.PI_ON_MCP_ALLOWED_HOSTS),
     publicBaseUrl: env.PI_ON_MCP_PUBLIC_BASE_URL ?? "https://agent.gitcms.blog",
+    minimalTools: parseMinimalTools(env),
   };
 }
