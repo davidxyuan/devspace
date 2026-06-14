@@ -1,0 +1,120 @@
+import { homedir } from "node:os";
+import { resolve, sep } from "node:path";
+import {
+  loadSkills,
+  type Skill,
+  type LoadSkillsResult,
+} from "@earendil-works/pi-coding-agent";
+import type { ServerConfig } from "./config.js";
+import { expandHomePath, isPathInsideRoot } from "./roots.js";
+
+export interface LoadedSkills {
+  skills: Skill[];
+  diagnostics: LoadSkillsResult["diagnostics"];
+}
+
+export interface SkillReadResolution {
+  absolutePath: string;
+  skill: Skill;
+  isSkillFile: boolean;
+}
+
+export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSkills {
+  if (!config.skillsEnabled) return { skills: [], diagnostics: [] };
+
+  return loadSkills({
+    cwd,
+    agentDir: config.agentDir,
+    skillPaths: config.skillPaths,
+    includeDefaults: true,
+  });
+}
+
+export function formatSkillsNotice(
+  skills: Skill[],
+  options: { compact: boolean },
+): string | undefined {
+  const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
+  if (visibleSkills.length === 0) return undefined;
+
+  const lines = [
+    "When a task matches a listed skill, read its path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable.",
+    "",
+  ];
+
+  if (options.compact) {
+    lines.push("<skills>");
+    for (const skill of visibleSkills) {
+      lines.push(
+        `<skill name="${escapeXml(skill.name)}" path="${escapeXml(formatPathForPrompt(skill.filePath))}">${escapeXml(skill.description)}</skill>`,
+      );
+    }
+    lines.push("</skills>");
+    return lines.join("\n");
+  }
+
+  lines.push("<available_skills>");
+  for (const skill of visibleSkills) {
+    lines.push("  <skill>");
+    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+    lines.push(`    <description>${escapeXml(skill.description)}</description>`);
+    lines.push(`    <path>${escapeXml(formatPathForPrompt(skill.filePath))}</path>`);
+    lines.push("  </skill>");
+  }
+  lines.push("</available_skills>");
+
+  return lines.join("\n");
+}
+
+export function resolveSkillReadPath(
+  skills: Skill[],
+  activatedSkillDirs: Set<string>,
+  inputPath: string,
+): SkillReadResolution | undefined {
+  const absolutePath = resolve(expandHomePath(inputPath));
+
+  for (const skill of skills) {
+    const skillFilePath = resolve(skill.filePath);
+    if (absolutePath === skillFilePath) {
+      return { absolutePath, skill, isSkillFile: true };
+    }
+  }
+
+  for (const skill of skills) {
+    const baseDir = resolve(skill.baseDir);
+    if (!activatedSkillDirs.has(baseDir)) continue;
+    if (!isPathInsideRoot(absolutePath, baseDir)) continue;
+
+    return { absolutePath, skill, isSkillFile: false };
+  }
+
+  return undefined;
+}
+
+export function markSkillActivated(
+  activatedSkillDirs: Set<string>,
+  skill: Skill,
+): void {
+  activatedSkillDirs.add(resolve(skill.baseDir));
+}
+
+function formatPathForPrompt(path: string): string {
+  const home = resolve(homedir());
+  const resolvedPath = resolve(path);
+
+  if (resolvedPath === home) return "~";
+  if (resolvedPath.startsWith(`${home}${sep}`)) {
+    return `~/${resolvedPath.slice(home.length + 1).split(sep).join("/")}`;
+  }
+
+  return resolvedPath.split(sep).join("/");
+}
+
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
