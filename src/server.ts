@@ -15,6 +15,7 @@ import {
   runShellTool,
   writeFileTool,
 } from "./pi-tools.js";
+import { countDiffStats, ResultStore } from "./result-store.js";
 import { formatAgentsNotice, WorkspaceRegistry } from "./workspaces.js";
 
 type Transport = StreamableHTTPServerTransport;
@@ -44,7 +45,11 @@ function sendJsonRpcError(
   });
 }
 
-function createMcpServer(config: ServerConfig, workspaces: WorkspaceRegistry): McpServer {
+function createMcpServer(
+  config: ServerConfig,
+  workspaces: WorkspaceRegistry,
+  results: ResultStore,
+): McpServer {
   const server = new McpServer(
     {
       name: "local-coding-workspace",
@@ -215,11 +220,52 @@ function createMcpServer(config: ServerConfig, workspaces: WorkspaceRegistry): M
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return editFileTool(input, {
+      const response = await editFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const stats = countDiffStats(response.details?.patch ?? response.details?.diff);
+      const storedResult = results.put({
+        workspaceId,
+        tool: "edit_file",
+        path: input.path,
+        summary: {
+          ...stats,
+          editCount: input.edits.length,
+        },
+        payload: {
+          diff: response.details?.diff,
+          patch: response.details?.patch,
+        },
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Edited ${input.path} (+${stats.additions} -${stats.removals}). Diff available in the UI as ${storedResult.id}.`,
+          },
+          ...(agentsNotice
+            ? [{ type: "text" as const, text: agentsNotice }]
+            : []),
+        ],
+        structuredContent: {
+          tool: "edit_file",
+          resultId: storedResult.id,
+          workspaceId,
+          status: "applied",
+          path: input.path,
+          summary: storedResult.summary,
+          ui: {
+            card: "file-diff",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
@@ -373,6 +419,7 @@ export function createServer(config = loadConfig()): RunningServer {
   });
   const transports = new Map<string, Transport>();
   const workspaces = new WorkspaceRegistry(config);
+  const results = new ResultStore();
 
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true, name: "pi-on-mcp" });
@@ -407,7 +454,7 @@ export function createServer(config = loadConfig()): RunningServer {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const server = createMcpServer(config, workspaces);
+        const server = createMcpServer(config, workspaces, results);
         await server.connect(transport);
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");

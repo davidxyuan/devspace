@@ -8,6 +8,7 @@ import {
   createWriteTool,
   type BashToolInput,
   type EditToolInput,
+  type EditToolDetails,
   type FindToolInput,
   type GrepToolInput,
   type LsToolInput,
@@ -18,7 +19,11 @@ import {
 import { resolveAllowedPath } from "./roots.js";
 
 type McpContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
-export type ToolResponse = { content: McpContent[]; isError?: boolean };
+export type ToolResponse<TDetails = unknown> = {
+  content: McpContent[];
+  details?: TDetails;
+  isError?: boolean;
+};
 
 interface ToolContext {
   cwd: string;
@@ -45,14 +50,17 @@ function formatToolError(error: unknown): McpContent[] {
   return [{ type: "text", text: message }];
 }
 
-async function runTool<TInput>(
-  execute: (input: TInput) => Promise<AgentToolResult<unknown>>,
+async function runTool<TInput, TDetails = unknown>(
+  execute: (input: TInput) => Promise<AgentToolResult<TDetails>>,
   input: TInput,
   context: ToolContext,
-): Promise<ToolResponse> {
+): Promise<ToolResponse<TDetails>> {
   try {
     const result = await execute(input);
-    return { content: appendAgentsNotice(toMcpContent(result), context.agentsNotice) };
+    return {
+      content: appendAgentsNotice(toMcpContent(result), context.agentsNotice),
+      details: result.details,
+    };
   } catch (error) {
     return { content: appendAgentsNotice(formatToolError(error), context.agentsNotice), isError: true };
   }
@@ -84,7 +92,7 @@ export async function writeFileTool(input: WriteToolInput, context: ToolContext)
   }, context);
 }
 
-export async function editFileTool(input: EditToolInput, context: ToolContext): Promise<ToolResponse> {
+export async function editFileTool(input: EditToolInput, context: ToolContext): Promise<ToolResponse<EditToolDetails>> {
   const path = resolveAllowedPath(input.path, context.cwd, [context.root]);
   const tool = createEditTool(context.cwd);
 
