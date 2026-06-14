@@ -54,8 +54,8 @@ function sendJsonRpcError(
 
 async function loadWorkspaceAppHtml(): Promise<string> {
   const candidates = [
-    new URL("./ui/workspace-app.html", import.meta.url),
     new URL("../dist/ui/workspace-app.html", import.meta.url),
+    new URL("./ui/workspace-app.html", import.meta.url),
   ];
 
   for (const candidate of candidates) {
