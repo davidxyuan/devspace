@@ -17,13 +17,17 @@ const viteBin = join(
 );
 
 if (!existsSync(viteBin)) {
-  run(npmCommand, ["install", "--include=dev", "--no-audit", "--no-fund"], {
+  run(npmCommand, ["ci", "--include=dev", "--no-audit", "--no-fund"], {
     ...process.env,
     DEVSPACE_SKIP_PREPARE: "1",
+    npm_config_global: "false",
   });
 }
 
-run(npmCommand, ["run", "build"], process.env);
+run(npmCommand, ["run", "build"], {
+  ...process.env,
+  npm_config_global: "false",
+});
 
 function run(command, args, env) {
   const result = spawnSync(command, args, {
