@@ -1,4 +1,6 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -26,7 +28,7 @@ interface AuthorizationCodeRecord {
 }
 
 interface AccessTokenRecord {
-  token: string;
+  token?: string;
   clientId: string;
   scopes: string[];
   expiresAt: number;
@@ -34,14 +36,32 @@ interface AccessTokenRecord {
 }
 
 interface RefreshTokenRecord {
-  token: string;
+  token?: string;
   clientId: string;
   scopes: string[];
   expiresAt: number;
   resource?: URL;
 }
 
+interface PersistedTokenRecord {
+  clientId: string;
+  scopes: string[];
+  expiresAt: number;
+  resource?: string;
+}
+
+type PersistedClientEntry = [string, OAuthClientInformationFull];
+type PersistedTokenEntry = [string, PersistedTokenRecord];
+
+interface OAuthStateSnapshot {
+  version: number;
+  clients: PersistedClientEntry[];
+  accessTokens: PersistedTokenEntry[];
+  refreshTokens: PersistedTokenEntry[];
+}
+
 const CODE_TTL_MS = 5 * 60 * 1000;
+const OAUTH_STATE_VERSION = 1;
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -139,9 +159,15 @@ function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boole
 }
 
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
-  private readonly clients = new Map<string, OAuthClientInformationFull>();
+  readonly clients: Map<string, OAuthClientInformationFull>;
 
-  constructor(private readonly allowedRedirectHosts: string[]) {}
+  constructor(
+    private readonly allowedRedirectHosts: string[],
+    clients?: Map<string, OAuthClientInformationFull>,
+    private readonly onChange: () => void = () => {},
+  ) {
+    this.clients = clients ?? new Map();
+  }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
     return this.clients.get(clientId);
@@ -164,23 +190,35 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
       response_types: client.response_types ?? ["code"],
     };
     this.clients.set(registered.client_id, registered);
+    this.onChange();
     return registered;
   }
 }
 
 export class SingleUserOAuthProvider implements OAuthServerProvider {
-  readonly clientsStore: OAuthRegisteredClientsStore;
+  readonly clientsStore: InMemoryOAuthClientsStore;
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
-  private readonly accessTokens = new Map<string, AccessTokenRecord>();
-  private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
+  private accessTokens = new Map<string, AccessTokenRecord>();
+  private refreshTokens = new Map<string, RefreshTokenRecord>();
   private readonly resourceServerUrl: URL;
+  private readonly stateStore?: OAuthStateStore;
 
   constructor(
     private readonly config: OAuthConfig,
     resourceServerUrl: URL,
+    stateDir?: string,
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
+    this.stateStore = stateDir ? new OAuthStateStore(stateDir) : undefined;
+    const restored = this.stateStore?.load() ?? {};
+    this.accessTokens = restoreTokenMap(restored.accessTokens);
+    this.refreshTokens = restoreTokenMap(restored.refreshTokens);
+    this.pruneExpiredTokens();
+    this.clientsStore = new InMemoryOAuthClientsStore(
+      config.allowedRedirectHosts,
+      restoreMap(restored.clients),
+      () => this.persistState(),
+    );
   }
 
   async authorize(
@@ -271,6 +309,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   ): Promise<OAuthTokens> {
     const record = this.refreshTokens.get(hashToken(refreshToken));
     if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
+      if (record) {
+        this.refreshTokens.delete(hashToken(refreshToken));
+        this.persistState();
+      }
       throw new InvalidGrantError("Invalid refresh token");
     }
     if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
@@ -289,6 +331,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const record = this.accessTokens.get(hashToken(token));
     if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
+      if (record) {
+        this.accessTokens.delete(hashToken(token));
+        this.persistState();
+      }
       throw new InvalidTokenError("Invalid or expired access token");
     }
 
@@ -305,6 +351,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const hashed = hashToken(request.token);
     this.accessTokens.delete(hashed);
     this.refreshTokens.delete(hashed);
+    this.persistState();
   }
 
   private validCodeRecord(
@@ -340,6 +387,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       resource,
     });
 
+    this.persistState();
     return {
       access_token: accessToken,
       token_type: "bearer",
@@ -347,6 +395,38 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       refresh_token: refreshToken,
       scope: scopes.join(" "),
     };
+  }
+
+  private pruneExpiredTokens(): void {
+    const now = Math.floor(Date.now() / 1000);
+    let changed = false;
+
+    for (const [key, record] of this.accessTokens.entries()) {
+      if (record.expiresAt < now) {
+        this.accessTokens.delete(key);
+        changed = true;
+      }
+    }
+
+    for (const [key, record] of this.refreshTokens.entries()) {
+      if (record.expiresAt < now) {
+        this.refreshTokens.delete(key);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persistState();
+    }
+  }
+
+  private persistState(): void {
+    this.stateStore?.save({
+      version: OAUTH_STATE_VERSION,
+      clients: serializeMap(this.clientsStore.clients),
+      accessTokens: serializeTokenMap(this.accessTokens),
+      refreshTokens: serializeTokenMap(this.refreshTokens),
+    });
   }
 }
 
@@ -368,4 +448,84 @@ function authorizationFormFields(
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("base64url");
+}
+
+class OAuthStateStore {
+  private readonly path: string;
+
+  constructor(stateDir: string) {
+    this.path = join(stateDir, "oauth-state.json");
+  }
+
+  load(): Partial<OAuthStateSnapshot> {
+    try {
+      if (!existsSync(this.path)) return {};
+
+      const parsed = JSON.parse(readFileSync(this.path, "utf8")) as Partial<OAuthStateSnapshot>;
+      if (parsed?.version !== OAUTH_STATE_VERSION) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  save(snapshot: OAuthStateSnapshot): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const tmpPath = `${this.path}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), "utf8");
+    renameSync(tmpPath, this.path);
+  }
+}
+
+function restoreMap(entries: PersistedClientEntry[] | undefined): Map<string, OAuthClientInformationFull> {
+  return new Map(Array.isArray(entries) ? entries : []);
+}
+
+function serializeMap(map: Map<string, OAuthClientInformationFull>): PersistedClientEntry[] {
+  return Array.from(map.entries());
+}
+
+function restoreTokenMap<T extends AccessTokenRecord | RefreshTokenRecord>(
+  entries: PersistedTokenEntry[] | undefined,
+): Map<string, T> {
+  const map = new Map<string, T>();
+  if (!Array.isArray(entries)) return map;
+
+  for (const [key, record] of entries) {
+    if (!record?.clientId || !Array.isArray(record.scopes) || !record.expiresAt) {
+      continue;
+    }
+
+    map.set(key, {
+      ...record,
+      resource: reviveResource(record.resource),
+    } as T);
+  }
+
+  return map;
+}
+
+function serializeTokenMap<T extends AccessTokenRecord | RefreshTokenRecord>(
+  map: Map<string, T>,
+): PersistedTokenEntry[] {
+  return Array.from(map.entries()).map(([key, record]) => {
+    const { token: _token, ...safeRecord } = record;
+    return [
+      key,
+      {
+        ...safeRecord,
+        resource: safeRecord.resource?.href,
+      },
+    ];
+  });
+}
+
+function reviveResource(resource: string | undefined): URL | undefined {
+  if (!resource) return undefined;
+
+  try {
+    return new URL(resource);
+  } catch {
+    return undefined;
+  }
 }

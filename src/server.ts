@@ -1275,7 +1275,7 @@ export function createServer(config = loadConfig()): RunningServer {
   const transports = new Map<string, Transport>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
-  const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl);
+  const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
   const bearerAuth = requireBearerAuth({
     verifier: oauthProvider,
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
@@ -1286,7 +1286,7 @@ export function createServer(config = loadConfig()): RunningServer {
   const reviewCheckpoints = createReviewCheckpointManager();
 
   if (config.logging.trustProxy) {
-    app.set("trust proxy", true);
+    app.set("trust proxy", 1);
   }
 
   app.use((req, res, next) => {
