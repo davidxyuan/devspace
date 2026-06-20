@@ -130,3 +130,8 @@ npm run dev
 ```
 
 The same setup rules apply.
+
+## Windows Auto-Start Watchdog
+
+For a Windows machine that should recover automatically after reboot or an
+unexpected `devspace serve` exit, see [Windows Watchdog Setup](windows-watchdog.md).

@@ -213,12 +213,12 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const restored = this.stateStore?.load() ?? {};
     this.accessTokens = restoreTokenMap(restored.accessTokens);
     this.refreshTokens = restoreTokenMap(restored.refreshTokens);
-    this.pruneExpiredTokens();
     this.clientsStore = new InMemoryOAuthClientsStore(
       config.allowedRedirectHosts,
       restoreMap(restored.clients),
       () => this.persistState(),
     );
+    this.pruneExpiredTokens();
   }
 
   async authorize(

@@ -134,8 +134,8 @@ export class SingleUserOAuthProvider {
         const restored = this.stateStore?.load() ?? {};
         this.accessTokens = restoreTokenMap(restored.accessTokens);
         this.refreshTokens = restoreTokenMap(restored.refreshTokens);
-        this.pruneExpiredTokens();
         this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts, restoreMap(restored.clients), () => this.persistState());
+        this.pruneExpiredTokens();
     }
     async authorize(client, params, res) {
         if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {

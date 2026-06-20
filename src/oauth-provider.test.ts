@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Response } from "express";
@@ -72,6 +72,58 @@ try {
   assert.deepEqual(refreshedAccessInfo.scopes, ["devspace"]);
 } finally {
   rmSync(stateDir, { recursive: true, force: true });
+}
+
+const expiredStateDir = mkdtempSync(join(tmpdir(), "devspace-oauth-expired-state-"));
+try {
+  const expiredClientId = "devspace-expired-token-client";
+  writeFileSync(
+    join(expiredStateDir, "oauth-state.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        clients: [
+          [
+            expiredClientId,
+            {
+              client_id: expiredClientId,
+              client_id_issued_at: Math.floor(Date.now() / 1000) - 3600,
+              client_name: "ChatGPT",
+              redirect_uris: [redirectUri],
+              token_endpoint_auth_method: "none",
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+            },
+          ],
+        ],
+        accessTokens: [
+          [
+            "expired-access-token-hash",
+            {
+              clientId: expiredClientId,
+              scopes: ["devspace"],
+              expiresAt: 1,
+              resource: resource.href,
+            },
+          ],
+        ],
+        refreshTokens: [],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const provider = new SingleUserOAuthProvider(config, resourceServerUrl, expiredStateDir);
+  assert.equal(provider.clientsStore.getClient(expiredClientId)?.client_name, "ChatGPT");
+
+  const persisted = JSON.parse(
+    readFileSync(join(expiredStateDir, "oauth-state.json"), "utf8"),
+  ) as { accessTokens: unknown[] };
+  assert.deepEqual(persisted.accessTokens, []);
+} finally {
+  rmSync(expiredStateDir, { recursive: true, force: true });
 }
 
 async function authorizeAndCaptureCode(
