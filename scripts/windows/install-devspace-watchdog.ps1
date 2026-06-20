@@ -12,6 +12,7 @@ param(
     [switch]$SkipNpmInstall,
     [switch]$SkipNgrok,
     [switch]$SkipStart,
+    [switch]$UserMode,
     [switch]$NoElevate
 )
 
@@ -24,7 +25,7 @@ function Test-IsElevated {
 }
 
 function Restart-ElevatedIfNeeded {
-    if ((Test-IsElevated) -or $NoElevate) {
+    if ((Test-IsElevated) -or $UserMode -or $NoElevate) {
         return
     }
 
@@ -232,7 +233,9 @@ $watchdogConfig = [ordered]@{
 $watchdogConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $InstallDir "devspace-watchdog.config.json") -Encoding UTF8
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
-$taskName = "DevSpaceNgrokWatchdogPoller"
+$taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
+$runLevel = if ($UserMode -or $NoElevate) { "Limited" } else { "Highest" }
+$modeName = if ($UserMode -or $NoElevate) { "standard user" } else { "administrator" }
 Stop-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false -ErrorAction SilentlyContinue
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -259,7 +262,7 @@ $settings = New-ScheduledTaskSettingsSet `
 $principal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive `
-    -RunLevel Highest
+    -RunLevel ($runLevel)
 
 Register-ScheduledTask `
     -TaskName $taskName `
@@ -267,7 +270,7 @@ Register-ScheduledTask `
     -Trigger @($logonTrigger, $pollTrigger) `
     -Settings $settings `
     -Principal $principal `
-    -Description "Runs the DevSpace watchdog every minute in the background with highest privileges." `
+    -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
     -Force | Out-Null
 
 if (-not $SkipStart) {
@@ -275,6 +278,8 @@ if (-not $SkipStart) {
 }
 
 Write-Host "DevSpace watchdog installed."
+Write-Host "Mode: $modeName"
+Write-Host "Scheduled task: $taskName"
 Write-Host "Config: $configPath"
 Write-Host "Auth: $authPath"
 Write-Host "Owner password: $ownerToken"
