@@ -19,6 +19,7 @@ function Read-WatchdogConfig {
 $config = Read-WatchdogConfig
 $stateDir = [string]$config.stateDir
 $port = [int]$config.port
+$devspaceEnabled = if ($null -eq $config.devspaceEnabled) { $true } else { [bool]$config.devspaceEnabled }
 $retiredPorts = @($config.retiredPorts)
 $nodePath = [string]$config.nodePath
 $cliPath = [string]$config.cliPath
@@ -26,7 +27,13 @@ $ngrokPath = [string]$config.ngrokPath
 $publicBaseUrl = [string]$config.publicBaseUrl
 $publicHost = ([Uri]$publicBaseUrl).Host
 $manageNgrok = if ($null -eq $config.manageNgrok) { [bool]$ngrokPath } else { [bool]$config.manageNgrok }
-$upstream = "http://127.0.0.1:$port"
+$publicUpstreamPort = if ($config.publicUpstreamPort) { [int]$config.publicUpstreamPort } else { $port }
+$upstream = "http://127.0.0.1:$publicUpstreamPort"
+$routerPath = [string]$config.routerPath
+$routerPort = if ($config.routerPort) { [int]$config.routerPort } else { 0 }
+$hermesCommand = [string]$config.hermesCommand
+$hermesPort = if ($config.hermesPort) { [int]$config.hermesPort } else { 0 }
+$hermesEnabled = if ($null -eq $config.hermesEnabled) { [bool]$hermesPort } else { [bool]$config.hermesEnabled }
 $logPath = Join-Path $stateDir "devspace-watchdog.log"
 $ngrokOutPath = Join-Path $stateDir "ngrok-watchdog.log"
 $ngrokErrPath = Join-Path $stateDir "ngrok-watchdog.err.log"
@@ -213,6 +220,11 @@ function New-ServeLogPath([string]$kind) {
     Join-Path $stateDir "devspace-serve-$stamp.$kind.log"
 }
 
+function New-ProcessLogPath([string]$name, [string]$kind) {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    Join-Path $stateDir "$name-$stamp.$kind.log"
+}
+
 function Start-DevSpace {
     if (-not (Test-Path -LiteralPath $nodePath)) {
         Write-WatchdogLog "node executable missing: $nodePath"
@@ -235,6 +247,10 @@ function Start-DevSpace {
 }
 
 function Ensure-DevSpace {
+    if (-not $devspaceEnabled) {
+        return
+    }
+
     Stop-RetiredPortListeners
 
     $listeners = @(Get-ListenOwners $port)
@@ -272,6 +288,86 @@ function Ensure-DevSpace {
         }
         Start-Sleep -Seconds 2
         Start-DevSpace
+    }
+}
+
+function Test-HttpOk([string]$url) {
+    try {
+        Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 | Out-Null
+        return $true
+    } catch {
+        if ($_.Exception.Response) {
+            $status = [int]$_.Exception.Response.StatusCode.value__
+            return $status -ge 200 -and $status -lt 500
+        }
+        return $false
+    }
+}
+
+function Start-Hermes {
+    if (-not $hermesCommand -or -not (Test-Path -LiteralPath $hermesCommand)) {
+        Write-WatchdogLog "Hermes command missing: $hermesCommand"
+        return
+    }
+
+    $outPath = New-ProcessLogPath "hermes-gpt" "out"
+    $errPath = New-ProcessLogPath "hermes-gpt" "err"
+    Write-WatchdogLog "starting hermes-gpt on 127.0.0.1:$hermesPort; stdout=$outPath; stderr=$errPath"
+    Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList @("/c", "`"$hermesCommand`"") `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $outPath `
+        -RedirectStandardError $errPath | Out-Null
+}
+
+function Ensure-Hermes {
+    if (-not $hermesEnabled -or -not $hermesPort) {
+        return
+    }
+
+    $listeners = @(Get-ListenOwners $hermesPort)
+    if ($listeners.Count -eq 0) {
+        Start-Hermes
+        Start-Sleep -Seconds 4
+    }
+}
+
+function Start-Router {
+    if (-not $routerPath -or -not (Test-Path -LiteralPath $routerPath)) {
+        Write-WatchdogLog "MCP router missing: $routerPath"
+        return
+    }
+
+    $outPath = New-ProcessLogPath "mcp-router" "out"
+    $errPath = New-ProcessLogPath "mcp-router" "err"
+    Write-WatchdogLog "starting MCP router on 127.0.0.1:$routerPort; stdout=$outPath; stderr=$errPath"
+    Start-Process `
+        -FilePath $nodePath `
+        -ArgumentList @($routerPath, $ConfigPath) `
+        -WorkingDirectory (Split-Path $routerPath) `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $outPath `
+        -RedirectStandardError $errPath | Out-Null
+}
+
+function Ensure-Router {
+    if (-not $routerPort) {
+        return
+    }
+
+    $listeners = @(Get-ListenOwners $routerPort)
+    if ($listeners.Count -eq 0) {
+        Start-Router
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not (Test-HttpOk "http://127.0.0.1:$routerPort/__router/status")) {
+        foreach ($ownerPid in Get-ListenOwners $routerPort) {
+            Stop-ProcessTree $ownerPid "unhealthy MCP router on port $routerPort"
+        }
+        Start-Sleep -Seconds 1
+        Start-Router
     }
 }
 
@@ -364,6 +460,8 @@ function Invoke-WatchdogCycle {
         Invoke-StopPidRequests
         Invoke-RestartIfRequested
         Ensure-DevSpace
+        Ensure-Hermes
+        Ensure-Router
         Ensure-Ngrok
     } catch {
         Write-WatchdogLog "watchdog error: $($_.Exception.Message)"

@@ -7,9 +7,20 @@ param(
     [string]$NgrokPath,
     [string]$NodePath,
     [string]$CliPath,
+    [ValidateSet("DevSpace", "Hermes")]
+    [string[]]$Components = @("DevSpace"),
+    [string]$HermesRepo = "https://github.com/asimons81/hermes-gpt.git",
+    [string]$HermesDir = "$env:USERPROFILE\hermes-gpt",
+    [string]$PythonPath,
+    [string]$MachineName,
+    [string]$HermesAgentExe,
+    [int]$HermesPort = 4750,
+    [int]$RouterPort = 8765,
     [switch]$UsePublishedPackage,
     [switch]$InstallTools,
     [switch]$SkipNpmInstall,
+    [switch]$SkipHermesInstall,
+    [switch]$SkipHermesAgentInstall,
     [switch]$SkipNgrok,
     [switch]$SkipStart,
     [switch]$UserMode,
@@ -37,6 +48,11 @@ function Restart-ElevatedIfNeeded {
         if ($entry.Value -is [switch]) {
             if ($entry.Value.IsPresent) {
                 $args += "-$($entry.Key)"
+            }
+        } elseif ($entry.Value -is [array]) {
+            $args += "-$($entry.Key)"
+            foreach ($item in $entry.Value) {
+                $args += "`"$item`""
             }
         } else {
             $args += "-$($entry.Key)"
@@ -117,17 +133,126 @@ function Split-Roots([string]$rootsText) {
     )
 }
 
+function ConvertTo-Slug([string]$value) {
+    ($value.Trim().ToLowerInvariant() -replace "[^a-z0-9]+", "-" -replace "^-+|-+$", "")
+}
+
+function Test-Component([string]$name) {
+    return @($Components) -contains $name
+}
+
+function Invoke-Checked([scriptblock]$command, [string]$message) {
+    & $command
+    if ($LASTEXITCODE -ne 0) {
+        throw $message
+    }
+}
+
+function Find-HermesAgentExe {
+    if ($HermesAgentExe -and (Test-Path -LiteralPath $HermesAgentExe)) {
+        return [System.IO.Path]::GetFullPath($HermesAgentExe)
+    }
+
+    $command = Find-CommandPath "hermes.exe"
+    if ($command) {
+        return $command
+    }
+
+    $localExe = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\hermes.exe"
+    if (Test-Path -LiteralPath $localExe) {
+        return $localExe
+    }
+
+    return $null
+}
+
+function Install-HermesAgentIfNeeded {
+    if (-not $installHermes) {
+        return $null
+    }
+
+    $exe = Find-HermesAgentExe
+    if ($exe) {
+        return $exe
+    }
+    if ($SkipHermesAgentInstall) {
+        throw "Hermes Agent is missing. Install it first or omit -SkipHermesAgentInstall."
+    }
+
+    Write-Host "Installing Hermes Agent..."
+    $installScript = Invoke-RestMethod -Uri "https://hermes-agent.nousresearch.com/install.ps1"
+    & ([scriptblock]::Create($installScript)) -SkipSetup
+    $exe = Find-HermesAgentExe
+    if (-not $exe) {
+        throw "Hermes Agent install finished, but hermes.exe was not found."
+    }
+    return $exe
+}
+
+function Find-GitForClone {
+    $command = Find-CommandPath "git.exe"
+    if ($command) {
+        return $command
+    }
+
+    $hermesGit = Join-Path $env:LOCALAPPDATA "hermes\git\cmd\git.exe"
+    if (Test-Path -LiteralPath $hermesGit) {
+        return $hermesGit
+    }
+
+    if ($InstallTools) {
+        Install-WingetPackage "Git.Git" "Git for Windows"
+        return Ensure-Command "git.exe" "Git.Git" "Git for Windows"
+    }
+    throw "Git is missing. Rerun with -InstallTools or install Hermes Agent/Git first."
+}
+
+function Find-PythonForHermesGpt {
+    if ($PythonPath -and (Test-Path -LiteralPath $PythonPath)) {
+        return [System.IO.Path]::GetFullPath($PythonPath)
+    }
+
+    $hermesPython = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $hermesPython) {
+        return $hermesPython
+    }
+
+    $command = Find-CommandPath "python.exe"
+    if ($command) {
+        return $command
+    }
+
+    if ($InstallTools) {
+        Install-WingetPackage "Python.Python.3.12" "Python 3"
+        return Ensure-Command "python.exe" "Python.Python.3.12" "Python 3"
+    }
+    throw "Python is missing. Rerun with -InstallTools or install Hermes Agent/Python first."
+}
+
 Restart-ElevatedIfNeeded
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+$HermesDir = [System.IO.Path]::GetFullPath($HermesDir)
+$installDevSpace = Test-Component "DevSpace"
+$installHermes = Test-Component "Hermes"
+$useRouter = $installDevSpace -or $installHermes
+$MachineName = if ($MachineName) { $MachineName } else { [System.Net.Dns]::GetHostName() }
+$machineSlug = ConvertTo-Slug $MachineName
+if (-not $machineSlug) {
+    throw "Missing machine name. Pass -MachineName."
+}
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-$gitPath = Ensure-Command "git.exe" "Git.Git" "Git for Windows"
-if (-not $NodePath) {
+$needsNode = $installDevSpace -or $useRouter
+
+if ($needsNode -and -not $NodePath) {
     $NodePath = Ensure-Command "node.exe" "OpenJS.NodeJS.LTS" "Node.js LTS"
 }
-$npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
+if ($installDevSpace) {
+    $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
+}
+$hermesAgentPath = Install-HermesAgentIfNeeded
 
 if (-not $SkipNgrok) {
     if (-not $NgrokPath) {
@@ -145,40 +270,33 @@ if (-not $SkipNgrok) {
     }
 }
 
-if (-not $CliPath) {
-    if ($UsePublishedPackage) {
-        Write-Host "Installing @waishnav/devspace globally..."
-        & $npmPath install -g "@waishnav/devspace"
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm install -g @waishnav/devspace failed."
-        }
-        $globalRoot = (& $npmPath root -g).Trim()
-        $CliPath = Join-Path $globalRoot "@waishnav\devspace\dist\cli.js"
-    } else {
-        if (-not $SkipNpmInstall) {
-            Write-Host "Installing repo dependencies..."
-            & $npmPath install --include=dev --prefix $repoRoot
-            if ($LASTEXITCODE -ne 0) {
-                throw "npm install failed."
+if ($installDevSpace) {
+    if (-not $CliPath) {
+        if ($UsePublishedPackage) {
+            Write-Host "Installing @waishnav/devspace globally..."
+            Invoke-Checked { & $npmPath install -g "@waishnav/devspace" } "npm install -g @waishnav/devspace failed."
+            $globalRoot = (& $npmPath root -g).Trim()
+            $CliPath = Join-Path $globalRoot "@waishnav\devspace\dist\cli.js"
+        } else {
+            if (-not $SkipNpmInstall) {
+                Write-Host "Installing repo dependencies..."
+                Invoke-Checked { & $npmPath install --include=dev --prefix $repoRoot } "npm install failed."
             }
-        }
 
-        Write-Host "Building DevSpace from this checkout..."
-        Push-Location $repoRoot
-        try {
-            & $npmPath run build
-            if ($LASTEXITCODE -ne 0) {
-                throw "npm run build failed."
+            Write-Host "Building DevSpace from this checkout..."
+            Push-Location $repoRoot
+            try {
+                Invoke-Checked { & $npmPath run build } "npm run build failed."
+            } finally {
+                Pop-Location
             }
-        } finally {
-            Pop-Location
+            $CliPath = Join-Path $repoRoot "dist\cli.js"
         }
-        $CliPath = Join-Path $repoRoot "dist\cli.js"
     }
-}
 
-if (-not (Test-Path -LiteralPath $CliPath)) {
-    throw "DevSpace CLI was not found: $CliPath"
+    if (-not (Test-Path -LiteralPath $CliPath)) {
+        throw "DevSpace CLI was not found: $CliPath"
+    }
 }
 
 $configPath = Join-Path $InstallDir "config.json"
@@ -194,52 +312,128 @@ if (-not $PublicBaseUrl) {
 }
 $PublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
 
-$allowedRootList = @()
-if ($AllowedRoots) {
-    $allowedRootList = Split-Roots $AllowedRoots
-} elseif ($existingConfig.allowedRoots) {
-    $allowedRootList = @($existingConfig.allowedRoots)
-} else {
-    $allowedRootList = @($repoRoot)
-}
+if ($installDevSpace) {
+    $allowedRootList = @()
+    if ($AllowedRoots) {
+        $allowedRootList = Split-Roots $AllowedRoots
+    } elseif ($existingConfig.allowedRoots) {
+        $allowedRootList = @($existingConfig.allowedRoots)
+    } else {
+        $allowedRootList = @($repoRoot)
+    }
 
-$devspaceConfig = [ordered]@{
-    host = "127.0.0.1"
-    port = $Port
-    allowedRoots = $allowedRootList
-    publicBaseUrl = $PublicBaseUrl
-}
-$devspaceConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $configPath -Encoding UTF8
+    $devspaceConfig = [ordered]@{
+        host = "127.0.0.1"
+        port = $Port
+        allowedRoots = $allowedRootList
+        publicBaseUrl = $PublicBaseUrl
+    }
+    $devspaceConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $configPath -Encoding UTF8
 
-$ownerToken = [string]$existingAuth.ownerToken
-if (-not $ownerToken) {
-    $ownerToken = New-OwnerToken
+    $ownerToken = [string]$existingAuth.ownerToken
+    if (-not $ownerToken) {
+        $ownerToken = New-OwnerToken
+    }
+    @{ ownerToken = $ownerToken } | ConvertTo-Json -Depth 2 | Set-Content -LiteralPath $authPath -Encoding UTF8
 }
-@{ ownerToken = $ownerToken } | ConvertTo-Json -Depth 2 | Set-Content -LiteralPath $authPath -Encoding UTF8
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Destination (Join-Path $InstallDir "devspace-watchdog.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run-devspace-watchdog-hidden.vbs") -Destination (Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs") -Force
 
+$hermesCommandPath = ""
+if ($installHermes) {
+    if (-not $SkipHermesInstall) {
+        if (-not (Test-Path -LiteralPath $HermesDir)) {
+            Write-Host "Cloning hermes-gpt..."
+            $gitPath = Find-GitForClone
+            Invoke-Checked { & $gitPath clone $HermesRepo $HermesDir } "git clone hermes-gpt failed."
+        }
+
+        $venvPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $venvPython)) {
+            Write-Host "Creating hermes-gpt virtual environment..."
+            $PythonPath = Find-PythonForHermesGpt
+            Invoke-Checked { & $PythonPath -m venv (Join-Path $HermesDir ".venv") } "python -m venv failed."
+        }
+
+        $requirementsPath = Join-Path $HermesDir "requirements.txt"
+        if (Test-Path -LiteralPath $requirementsPath) {
+            Write-Host "Installing hermes-gpt Python dependencies..."
+            Invoke-Checked { & $venvPython -m pip install -r $requirementsPath } "pip install hermes-gpt requirements failed."
+        }
+    }
+
+    $hermesPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $hermesPython)) {
+        $hermesPython = [System.IO.Path]::GetFullPath($PythonPath)
+    }
+    $hermesServer = Join-Path $HermesDir "server.py"
+    if (-not (Test-Path -LiteralPath $hermesServer)) {
+        throw "hermes-gpt server.py was not found: $hermesServer"
+    }
+
+    $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
+    @"
+@echo off
+set "HERMES_HOME=%LOCALAPPDATA%\hermes"
+cd /d "$HermesDir"
+"$hermesPython" "$hermesServer" --http --host 127.0.0.1 --port $HermesPort
+"@ | Set-Content -LiteralPath $hermesCommandPath -Encoding ASCII
+}
+
+$routerPath = ""
+if ($useRouter) {
+    $routerPath = Join-Path $InstallDir "mcp-router.cjs"
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "mcp-router.cjs") -Destination $routerPath -Force
+}
+
+$mcpRoutes = @()
+if ($installDevSpace) {
+    $mcpRoutes += [ordered]@{
+        name = "devspace_chatgpt"
+        prefix = "/$machineSlug/devspace_chatgpt"
+        targetHost = "127.0.0.1"
+        targetPort = $Port
+    }
+}
+if ($installHermes) {
+    $mcpRoutes += [ordered]@{
+        name = "hermes_chatgpt"
+        prefix = "/$machineSlug/hermes_chatgpt"
+        targetHost = "127.0.0.1"
+        targetPort = $HermesPort
+    }
+}
+
 $watchdogConfig = [ordered]@{
     stateDir = $InstallDir
+    machineSlug = $machineSlug
+    devspaceEnabled = $installDevSpace
+    hermesEnabled = $installHermes
+    mcpRoutes = $mcpRoutes
     port = $Port
     retiredPorts = @(7677)
-    nodePath = [System.IO.Path]::GetFullPath($NodePath)
-    cliPath = [System.IO.Path]::GetFullPath($CliPath)
+    nodePath = if ($NodePath) { [System.IO.Path]::GetFullPath($NodePath) } else { "" }
+    cliPath = if ($CliPath) { [System.IO.Path]::GetFullPath($CliPath) } else { "" }
+    hermesCommand = $hermesCommandPath
+    hermesPort = if ($installHermes) { $HermesPort } else { 0 }
+    routerPath = $routerPath
+    routerPort = if ($useRouter) { $RouterPort } else { 0 }
+    publicUpstreamPort = $RouterPort
     ngrokPath = if ($SkipNgrok) { "" } else { [System.IO.Path]::GetFullPath($NgrokPath) }
     manageNgrok = -not $SkipNgrok
     publicBaseUrl = $PublicBaseUrl
 }
-$watchdogConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $InstallDir "devspace-watchdog.config.json") -Encoding UTF8
+$watchdogConfig | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $InstallDir "devspace-watchdog.config.json") -Encoding UTF8
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
 $runLevel = if ($UserMode -or $NoElevate) { "Limited" } else { "Highest" }
 $modeName = if ($UserMode -or $NoElevate) { "standard user" } else { "administrator" }
-Stop-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false -ErrorAction SilentlyContinue
-Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
+    Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+}
 
 $launcherPath = Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs"
 $action = New-ScheduledTaskAction `
@@ -279,9 +473,17 @@ if (-not $SkipStart) {
 
 Write-Host "DevSpace watchdog installed."
 Write-Host "Mode: $modeName"
+Write-Host "Machine: $machineSlug"
 Write-Host "Scheduled task: $taskName"
 Write-Host "Config: $configPath"
-Write-Host "Auth: $authPath"
-Write-Host "Owner password: $ownerToken"
-Write-Host "Local MCP URL: http://127.0.0.1:$Port/mcp"
-Write-Host "Public MCP URL: $PublicBaseUrl/mcp"
+if ($installDevSpace) {
+    Write-Host "Auth: $authPath"
+    Write-Host "Owner password: $ownerToken"
+    Write-Host "Local DevSpace MCP URL: http://127.0.0.1:$Port/mcp"
+    Write-Host "Public DevSpace MCP URL: $PublicBaseUrl/$machineSlug/devspace_chatgpt/mcp"
+}
+if ($installHermes) {
+    Write-Host "Hermes Agent: $hermesAgentPath"
+    Write-Host "Local Hermes MCP URL: http://127.0.0.1:$HermesPort/mcp"
+    Write-Host "Public Hermes MCP URL: $PublicBaseUrl/$machineSlug/hermes_chatgpt/mcp"
+}
