@@ -21,6 +21,7 @@ param(
     [switch]$SkipNpmInstall,
     [switch]$SkipHermesInstall,
     [switch]$SkipHermesAgentInstall,
+    [switch]$FullAccess,
     [switch]$SkipNgrok,
     [switch]$SkipStart,
     [switch]$UserMode,
@@ -124,6 +125,11 @@ function Read-JsonFile([string]$path) {
     return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 }
 
+function Write-JsonFile([string]$path, $value, [int]$depth = 4) {
+    $json = ($value | ConvertTo-Json -Depth $depth) + [Environment]::NewLine
+    [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Split-Roots([string]$rootsText) {
     @(
         $rootsText -split "[;,]" |
@@ -131,6 +137,10 @@ function Split-Roots([string]$rootsText) {
             Where-Object { $_ } |
             ForEach-Object { [System.IO.Path]::GetFullPath($_) }
     )
+}
+
+function Get-FullAccessRoots {
+    @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root } | ForEach-Object { $_.Root })
 }
 
 function ConvertTo-Slug([string]$value) {
@@ -314,7 +324,9 @@ $PublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
 
 if ($installDevSpace) {
     $allowedRootList = @()
-    if ($AllowedRoots) {
+    if ($FullAccess) {
+        $allowedRootList = Get-FullAccessRoots
+    } elseif ($AllowedRoots) {
         $allowedRootList = Split-Roots $AllowedRoots
     } elseif ($existingConfig.allowedRoots) {
         $allowedRootList = @($existingConfig.allowedRoots)
@@ -328,13 +340,13 @@ if ($installDevSpace) {
         allowedRoots = $allowedRootList
         publicBaseUrl = $PublicBaseUrl
     }
-    $devspaceConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $configPath -Encoding UTF8
+    Write-JsonFile $configPath $devspaceConfig 4
 
     $ownerToken = [string]$existingAuth.ownerToken
     if (-not $ownerToken) {
         $ownerToken = New-OwnerToken
     }
-    @{ ownerToken = $ownerToken } | ConvertTo-Json -Depth 2 | Set-Content -LiteralPath $authPath -Encoding UTF8
+    Write-JsonFile $authPath @{ ownerToken = $ownerToken } 2
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Destination (Join-Path $InstallDir "devspace-watchdog.ps1") -Force
@@ -373,9 +385,20 @@ if ($installHermes) {
     }
 
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
+    $hermesFullAccessEnv = if ($FullAccess) {
+@"
+set "HERMES_GPT_ENABLE_WRITE=1"
+set "HERMES_GPT_ENABLE_MEMORY_WRITE=1"
+set "HERMES_GPT_ENABLE_SESSION_SEARCH=1"
+set "HERMES_GPT_ENABLE_TERMINAL=1"
+"@
+    } else {
+        ""
+    }
     @"
 @echo off
 set "HERMES_HOME=%LOCALAPPDATA%\hermes"
+$hermesFullAccessEnv
 cd /d "$HermesDir"
 "$hermesPython" "$hermesServer" --http --host 127.0.0.1 --port $HermesPort
 "@ | Set-Content -LiteralPath $hermesCommandPath -Encoding ASCII
@@ -408,6 +431,7 @@ if ($installHermes) {
 $watchdogConfig = [ordered]@{
     stateDir = $InstallDir
     machineSlug = $machineSlug
+    fullAccess = [bool]$FullAccess
     devspaceEnabled = $installDevSpace
     hermesEnabled = $installHermes
     mcpRoutes = $mcpRoutes
@@ -424,7 +448,7 @@ $watchdogConfig = [ordered]@{
     manageNgrok = -not $SkipNgrok
     publicBaseUrl = $PublicBaseUrl
 }
-$watchdogConfig | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $InstallDir "devspace-watchdog.config.json") -Encoding UTF8
+Write-JsonFile (Join-Path $InstallDir "devspace-watchdog.config.json") $watchdogConfig 6
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }

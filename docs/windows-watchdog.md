@@ -20,6 +20,10 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -InstallTools
 ```
 
+Add `-FullAccess` only when you want this MCP stack to expose the whole
+machine: DevSpace allows every visible filesystem drive root, and Hermes GPT
+enables write, patch, terminal, session search, and memory write tools.
+
 The resulting ChatGPT MCP URLs are:
 
 ```text
