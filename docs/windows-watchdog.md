@@ -239,11 +239,12 @@ When `Hermes` is selected, the installer also checks for Hermes Agent. If it is
 missing, it runs the official Windows installer and skips the interactive setup
 wizard; configure Hermes credentials separately after install.
 
-The task action runs `powershell.exe -WindowStyle Hidden` and the task is marked
-hidden, so the per-minute monitor runs in the background without a visible
-console window. When ngrok cannot connect, the watchdog leaves the existing
-ngrok process running so the agent can reconnect instead of killing and
-restarting it every minute.
+In standard-user mode, the task runs with `LogonType: S4U`, so Windows starts
+the per-minute PowerShell watchdog in a non-interactive session instead of
+opening a visible console window. When ngrok cannot connect, the watchdog leaves
+the existing ngrok process running so the agent can reconnect instead of killing
+and restarting it every minute. The legacy `run-devspace-watchdog-hidden.vbs`
+launcher remains only for manual debugging on older installs.
 
 If you use a non-ngrok tunnel, pass `-SkipNgrok` and manage the tunnel
 separately. A stable public base URL is still required for ChatGPT or another

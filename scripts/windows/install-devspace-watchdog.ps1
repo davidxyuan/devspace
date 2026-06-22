@@ -544,9 +544,10 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable
 $settings.Hidden = $true
+$logonType = if ($UserMode -or $NoElevate) { "S4U" } else { "Interactive" }
 $principal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-    -LogonType Interactive `
+    -LogonType ($logonType) `
     -RunLevel ($runLevel)
 
 Register-ScheduledTask `
