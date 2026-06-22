@@ -3,11 +3,14 @@ param(
     [string]$InstallDir = "$env:USERPROFILE\.devspace",
     [string]$AllowedRoots,
     [string]$PublicBaseUrl,
+    [ValidateSet("AgentEndpoint", "CloudEndpoint")]
+    [string]$NgrokEndpointMode,
+    [string]$NgrokAgentBaseUrl,
+    [string]$NgrokBinding,
     [int]$Port = 7676,
     [string]$NgrokPath,
     [string]$NodePath,
     [string]$CliPath,
-    [ValidateSet("DevSpace", "Hermes")]
     [string[]]$Components = @("DevSpace"),
     [string]$HermesRepo = "https://github.com/asimons81/hermes-gpt.git",
     [string]$HermesDir = "$env:USERPROFILE\hermes-gpt",
@@ -114,7 +117,12 @@ function Ensure-Command([string]$name, [string]$packageId, [string]$displayName)
 
 function New-OwnerToken {
     $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
     return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 }
 
@@ -147,8 +155,29 @@ function ConvertTo-Slug([string]$value) {
     ($value.Trim().ToLowerInvariant() -replace "[^a-z0-9]+", "-" -replace "^-+|-+$", "")
 }
 
+function Get-ComponentList {
+    $valid = @("DevSpace", "Hermes")
+    $result = @()
+    foreach ($component in @($Components)) {
+        foreach ($part in ([string]$component -split ",")) {
+            $name = $part.Trim()
+            if (-not $name) {
+                continue
+            }
+            if ($valid -notcontains $name) {
+                throw "Invalid component '$name'. Valid components: $($valid -join ', ')."
+            }
+            $result += $name
+        }
+    }
+    if ($result.Count -eq 0) {
+        throw "At least one component is required. Valid components: $($valid -join ', ')."
+    }
+    return $result | Select-Object -Unique
+}
+
 function Test-Component([string]$name) {
-    return @($Components) -contains $name
+    return @($componentList) -contains $name
 }
 
 function Invoke-Checked([scriptblock]$command, [string]$message) {
@@ -244,6 +273,7 @@ Restart-ElevatedIfNeeded
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $HermesDir = [System.IO.Path]::GetFullPath($HermesDir)
+$componentList = Get-ComponentList
 $installDevSpace = Test-Component "DevSpace"
 $installHermes = Test-Component "Hermes"
 $useRouter = $installDevSpace -or $installHermes
@@ -311,8 +341,10 @@ if ($installDevSpace) {
 
 $configPath = Join-Path $InstallDir "config.json"
 $authPath = Join-Path $InstallDir "auth.json"
+$watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
 $existingConfig = Read-JsonFile $configPath
 $existingAuth = Read-JsonFile $authPath
+$existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
 
 if (-not $PublicBaseUrl) {
     $PublicBaseUrl = [string]$existingConfig.publicBaseUrl
@@ -321,6 +353,31 @@ if (-not $PublicBaseUrl) {
     throw "Missing -PublicBaseUrl. Use your stable ngrok/Cloudflare/Tailscale public origin without /mcp."
 }
 $PublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
+if (-not $NgrokEndpointMode) {
+    $NgrokEndpointMode = [string]$existingWatchdogConfig.ngrokEndpointMode
+}
+if (-not $NgrokEndpointMode) {
+    $NgrokEndpointMode = "AgentEndpoint"
+}
+
+if ($NgrokEndpointMode -eq "CloudEndpoint") {
+    if (-not $NgrokAgentBaseUrl) {
+        $NgrokAgentBaseUrl = [string]$existingWatchdogConfig.ngrokAgentBaseUrl
+    }
+    if (-not $NgrokAgentBaseUrl) {
+        $NgrokAgentBaseUrl = "https://$machineSlug-devspace.internal"
+    }
+    if (-not $NgrokBinding) {
+        $NgrokBinding = [string]$existingWatchdogConfig.ngrokBinding
+    }
+    if (-not $NgrokBinding) {
+        $NgrokBinding = "internal"
+    }
+} else {
+    $NgrokAgentBaseUrl = $PublicBaseUrl
+    $NgrokBinding = ""
+}
+$NgrokAgentBaseUrl = $NgrokAgentBaseUrl.TrimEnd("/")
 
 if ($installDevSpace) {
     $allowedRootList = @()
@@ -385,6 +442,8 @@ if ($installHermes) {
     }
 
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
+    $hermesWorkingDirectory = $HermesDir
+    $hermesFullAccessEnabled = [bool]$FullAccess
     $hermesFullAccessEnv = if ($FullAccess) {
 @"
 set "HERMES_GPT_ENABLE_WRITE=1"
@@ -440,6 +499,10 @@ $watchdogConfig = [ordered]@{
     nodePath = if ($NodePath) { [System.IO.Path]::GetFullPath($NodePath) } else { "" }
     cliPath = if ($CliPath) { [System.IO.Path]::GetFullPath($CliPath) } else { "" }
     hermesCommand = $hermesCommandPath
+    hermesPython = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesPython) } else { "" }
+    hermesServer = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesServer) } else { "" }
+    hermesWorkingDirectory = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesWorkingDirectory) } else { "" }
+    hermesFullAccess = if ($installHermes) { $hermesFullAccessEnabled } else { $false }
     hermesPort = if ($installHermes) { $HermesPort } else { 0 }
     routerPath = $routerPath
     routerPort = if ($useRouter) { $RouterPort } else { 0 }
@@ -447,8 +510,11 @@ $watchdogConfig = [ordered]@{
     ngrokPath = if ($SkipNgrok) { "" } else { [System.IO.Path]::GetFullPath($NgrokPath) }
     manageNgrok = -not $SkipNgrok
     publicBaseUrl = $PublicBaseUrl
+    ngrokEndpointMode = $NgrokEndpointMode
+    ngrokAgentBaseUrl = $NgrokAgentBaseUrl
+    ngrokBinding = $NgrokBinding
 }
-Write-JsonFile (Join-Path $InstallDir "devspace-watchdog.config.json") $watchdogConfig 6
+Write-JsonFile $watchdogConfigPath $watchdogConfig 6
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
@@ -459,10 +525,10 @@ foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevS
     Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-$launcherPath = Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs"
+$watchdogPath = Join-Path $InstallDir "devspace-watchdog.ps1"
 $action = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$launcherPath`" -Once"
+    -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogPath`" -Once -ConfigPath `"$watchdogConfigPath`""
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
 $pollTrigger = New-ScheduledTaskTrigger `
     -Once `
@@ -477,6 +543,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable
+$settings.Hidden = $true
 $principal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive `
@@ -500,6 +567,7 @@ Write-Host "Mode: $modeName"
 Write-Host "Machine: $machineSlug"
 Write-Host "Scheduled task: $taskName"
 Write-Host "Config: $configPath"
+Write-Host "ngrok endpoint mode: $NgrokEndpointMode"
 if ($installDevSpace) {
     Write-Host "Auth: $authPath"
     Write-Host "Owner password: $ownerToken"
@@ -510,4 +578,7 @@ if ($installHermes) {
     Write-Host "Hermes Agent: $hermesAgentPath"
     Write-Host "Local Hermes MCP URL: http://127.0.0.1:$HermesPort/mcp"
     Write-Host "Public Hermes MCP URL: $PublicBaseUrl/$machineSlug/hermes_chatgpt/mcp"
+}
+if ($NgrokAgentBaseUrl) {
+    Write-Host "ngrok Agent Endpoint URL: $NgrokAgentBaseUrl"
 }

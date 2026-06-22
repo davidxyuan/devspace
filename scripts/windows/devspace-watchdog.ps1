@@ -26,12 +26,20 @@ $cliPath = [string]$config.cliPath
 $ngrokPath = [string]$config.ngrokPath
 $publicBaseUrl = [string]$config.publicBaseUrl
 $publicHost = ([Uri]$publicBaseUrl).Host
+$ngrokAgentBaseUrl = if ($config.ngrokAgentBaseUrl) { [string]$config.ngrokAgentBaseUrl } else { $publicBaseUrl }
+$ngrokAgentHost = ([Uri]$ngrokAgentBaseUrl).Host
+$ngrokBinding = [string]$config.ngrokBinding
+$ngrokManagedHosts = @($publicHost, $ngrokAgentHost) | Where-Object { $_ } | Select-Object -Unique
 $manageNgrok = if ($null -eq $config.manageNgrok) { [bool]$ngrokPath } else { [bool]$config.manageNgrok }
 $publicUpstreamPort = if ($config.publicUpstreamPort) { [int]$config.publicUpstreamPort } else { $port }
 $upstream = "http://127.0.0.1:$publicUpstreamPort"
 $routerPath = [string]$config.routerPath
 $routerPort = if ($config.routerPort) { [int]$config.routerPort } else { 0 }
 $hermesCommand = [string]$config.hermesCommand
+$hermesPython = [string]$config.hermesPython
+$hermesServer = [string]$config.hermesServer
+$hermesWorkingDirectory = [string]$config.hermesWorkingDirectory
+$hermesFullAccess = if ($null -eq $config.hermesFullAccess) { $false } else { [bool]$config.hermesFullAccess }
 $hermesPort = if ($config.hermesPort) { [int]$config.hermesPort } else { 0 }
 $hermesEnabled = if ($null -eq $config.hermesEnabled) { [bool]$hermesPort } else { [bool]$config.hermesEnabled }
 $logPath = Join-Path $stateDir "devspace-watchdog.log"
@@ -305,14 +313,53 @@ function Test-HttpOk([string]$url) {
 }
 
 function Start-Hermes {
+    $outPath = New-ProcessLogPath "hermes-gpt" "out"
+    $errPath = New-ProcessLogPath "hermes-gpt" "err"
+    Write-WatchdogLog "starting hermes-gpt on 127.0.0.1:$hermesPort; stdout=$outPath; stderr=$errPath"
+
+    if ($hermesPython -and $hermesServer -and (Test-Path -LiteralPath $hermesPython) -and (Test-Path -LiteralPath $hermesServer)) {
+        $previousHermesHome = $env:HERMES_HOME
+        $previousWrite = $env:HERMES_GPT_ENABLE_WRITE
+        $previousMemoryWrite = $env:HERMES_GPT_ENABLE_MEMORY_WRITE
+        $previousSessionSearch = $env:HERMES_GPT_ENABLE_SESSION_SEARCH
+        $previousTerminal = $env:HERMES_GPT_ENABLE_TERMINAL
+        try {
+            $env:HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
+            if ($hermesFullAccess) {
+                $env:HERMES_GPT_ENABLE_WRITE = "1"
+                $env:HERMES_GPT_ENABLE_MEMORY_WRITE = "1"
+                $env:HERMES_GPT_ENABLE_SESSION_SEARCH = "1"
+                $env:HERMES_GPT_ENABLE_TERMINAL = "1"
+            } else {
+                Remove-Item Env:\HERMES_GPT_ENABLE_WRITE -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_ENABLE_MEMORY_WRITE -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_ENABLE_SESSION_SEARCH -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_ENABLE_TERMINAL -ErrorAction SilentlyContinue
+            }
+
+            Start-Process `
+                -FilePath $hermesPython `
+                -ArgumentList @($hermesServer, "--http", "--host", "127.0.0.1", "--port", "$hermesPort") `
+                -WorkingDirectory $(if ($hermesWorkingDirectory) { $hermesWorkingDirectory } else { Split-Path $hermesServer }) `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput $outPath `
+                -RedirectStandardError $errPath | Out-Null
+        } finally {
+            $env:HERMES_HOME = $previousHermesHome
+            $env:HERMES_GPT_ENABLE_WRITE = $previousWrite
+            $env:HERMES_GPT_ENABLE_MEMORY_WRITE = $previousMemoryWrite
+            $env:HERMES_GPT_ENABLE_SESSION_SEARCH = $previousSessionSearch
+            $env:HERMES_GPT_ENABLE_TERMINAL = $previousTerminal
+        }
+        return
+    }
+
     if (-not $hermesCommand -or -not (Test-Path -LiteralPath $hermesCommand)) {
         Write-WatchdogLog "Hermes command missing: $hermesCommand"
         return
     }
 
-    $outPath = New-ProcessLogPath "hermes-gpt" "out"
-    $errPath = New-ProcessLogPath "hermes-gpt" "err"
-    Write-WatchdogLog "starting hermes-gpt on 127.0.0.1:$hermesPort; stdout=$outPath; stderr=$errPath"
+    Write-WatchdogLog "starting hermes-gpt through legacy command wrapper: $hermesCommand"
     Start-Process `
         -FilePath "cmd.exe" `
         -ArgumentList @("/c", "`"$hermesCommand`"") `
@@ -375,7 +422,16 @@ function Is-NgrokForDevSpace($process) {
     if (-not $process -or $process.Name -ne "ngrok.exe") {
         return $false
     }
-    return ([string]$process.CommandLine) -like "*$publicHost*"
+    $cmd = [string]$process.CommandLine
+    if ($cmd -like "*$upstream*") {
+        return $true
+    }
+    foreach ($hostName in $ngrokManagedHosts) {
+        if ($cmd -like "*$hostName*") {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Is-GoodNgrok($process) {
@@ -383,14 +439,14 @@ function Is-GoodNgrok($process) {
         return $false
     }
     $cmd = [string]$process.CommandLine
-    return $cmd -like "*$upstream*"
+    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*"
 }
 
 function Test-NgrokTunnel {
     try {
         $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
         foreach ($tunnel in @($response.tunnels)) {
-            if ([string]$tunnel.public_url -eq $publicBaseUrl -and [string]$tunnel.config.addr -eq $upstream) {
+            if ([string]$tunnel.public_url -eq $ngrokAgentBaseUrl -and [string]$tunnel.config.addr -eq $upstream) {
                 return $true
             }
         }
@@ -406,10 +462,17 @@ function Start-Ngrok {
         return
     }
 
-    Write-WatchdogLog "starting ngrok for $publicBaseUrl -> $upstream"
+    $ngrokArgs = @("http", $upstream)
+    $ngrokArgs += @("--url", $ngrokAgentBaseUrl)
+    if ($ngrokBinding) {
+        $ngrokArgs += @("--binding", $ngrokBinding)
+    }
+    $ngrokArgs += @("--log", "stdout")
+
+    Write-WatchdogLog "starting ngrok agent endpoint $ngrokAgentBaseUrl for public $publicBaseUrl -> $upstream"
     Start-Process `
         -FilePath $ngrokPath `
-        -ArgumentList @("http", $upstream, "--url", $publicBaseUrl, "--log", "stdout") `
+        -ArgumentList $ngrokArgs `
         -WorkingDirectory (Split-Path $ngrokPath) `
         -WindowStyle Hidden `
         -RedirectStandardOutput $ngrokOutPath `
@@ -433,17 +496,23 @@ function Ensure-Ngrok {
 
     foreach ($proc in $ngroks) {
         if (-not $keepPid -or $proc.ProcessId -ne $keepPid) {
-            Stop-ProcessTree $proc.ProcessId "duplicate or wrong ngrok tunnel for $publicHost"
+            Stop-ProcessTree $proc.ProcessId "duplicate or wrong ngrok tunnel for $ngrokAgentHost"
         }
     }
 
-    if ($keepPid -or (Test-NgrokTunnel)) {
+    if (Test-NgrokTunnel) {
         return
     }
 
-    if (-not $keepPid) {
-        Start-Ngrok
+    if ($keepPid) {
+        Write-WatchdogLog "ngrok tunnel for $ngrokAgentHost is not healthy yet; keeping PID $keepPid so the agent can reconnect"
+        return
     }
+
+    foreach ($proc in $ngroks) {
+        Stop-ProcessTree $proc.ProcessId "ngrok tunnel for $ngrokAgentHost is not healthy"
+    }
+    Start-Ngrok
 }
 
 function Invoke-WatchdogCycle {

@@ -18,4 +18,5 @@ If WScript.Arguments.Count > 0 Then
 End If
 
 command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & watchdogPath & """ " & mode & " -ConfigPath """ & configPath & """"
-shell.Run command, 0, True
+shell.Run command, 0, False
+WScript.Quit 0
