@@ -126,12 +126,12 @@ assert.throws(
   /Invalid DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: 0/,
 );
 
-assert.equal(loadConfig(baseEnv).publicBaseUrl, "http://127.0.0.1:7676");
+assert.equal(loadConfig(baseEnv).publicBaseUrl, "http://127.0.0.1:7676/");
 assert.deepEqual(loadConfig(baseEnv).allowedHosts, ["localhost", "127.0.0.1", "::1"]);
 
 assert.equal(
   loadConfig({ ...baseEnv, DEVSPACE_PUBLIC_BASE_URL: "https://abc.trycloudflare.com/" }).publicBaseUrl,
-  "https://abc.trycloudflare.com",
+  "https://abc.trycloudflare.com/",
 );
 assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_PUBLIC_BASE_URL: "https://abc.trycloudflare.com/" }).allowedHosts,
@@ -161,7 +161,7 @@ writeFileSync(
 const fileConfig = loadConfig({ DEVSPACE_CONFIG_DIR: configDir });
 assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
-assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
+assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com/");
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

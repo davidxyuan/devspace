@@ -244,7 +244,11 @@ function parsePublicBaseUrl(value: string): string {
   parsed.hash = "";
   parsed.search = "";
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-  return parsed.toString().replace(/\/$/, "");
+  // Ensure trailing slash for relative URL resolution in OAuth router
+  if (parsed.pathname && !parsed.pathname.endsWith("/")) {
+    parsed.pathname += "/";
+  }
+  return parsed.toString();
 }
 
 function localPublicBaseUrl(host: string, port: number): string {

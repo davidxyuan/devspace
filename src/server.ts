@@ -1312,11 +1312,14 @@ export function createServer(config = loadConfig()): RunningServer {
     next();
   });
 
+  // Use root origin as baseUrl so MCP SDK registers routes at /authorize, /token, etc.
+  // without the path prefix. The MCP router handles prefix stripping.
+  const oauthBaseUrl = new URL(config.publicBaseUrl).origin + "/";
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
       issuerUrl: new URL(config.publicBaseUrl),
-      baseUrl: new URL(config.publicBaseUrl),
+      baseUrl: new URL(oauthBaseUrl),
       resourceServerUrl,
       scopesSupported: config.oauth.scopes,
       resourceName: "DevSpace",
