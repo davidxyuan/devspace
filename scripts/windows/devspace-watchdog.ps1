@@ -323,6 +323,10 @@ function Start-Hermes {
         $previousMemoryWrite = $env:HERMES_GPT_ENABLE_MEMORY_WRITE
         $previousSessionSearch = $env:HERMES_GPT_ENABLE_SESSION_SEARCH
         $previousTerminal = $env:HERMES_GPT_ENABLE_TERMINAL
+        $previousOperatorEnabled = $env:HERMES_GPT_OPERATOR_ENABLED
+        $previousOperatorLevel = $env:HERMES_GPT_OPERATOR_LEVEL
+        $previousOperatorApplyMode = $env:HERMES_GPT_OPERATOR_APPLY_MODE
+        $previousOwnerAck = $env:HERMES_GPT_OWNER_ACK
         try {
             $env:HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
             if ($hermesFullAccess) {
@@ -330,11 +334,19 @@ function Start-Hermes {
                 $env:HERMES_GPT_ENABLE_MEMORY_WRITE = "1"
                 $env:HERMES_GPT_ENABLE_SESSION_SEARCH = "1"
                 $env:HERMES_GPT_ENABLE_TERMINAL = "1"
+                $env:HERMES_GPT_OPERATOR_ENABLED = "1"
+                $env:HERMES_GPT_OPERATOR_LEVEL = "owner"
+                $env:HERMES_GPT_OPERATOR_APPLY_MODE = "direct"
+                $env:HERMES_GPT_OWNER_ACK = "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"
             } else {
                 Remove-Item Env:\HERMES_GPT_ENABLE_WRITE -ErrorAction SilentlyContinue
                 Remove-Item Env:\HERMES_GPT_ENABLE_MEMORY_WRITE -ErrorAction SilentlyContinue
                 Remove-Item Env:\HERMES_GPT_ENABLE_SESSION_SEARCH -ErrorAction SilentlyContinue
                 Remove-Item Env:\HERMES_GPT_ENABLE_TERMINAL -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_OPERATOR_ENABLED -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_OPERATOR_LEVEL -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_OPERATOR_APPLY_MODE -ErrorAction SilentlyContinue
+                Remove-Item Env:\HERMES_GPT_OWNER_ACK -ErrorAction SilentlyContinue
             }
 
             Start-Process `
@@ -350,6 +362,10 @@ function Start-Hermes {
             $env:HERMES_GPT_ENABLE_MEMORY_WRITE = $previousMemoryWrite
             $env:HERMES_GPT_ENABLE_SESSION_SEARCH = $previousSessionSearch
             $env:HERMES_GPT_ENABLE_TERMINAL = $previousTerminal
+            $env:HERMES_GPT_OPERATOR_ENABLED = $previousOperatorEnabled
+            $env:HERMES_GPT_OPERATOR_LEVEL = $previousOperatorLevel
+            $env:HERMES_GPT_OPERATOR_APPLY_MODE = $previousOperatorApplyMode
+            $env:HERMES_GPT_OWNER_ACK = $previousOwnerAck
         }
         return
     }
