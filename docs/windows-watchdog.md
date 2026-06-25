@@ -67,6 +67,22 @@ https://your-agent-endpoint.ngrok-free.dev/<machine>/devspace_chatgpt/mcp
 https://your-agent-endpoint.ngrok-free.dev/<machine>/hermes_chatgpt/mcp
 ```
 
+For routed installs, the installer stores DevSpace's `publicBaseUrl` as the
+DevSpace route base:
+
+```text
+https://your-agent-endpoint.ngrok-free.dev/<machine>/devspace_chatgpt
+```
+
+The ngrok agent still uses only the public origin as its `--url`:
+
+```text
+https://your-agent-endpoint.ngrok-free.dev
+```
+
+This split is required so DevSpace OAuth metadata points at the routed MCP URL
+while ngrok registers a valid agent endpoint URL.
+
 ### Mode 2: public Cloud Endpoint forwarded to an internal Agent Endpoint
 
 Use this when the public URL is a Cloud Endpoint managed in the ngrok dashboard.
@@ -124,6 +140,11 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -SkipHermesAgentInstall
 ```
 
+It is also safe to rerun this command after `config.json` already contains a
+routed DevSpace URL such as
+`https://host/<machine>/devspace_chatgpt`; the installer derives the ngrok
+Agent Endpoint URL from the origin and will not pass the path to `ngrok --url`.
+
 To switch to a Cloud Endpoint plus internal endpoint:
 
 ```powershell
@@ -174,6 +195,27 @@ Invoke-WebRequest `
 A `401` response from `devspace_chatgpt` means the request reached DevSpace but
 did not include the owner token. A `406` response from `hermes_chatgpt` usually
 means the request reached Hermes without the MCP headers it expects.
+
+For a real MCP initialize check against Hermes, include MCP-compatible headers:
+
+```powershell
+$body = @{
+  jsonrpc = "2.0"
+  id = 1
+  method = "initialize"
+  params = @{
+    protocolVersion = "2025-06-18"
+    capabilities = @{}
+    clientInfo = @{ name = "manual-check"; version = "1.0" }
+  }
+} | ConvertTo-Json -Depth 8
+
+Invoke-WebRequest `
+  -Method Post `
+  -Headers @{ Accept = "application/json, text/event-stream"; "Content-Type" = "application/json" } `
+  -Body $body `
+  "https://<public-base-url>/<machine>/hermes_chatgpt/mcp"
+```
 
 ### Corporate security allowlist notes
 

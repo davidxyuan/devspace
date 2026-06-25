@@ -268,6 +268,22 @@ function Find-PythonForHermesGpt {
     throw "Python is missing. Rerun with -InstallTools or install Hermes Agent/Python first."
 }
 
+function Get-UrlOrigin([string]$Url) {
+    try {
+        $uri = [Uri]$Url
+    } catch {
+        throw "Invalid URL: $Url"
+    }
+    if (-not $uri.Scheme -or -not $uri.Host) {
+        throw "Invalid URL: $Url"
+    }
+    return $uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd("/")
+}
+
+function Join-UrlPath([string]$Origin, [string]$Path) {
+    return "$($Origin.TrimEnd("/"))/$($Path.TrimStart("/"))"
+}
+
 Restart-ElevatedIfNeeded
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
@@ -352,7 +368,16 @@ if (-not $PublicBaseUrl) {
 if (-not $PublicBaseUrl) {
     throw "Missing -PublicBaseUrl. Use your stable ngrok/Cloudflare/Tailscale public origin without /mcp."
 }
-$PublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
+$providedPublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
+$publicOrigin = Get-UrlOrigin $providedPublicBaseUrl
+$devspaceRoutePrefix = "/$machineSlug/devspace_chatgpt"
+$hermesRoutePrefix = "/$machineSlug/hermes_chatgpt"
+$devspacePublicBaseUrl = if ($installDevSpace) {
+    Join-UrlPath $publicOrigin $devspaceRoutePrefix
+} else {
+    $providedPublicBaseUrl
+}
+$PublicBaseUrl = if ($installDevSpace) { $devspacePublicBaseUrl } else { $providedPublicBaseUrl }
 if (-not $NgrokEndpointMode) {
     $NgrokEndpointMode = [string]$existingWatchdogConfig.ngrokEndpointMode
 }
@@ -374,7 +399,13 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
         $NgrokBinding = "internal"
     }
 } else {
-    $NgrokAgentBaseUrl = $PublicBaseUrl
+    if (-not $NgrokAgentBaseUrl) {
+        $NgrokAgentBaseUrl = [string]$existingWatchdogConfig.ngrokAgentBaseUrl
+    }
+    if (-not $NgrokAgentBaseUrl) {
+        $NgrokAgentBaseUrl = $publicOrigin
+    }
+    $NgrokAgentBaseUrl = Get-UrlOrigin $NgrokAgentBaseUrl
     $NgrokBinding = ""
 }
 $NgrokAgentBaseUrl = $NgrokAgentBaseUrl.TrimEnd("/")
@@ -473,7 +504,7 @@ $mcpRoutes = @()
 if ($installDevSpace) {
     $mcpRoutes += [ordered]@{
         name = "devspace_chatgpt"
-        prefix = "/$machineSlug/devspace_chatgpt"
+        prefix = $devspaceRoutePrefix
         targetHost = "127.0.0.1"
         targetPort = $Port
     }
@@ -481,7 +512,7 @@ if ($installDevSpace) {
 if ($installHermes) {
     $mcpRoutes += [ordered]@{
         name = "hermes_chatgpt"
-        prefix = "/$machineSlug/hermes_chatgpt"
+        prefix = $hermesRoutePrefix
         targetHost = "127.0.0.1"
         targetPort = $HermesPort
     }
@@ -569,16 +600,17 @@ Write-Host "Machine: $machineSlug"
 Write-Host "Scheduled task: $taskName"
 Write-Host "Config: $configPath"
 Write-Host "ngrok endpoint mode: $NgrokEndpointMode"
+Write-Host "Public router base URL: $publicOrigin"
 if ($installDevSpace) {
     Write-Host "Auth: $authPath"
     Write-Host "Owner password: $ownerToken"
     Write-Host "Local DevSpace MCP URL: http://127.0.0.1:$Port/mcp"
-    Write-Host "Public DevSpace MCP URL: $PublicBaseUrl/$machineSlug/devspace_chatgpt/mcp"
+    Write-Host "Public DevSpace MCP URL: $devspacePublicBaseUrl/mcp"
 }
 if ($installHermes) {
     Write-Host "Hermes Agent: $hermesAgentPath"
     Write-Host "Local Hermes MCP URL: http://127.0.0.1:$HermesPort/mcp"
-    Write-Host "Public Hermes MCP URL: $PublicBaseUrl/$machineSlug/hermes_chatgpt/mcp"
+    Write-Host "Public Hermes MCP URL: $(Join-UrlPath $publicOrigin "$hermesRoutePrefix/mcp")"
 }
 if ($NgrokAgentBaseUrl) {
     Write-Host "ngrok Agent Endpoint URL: $NgrokAgentBaseUrl"
