@@ -122,13 +122,15 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -PublicBaseUrl "https://your-cloud-endpoint.ngrok-free.dev"
 ```
 
-The installer writes a per-machine Traffic Policy snippet to:
+The installer writes two Cloud Endpoint policy files:
 
 ```text
 %USERPROFILE%\.devspace\ngrok-cloud-endpoint-tyo.policy.yml
+%USERPROFILE%\.devspace\ngrok-cloud-endpoint-tyo.rule.yml
 ```
 
-Add that snippet to the Cloud Endpoint Traffic Policy. For TYO it looks like:
+Use the `.policy.yml` file as the full Traffic Policy when this is the only
+machine on the Cloud Endpoint. It looks like:
 
 ```yaml
 on_http_request:
@@ -143,8 +145,9 @@ on_http_request:
 ```
 
 For another machine, run the same installer with a different `-MachineName`, then
-append the generated policy block for that machine to the same Cloud Endpoint.
-Each machine keeps its own internal endpoint, so they can coexist.
+copy that machine's `.rule.yml` content under the same `on_http_request:` list
+in the Cloud Endpoint Traffic Policy. Do not paste a second `on_http_request:`
+top-level key. Each machine keeps its own internal endpoint, so they can coexist.
 
 To install or switch manually to Cloud Endpoint mode:
 

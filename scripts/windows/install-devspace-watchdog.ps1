@@ -295,19 +295,26 @@ function Join-McpRouteName([string]$BaseName, [string]$Suffix) {
     return "${BaseName}_$suffixSlug"
 }
 
-function New-NgrokCloudEndpointPolicy([string]$MachineSlug, [string]$InternalUrl) {
+function New-NgrokCloudEndpointRule([string]$MachineSlug, [string]$InternalUrl) {
     $machinePrefix = "/$MachineSlug/"
     $wellKnownPrefix = "/.well-known/oauth-authorization-server/$MachineSlug/"
 @"
+- name: DevSpace $MachineSlug router
+  expressions:
+    - req.url.path.startsWith("$machinePrefix") || req.url.path.startsWith("$wellKnownPrefix")
+  actions:
+    - type: forward-internal
+      config:
+        url: $InternalUrl
+        binding: internal
+"@
+}
+
+function New-NgrokCloudEndpointPolicy([string]$MachineSlug, [string]$InternalUrl) {
+    $rule = New-NgrokCloudEndpointRule $MachineSlug $InternalUrl
+@"
 on_http_request:
-  - name: DevSpace $MachineSlug router
-    expressions:
-      - req.url.path.startsWith("$machinePrefix") || req.url.path.startsWith("$wellKnownPrefix")
-    actions:
-      - type: forward-internal
-        config:
-          url: $InternalUrl
-          binding: internal
+$($rule -replace "(?m)^", "  ")
 "@
 }
 
@@ -596,9 +603,14 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
     if (-not $CloudEndpointPolicyPath) {
         $CloudEndpointPolicyPath = Join-Path $InstallDir "ngrok-cloud-endpoint-$machineSlug.policy.yml"
     }
+    $CloudEndpointPolicyPath = [System.IO.Path]::GetFullPath($CloudEndpointPolicyPath)
+    $CloudEndpointRulePath = Join-Path (Split-Path $CloudEndpointPolicyPath -Parent) "ngrok-cloud-endpoint-$machineSlug.rule.yml"
     $policy = New-NgrokCloudEndpointPolicy $machineSlug $NgrokAgentBaseUrl
+    $rule = New-NgrokCloudEndpointRule $machineSlug $NgrokAgentBaseUrl
     [System.IO.File]::WriteAllText($CloudEndpointPolicyPath, $policy + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
-    $watchdogConfig["cloudEndpointPolicyPath"] = [System.IO.Path]::GetFullPath($CloudEndpointPolicyPath)
+    [System.IO.File]::WriteAllText($CloudEndpointRulePath, $rule + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
+    $watchdogConfig["cloudEndpointPolicyPath"] = $CloudEndpointPolicyPath
+    $watchdogConfig["cloudEndpointRulePath"] = [System.IO.Path]::GetFullPath($CloudEndpointRulePath)
 }
 Write-JsonFile $watchdogConfigPath $watchdogConfig 6
 $restartFlagPath = Join-Path $InstallDir "restart-devspace.flag"
@@ -675,5 +687,6 @@ if ($NgrokAgentBaseUrl) {
     Write-Host "ngrok Agent Endpoint URL: $NgrokAgentBaseUrl"
 }
 if ($NgrokEndpointMode -eq "CloudEndpoint" -and $CloudEndpointPolicyPath) {
-    Write-Host "Cloud Endpoint policy snippet: $CloudEndpointPolicyPath"
+    Write-Host "Cloud Endpoint policy file: $CloudEndpointPolicyPath"
+    Write-Host "Cloud Endpoint merge rule: $CloudEndpointRulePath"
 }
