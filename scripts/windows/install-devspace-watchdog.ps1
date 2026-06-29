@@ -423,7 +423,9 @@ if (-not $NgrokEndpointMode) {
 
 if ($NgrokEndpointMode -eq "CloudEndpoint") {
     if (-not $NgrokAgentBaseUrl) {
-        $NgrokAgentBaseUrl = [string]$existingWatchdogConfig.ngrokAgentBaseUrl
+        if ([string]$existingWatchdogConfig.ngrokEndpointMode -eq "CloudEndpoint") {
+            $NgrokAgentBaseUrl = [string]$existingWatchdogConfig.ngrokAgentBaseUrl
+        }
     }
     if (-not $NgrokAgentBaseUrl) {
         $NgrokAgentBaseUrl = "https://$machineSlug-devspace.internal"

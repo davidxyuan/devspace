@@ -28,6 +28,7 @@ $params = @{
 }
 
 if ($NgrokAgentBaseUrl) { $params.NgrokAgentBaseUrl = $NgrokAgentBaseUrl }
+else { $params.NgrokAgentBaseUrl = "https://$MachineName-devspace.internal" }
 if (-not $NoFullAccess) { $params.FullAccess = $true }
 if ($CliPath) { $params.CliPath = $CliPath }
 if ($InstallTools) { $params.InstallTools = $true }
