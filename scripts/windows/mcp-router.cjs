@@ -23,6 +23,7 @@ const routes = generatedRoutes
   .filter((route) => route && route.enabled !== false)
   .map((route) => ({
     name: route.name,
+    service: route.service || route.kind || inferService(route.name),
     prefix: route.prefix || `/${machineSlug}/${route.name}`,
     targetHost: route.targetHost || "127.0.0.1",
     targetPort: Number(route.targetPort),
@@ -41,6 +42,12 @@ function slug(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function inferService(name) {
+  if (String(name || "").startsWith("hermes_chatgpt")) return "hermes";
+  if (String(name || "").startsWith("devspace_chatgpt")) return "devspace";
+  return "";
 }
 
 function legacyRoute(url) {
@@ -82,7 +89,7 @@ function upstreamHostHeader(route, publicHost) {
   // hermes-gpt is intentionally loopback-bound and rejects the public tunnel Host header.
   // Preserve DevSpace's public Host behavior for OAuth/resource metadata, but talk to
   // Hermes with the same Host header a direct local tunnel would use.
-  if (route.name === "hermes_chatgpt") {
+  if (route.service === "hermes") {
     return `${route.targetHost}:${route.targetPort}`;
   }
   return publicHost || `${route.targetHost}:${route.targetPort}`;
@@ -137,7 +144,7 @@ const server = http.createServer((req, res) => {
             const meta = JSON.parse(body);
             const publicUrl = config.publicBaseUrl ? new URL(config.publicBaseUrl) : null;
             const origin = publicUrl ? publicUrl.origin : `http://${publicHost}`;
-            const prefix = `/${machineSlug}/${route.name}`;
+            const prefix = route.prefix;
             const fixUrl = (url) => {
               if (!url) return url;
               const u = new URL(url);

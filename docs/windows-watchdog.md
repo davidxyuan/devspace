@@ -35,6 +35,30 @@ https://your-stable-domain.ngrok-free.dev/<machine>/hermes_chatgpt/mcp
 it with `-MachineName david` when the hostname is not the name you want to see
 inside ChatGPT.
 
+For this TYO machine, the shortest Agent Endpoint install is:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-chatgpt-tyo-agent.ps1
+```
+
+It installs the public URLs:
+
+```text
+https://shush-underuse-obnoxious.ngrok-free.dev/tyo/devspace_chatgpt/mcp
+https://shush-underuse-obnoxious.ngrok-free.dev/tyo/hermes_chatgpt/mcp
+```
+
+Name the ChatGPT connectors `devspace_chatgpt_tyo` and
+`hermes_chatgpt_tyo`.
+
+The TYO Agent helper also keeps `/c02250073/...` as a route alias for existing
+connector entries that were created before the machine was renamed to `tyo`.
+For a different legacy hostname, pass:
+
+```powershell
+-RouteAliasMachineNames "old-machine-slug"
+```
+
 ## ngrok endpoint modes
 
 The installer supports two ngrok modes. `AgentEndpoint` is the default and is
@@ -83,24 +107,46 @@ https://your-agent-endpoint.ngrok-free.dev
 This split is required so DevSpace OAuth metadata points at the routed MCP URL
 while ngrok registers a valid agent endpoint URL.
 
-### Mode 2: public Cloud Endpoint forwarded to an internal Agent Endpoint
+### Mode 2: public Cloud Endpoint forwarded to internal Agent Endpoints
 
 Use this when the public URL is a Cloud Endpoint managed in the ngrok dashboard.
-The local ngrok agent exposes only an internal endpoint, and the Cloud Endpoint
-Traffic Policy forwards traffic to it.
+Each local ngrok agent exposes only an internal endpoint, and the Cloud Endpoint
+Traffic Policy forwards each machine path to the matching internal endpoint.
+This is the mode to use when several computers must share one public Cloud
+Endpoint at the same time.
 
-Create or edit the Cloud Endpoint Traffic Policy:
+For TYO, run:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-chatgpt-tyo-cloud.ps1 `
+  -PublicBaseUrl "https://your-cloud-endpoint.ngrok-free.dev"
+```
+
+The installer writes a per-machine Traffic Policy snippet to:
+
+```text
+%USERPROFILE%\.devspace\ngrok-cloud-endpoint-tyo.policy.yml
+```
+
+Add that snippet to the Cloud Endpoint Traffic Policy. For TYO it looks like:
 
 ```yaml
 on_http_request:
-  - name: DevSpaceLocalRouter
+  - name: DevSpace tyo router
+    expressions:
+      - req.url.path.startsWith("/tyo/") || req.url.path.startsWith("/.well-known/oauth-authorization-server/tyo/")
     actions:
       - type: forward-internal
         config:
-          url: https://<machine>-devspace.internal
+          url: https://tyo-devspace.internal
+          binding: internal
 ```
 
-Then install or switch the watchdog to Cloud Endpoint mode:
+For another machine, run the same installer with a different `-MachineName`, then
+append the generated policy block for that machine to the same Cloud Endpoint.
+Each machine keeps its own internal endpoint, so they can coexist.
+
+To install or switch manually to Cloud Endpoint mode:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-watchdog.ps1 `
@@ -109,7 +155,9 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -AllowedRoots "$env:USERPROFILE\projects" `
   -PublicBaseUrl "https://your-cloud-endpoint.ngrok-free.dev" `
   -NgrokEndpointMode CloudEndpoint `
-  -NgrokAgentBaseUrl "https://<machine>-devspace.internal"
+  -NgrokAgentBaseUrl "https://<machine>-devspace.internal" `
+  -MachineName "<machine>" `
+  -McpNameSuffix "<machine>"
 ```
 
 The watchdog starts ngrok like this:
@@ -135,6 +183,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -Components DevSpace,Hermes `
   -PublicBaseUrl "https://your-agent-endpoint.ngrok-free.dev" `
   -NgrokEndpointMode AgentEndpoint `
+  -MachineName "tyo" `
+  -McpNameSuffix "tyo" `
   -SkipNpmInstall `
   -SkipHermesInstall `
   -SkipHermesAgentInstall
@@ -154,6 +204,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-
   -PublicBaseUrl "https://your-cloud-endpoint.ngrok-free.dev" `
   -NgrokEndpointMode CloudEndpoint `
   -NgrokAgentBaseUrl "https://<machine>-devspace.internal" `
+  -MachineName "<machine>" `
+  -McpNameSuffix "<machine>" `
   -SkipNpmInstall `
   -SkipHermesInstall `
   -SkipHermesAgentInstall

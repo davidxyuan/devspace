@@ -7,6 +7,9 @@ param(
     [string]$NgrokEndpointMode,
     [string]$NgrokAgentBaseUrl,
     [string]$NgrokBinding,
+    [string]$McpNameSuffix,
+    [string[]]$RouteAliasMachineNames,
+    [string]$CloudEndpointPolicyPath,
     [int]$Port = 7676,
     [string]$NgrokPath,
     [string]$NodePath,
@@ -284,6 +287,30 @@ function Join-UrlPath([string]$Origin, [string]$Path) {
     return "$($Origin.TrimEnd("/"))/$($Path.TrimStart("/"))"
 }
 
+function Join-McpRouteName([string]$BaseName, [string]$Suffix) {
+    $suffixSlug = ConvertTo-Slug $Suffix
+    if (-not $suffixSlug) {
+        return $BaseName
+    }
+    return "${BaseName}_$suffixSlug"
+}
+
+function New-NgrokCloudEndpointPolicy([string]$MachineSlug, [string]$InternalUrl) {
+    $machinePrefix = "/$MachineSlug/"
+    $wellKnownPrefix = "/.well-known/oauth-authorization-server/$MachineSlug/"
+@"
+on_http_request:
+  - name: DevSpace $MachineSlug router
+    expressions:
+      - req.url.path.startsWith("$machinePrefix") || req.url.path.startsWith("$wellKnownPrefix")
+    actions:
+      - type: forward-internal
+        config:
+          url: $InternalUrl
+          binding: internal
+"@
+}
+
 Restart-ElevatedIfNeeded
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
@@ -370,6 +397,8 @@ if (-not $PublicBaseUrl) {
 }
 $providedPublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
 $publicOrigin = Get-UrlOrigin $providedPublicBaseUrl
+$devspaceRouteName = Join-McpRouteName "devspace_chatgpt" $McpNameSuffix
+$hermesRouteName = Join-McpRouteName "hermes_chatgpt" $McpNameSuffix
 $devspaceRoutePrefix = "/$machineSlug/devspace_chatgpt"
 $hermesRoutePrefix = "/$machineSlug/hermes_chatgpt"
 $devspacePublicBaseUrl = if ($installDevSpace) {
@@ -409,6 +438,15 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
     $NgrokBinding = ""
 }
 $NgrokAgentBaseUrl = $NgrokAgentBaseUrl.TrimEnd("/")
+
+$routeMachineSlugs = @($machineSlug)
+foreach ($alias in @($RouteAliasMachineNames)) {
+    $aliasSlug = ConvertTo-Slug $alias
+    if ($aliasSlug -and $aliasSlug -ne $machineSlug) {
+        $routeMachineSlugs += $aliasSlug
+    }
+}
+$routeMachineSlugs = @($routeMachineSlugs | Select-Object -Unique)
 
 if ($installDevSpace) {
     $allowedRootList = @()
@@ -501,20 +539,25 @@ if ($useRouter) {
 }
 
 $mcpRoutes = @()
-if ($installDevSpace) {
-    $mcpRoutes += [ordered]@{
-        name = "devspace_chatgpt"
-        prefix = $devspaceRoutePrefix
-        targetHost = "127.0.0.1"
-        targetPort = $Port
+foreach ($routeMachineSlug in $routeMachineSlugs) {
+    $routeNameSuffix = if ($routeMachineSlug -eq $machineSlug) { "" } else { "_alias_$routeMachineSlug" }
+    if ($installDevSpace) {
+        $mcpRoutes += [ordered]@{
+            name = "$devspaceRouteName$routeNameSuffix"
+            service = "devspace"
+            prefix = "/$routeMachineSlug/devspace_chatgpt"
+            targetHost = "127.0.0.1"
+            targetPort = $Port
+        }
     }
-}
-if ($installHermes) {
-    $mcpRoutes += [ordered]@{
-        name = "hermes_chatgpt"
-        prefix = $hermesRoutePrefix
-        targetHost = "127.0.0.1"
-        targetPort = $HermesPort
+    if ($installHermes) {
+        $mcpRoutes += [ordered]@{
+            name = "$hermesRouteName$routeNameSuffix"
+            service = "hermes"
+            prefix = "/$routeMachineSlug/hermes_chatgpt"
+            targetHost = "127.0.0.1"
+            targetPort = $HermesPort
+        }
     }
 }
 
@@ -544,8 +587,22 @@ $watchdogConfig = [ordered]@{
     ngrokEndpointMode = $NgrokEndpointMode
     ngrokAgentBaseUrl = $NgrokAgentBaseUrl
     ngrokBinding = $NgrokBinding
+    mcpNameSuffix = if ($McpNameSuffix) { ConvertTo-Slug $McpNameSuffix } else { "" }
+    routeAliasMachineNames = @($routeMachineSlugs | Where-Object { $_ -ne $machineSlug })
+    cloudEndpointPolicyPath = ""
+}
+
+if ($NgrokEndpointMode -eq "CloudEndpoint") {
+    if (-not $CloudEndpointPolicyPath) {
+        $CloudEndpointPolicyPath = Join-Path $InstallDir "ngrok-cloud-endpoint-$machineSlug.policy.yml"
+    }
+    $policy = New-NgrokCloudEndpointPolicy $machineSlug $NgrokAgentBaseUrl
+    [System.IO.File]::WriteAllText($CloudEndpointPolicyPath, $policy + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
+    $watchdogConfig["cloudEndpointPolicyPath"] = [System.IO.Path]::GetFullPath($CloudEndpointPolicyPath)
 }
 Write-JsonFile $watchdogConfigPath $watchdogConfig 6
+$restartFlagPath = Join-Path $InstallDir "restart-devspace.flag"
+[System.IO.File]::WriteAllText($restartFlagPath, "installer updated config at $(Get-Date -Format o)" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
@@ -601,6 +658,8 @@ Write-Host "Scheduled task: $taskName"
 Write-Host "Config: $configPath"
 Write-Host "ngrok endpoint mode: $NgrokEndpointMode"
 Write-Host "Public router base URL: $publicOrigin"
+Write-Host "DevSpace MCP name: $devspaceRouteName"
+Write-Host "Hermes MCP name: $hermesRouteName"
 if ($installDevSpace) {
     Write-Host "Auth: $authPath"
     Write-Host "Owner password: $ownerToken"
@@ -614,4 +673,7 @@ if ($installHermes) {
 }
 if ($NgrokAgentBaseUrl) {
     Write-Host "ngrok Agent Endpoint URL: $NgrokAgentBaseUrl"
+}
+if ($NgrokEndpointMode -eq "CloudEndpoint" -and $CloudEndpointPolicyPath) {
+    Write-Host "Cloud Endpoint policy snippet: $CloudEndpointPolicyPath"
 }

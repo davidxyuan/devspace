@@ -162,22 +162,33 @@ function Invoke-RestartIfRequested {
     if (-not (Test-Path -LiteralPath $restartRequestPath)) {
         return
     }
-    if (-not (Test-IsElevated)) {
-        Write-WatchdogLog "restart request found but watchdog is not elevated"
-        return
-    }
 
-    Write-WatchdogLog "restart request detected; stopping DevSpace listener and extra serve processes"
+    Write-WatchdogLog "restart request detected; stopping managed DevSpace stack"
     foreach ($ownerPid in Get-ListenOwners $port) {
         Stop-ProcessTree $ownerPid "restart request for DevSpace port $port"
     }
+    if ($hermesPort) {
+        foreach ($ownerPid in Get-ListenOwners $hermesPort) {
+            Stop-ProcessTree $ownerPid "restart request for Hermes port $hermesPort"
+        }
+    }
+    if ($routerPort) {
+        foreach ($ownerPid in Get-ListenOwners $routerPort) {
+            Stop-ProcessTree $ownerPid "restart request for MCP router port $routerPort"
+        }
+    }
 
-    $serveProcesses = @(
+    $managedProcesses = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { Is-DevSpaceServe $_ }
+            Where-Object {
+                (Is-DevSpaceServe $_) -or
+                    ($hermesServer -and ([string]$_.CommandLine) -like "*$hermesServer*") -or
+                    ($routerPath -and ([string]$_.CommandLine) -like "*$routerPath*") -or
+                    (Is-NgrokForDevSpace $_)
+            }
     )
-    foreach ($proc in $serveProcesses) {
-        Stop-ProcessTree $proc.ProcessId "restart request for DevSpace serve"
+    foreach ($proc in $managedProcesses) {
+        Stop-ProcessTree $proc.ProcessId "restart request for managed DevSpace stack"
     }
 
     Remove-Item -LiteralPath $restartRequestPath -Force -ErrorAction SilentlyContinue
