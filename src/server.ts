@@ -1273,7 +1273,7 @@ export function createServer(config = loadConfig()): RunningServer {
     ...(allowedHosts ? { allowedHosts } : {}),
   });
   const transports = new Map<string, Transport>();
-  const mcpUrl = new URL("/mcp", config.publicBaseUrl);
+  const mcpUrl = new URL("mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
   const bearerAuth = requireBearerAuth({

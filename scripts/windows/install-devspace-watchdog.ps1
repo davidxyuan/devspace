@@ -298,10 +298,11 @@ function Join-McpRouteName([string]$BaseName, [string]$Suffix) {
 function New-NgrokCloudEndpointRule([string]$MachineSlug, [string]$InternalUrl) {
     $machinePrefix = "/$MachineSlug/"
     $wellKnownPrefix = "/.well-known/oauth-authorization-server/$MachineSlug/"
+    $protectedResourcePrefix = "/.well-known/oauth-protected-resource/$MachineSlug/"
 @"
 - name: DevSpace $MachineSlug router
   expressions:
-    - req.url.path.startsWith("$machinePrefix") || req.url.path.startsWith("$wellKnownPrefix")
+    - req.url.path.startsWith("$machinePrefix") || req.url.path.startsWith("$wellKnownPrefix") || req.url.path.startsWith("$protectedResourcePrefix")
   actions:
     - type: forward-internal
       config:

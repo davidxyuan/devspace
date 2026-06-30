@@ -136,7 +136,7 @@ machine on the Cloud Endpoint. It looks like:
 on_http_request:
   - name: DevSpace tyo router
     expressions:
-      - req.url.path.startsWith("/tyo/") || req.url.path.startsWith("/.well-known/oauth-authorization-server/tyo/")
+      - req.url.path.startsWith("/tyo/") || req.url.path.startsWith("/.well-known/oauth-authorization-server/tyo/") || req.url.path.startsWith("/.well-known/oauth-protected-resource/tyo/")
     actions:
       - type: forward-internal
         config:
