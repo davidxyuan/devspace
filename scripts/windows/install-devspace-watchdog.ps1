@@ -12,6 +12,7 @@ param(
     [string]$CloudEndpointPolicyPath,
     [int]$Port = 7676,
     [string]$NgrokPath,
+    [string]$NgrokAuthtoken,
     [string]$NodePath,
     [string]$CliPath,
     [string[]]$Components = @("DevSpace"),
@@ -35,6 +36,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:InstallDocsPath = Join-Path ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))) "docs\windows-watchdog.md"
+
+trap {
+    Write-Host ""
+    Write-Host "DevSpace watchdog install failed." -ForegroundColor Red
+    Write-Host $_.Exception.Message
+    if (Test-Path -LiteralPath $script:InstallDocsPath) {
+        Write-Host "Troubleshooting: $script:InstallDocsPath"
+    }
+    exit 1
+}
+
+function Fail([string]$message, [string]$fix = "") {
+    if ($fix) {
+        throw "$message`nFix: $fix"
+    }
+    throw $message
+}
 
 function Test-IsElevated {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -69,7 +88,11 @@ function Restart-ElevatedIfNeeded {
     $args += "-NoElevate"
 
     Write-Host "Requesting administrator permission to install tools and register the Highest scheduled task..."
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList ($args -join " ") -Verb RunAs -Wait -PassThru
+    try {
+        $process = Start-Process -FilePath "powershell.exe" -ArgumentList ($args -join " ") -Verb RunAs -Wait -PassThru
+    } catch {
+        Fail "Administrator permission was not granted." "Approve the UAC prompt, or rerun with -UserMode for a current-user install."
+    }
     exit $process.ExitCode
 }
 
@@ -91,13 +114,13 @@ function Find-CommandPath([string]$name) {
 function Install-WingetPackage([string]$packageId, [string]$displayName) {
     $winget = Find-CommandPath "winget.exe"
     if (-not $winget) {
-        throw "$displayName is missing and winget.exe is not available. Install $displayName manually or rerun on a Windows version with winget."
+        Fail "$displayName is missing and winget.exe is not available." "Install App Installer/winget first, install $displayName manually, or run on Windows 10/11 with winget available."
     }
 
     Write-Host "Installing $displayName with winget..."
     & $winget install --id $packageId --exact --source winget --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
-        throw "winget failed to install $displayName ($packageId)."
+        Fail "winget failed to install $displayName ($packageId)." "Open PowerShell as Administrator and rerun with -InstallTools, or install $displayName manually and rerun this installer."
     }
     Refresh-Path
 }
@@ -108,12 +131,12 @@ function Ensure-Command([string]$name, [string]$packageId, [string]$displayName)
         return $path
     }
     if (-not $InstallTools) {
-        throw "$displayName is missing. Rerun with -InstallTools to install it with winget."
+        Fail "$displayName is missing." "Rerun the same command with -InstallTools, or install $displayName manually and open a new PowerShell window."
     }
     Install-WingetPackage $packageId $displayName
     $path = Find-CommandPath $name
     if (-not $path) {
-        throw "$displayName was installed but $name is still not on PATH."
+        Fail "$displayName was installed but $name is still not on PATH." "Close and reopen PowerShell, then rerun this installer. If this is ngrok or Python, you can also pass -NgrokPath or -PythonPath."
     }
     return $path
 }
@@ -168,13 +191,13 @@ function Get-ComponentList {
                 continue
             }
             if ($valid -notcontains $name) {
-                throw "Invalid component '$name'. Valid components: $($valid -join ', ')."
+                Fail "Invalid component '$name'." "Use -Components DevSpace, -Components Hermes, or -Components DevSpace,Hermes."
             }
             $result += $name
         }
     }
     if ($result.Count -eq 0) {
-        throw "At least one component is required. Valid components: $($valid -join ', ')."
+        Fail "At least one component is required." "Use -Components DevSpace, -Components Hermes, or -Components DevSpace,Hermes."
     }
     return $result | Select-Object -Unique
 }
@@ -186,7 +209,7 @@ function Test-Component([string]$name) {
 function Invoke-Checked([scriptblock]$command, [string]$message) {
     & $command
     if ($LASTEXITCODE -ne 0) {
-        throw $message
+        Fail $message "Review the command output above, fix that tool-specific error, then rerun the same installer command."
     }
 }
 
@@ -218,7 +241,7 @@ function Install-HermesAgentIfNeeded {
         return $exe
     }
     if ($SkipHermesAgentInstall) {
-        throw "Hermes Agent is missing. Install it first or omit -SkipHermesAgentInstall."
+        Fail "Hermes Agent is missing." "Remove -SkipHermesAgentInstall so the installer can install it, install Hermes Agent manually, or use -Components DevSpace."
     }
 
     Write-Host "Installing Hermes Agent..."
@@ -226,7 +249,7 @@ function Install-HermesAgentIfNeeded {
     & ([scriptblock]::Create($installScript)) -SkipSetup
     $exe = Find-HermesAgentExe
     if (-not $exe) {
-        throw "Hermes Agent install finished, but hermes.exe was not found."
+        Fail "Hermes Agent install finished, but hermes.exe was not found." "Open a new PowerShell window and rerun, or pass -HermesAgentExe with the full hermes.exe path."
     }
     return $exe
 }
@@ -246,7 +269,7 @@ function Find-GitForClone {
         Install-WingetPackage "Git.Git" "Git for Windows"
         return Ensure-Command "git.exe" "Git.Git" "Git for Windows"
     }
-    throw "Git is missing. Rerun with -InstallTools or install Hermes Agent/Git first."
+    Fail "Git is missing." "Rerun with -InstallTools, install Git for Windows manually, or install Hermes Agent before selecting -Components Hermes."
 }
 
 function Find-PythonForHermesGpt {
@@ -268,17 +291,17 @@ function Find-PythonForHermesGpt {
         Install-WingetPackage "Python.Python.3.12" "Python 3"
         return Ensure-Command "python.exe" "Python.Python.3.12" "Python 3"
     }
-    throw "Python is missing. Rerun with -InstallTools or install Hermes Agent/Python first."
+    Fail "Python is missing." "Rerun with -InstallTools, install Python 3 manually, or install Hermes Agent before selecting -Components Hermes."
 }
 
 function Get-UrlOrigin([string]$Url) {
     try {
         $uri = [Uri]$Url
     } catch {
-        throw "Invalid URL: $Url"
+        Fail "Invalid URL: $Url" 'Use a full origin such as https://example.ngrok-free.dev. Do not pass /mcp here.'
     }
     if (-not $uri.Scheme -or -not $uri.Host) {
-        throw "Invalid URL: $Url"
+        Fail "Invalid URL: $Url" 'Use a full origin such as https://example.ngrok-free.dev. Do not pass /mcp here.'
     }
     return $uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd("/")
 }
@@ -331,7 +354,7 @@ $useRouter = $installDevSpace -or $installHermes
 $MachineName = if ($MachineName) { $MachineName } else { [System.Net.Dns]::GetHostName() }
 $machineSlug = ConvertTo-Slug $MachineName
 if (-not $machineSlug) {
-    throw "Missing machine name. Pass -MachineName."
+    Fail "Missing machine name." 'Pass -MachineName with a URL-safe name, for example -MachineName "david-pc".'
 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $configPath = Join-Path $InstallDir "config.json"
@@ -361,14 +384,19 @@ if (-not $SkipNgrok) {
         $NgrokPath = Find-CommandPath "ngrok.exe"
         if (-not $NgrokPath) {
             if (-not $InstallTools) {
-                throw "ngrok.exe is missing. Rerun with -InstallTools or pass -NgrokPath."
+                Fail "ngrok.exe is missing." "Rerun with -InstallTools so winget installs ngrok, or pass -NgrokPath with the full ngrok.exe path."
             }
             Install-WingetPackage "Ngrok.Ngrok" "ngrok"
             $NgrokPath = Find-CommandPath "ngrok.exe"
         }
     }
     if (-not $NgrokPath -or -not (Test-Path -LiteralPath $NgrokPath)) {
-        throw "ngrok.exe was not found. Pass -NgrokPath or install ngrok."
+        Fail "ngrok.exe was not found." "Pass -NgrokPath with the full ngrok.exe path, or install ngrok and open a new PowerShell window."
+    }
+    $effectiveNgrokAuthtoken = if ($NgrokAuthtoken) { $NgrokAuthtoken } elseif ($env:NGROK_AUTHTOKEN) { $env:NGROK_AUTHTOKEN } else { "" }
+    if ($effectiveNgrokAuthtoken) {
+        Write-Host "Configuring ngrok authtoken..."
+        Invoke-Checked { & $NgrokPath config add-authtoken $effectiveNgrokAuthtoken } "ngrok authtoken setup failed."
     }
 }
 
@@ -397,7 +425,7 @@ if ($installDevSpace) {
     }
 
     if (-not (Test-Path -LiteralPath $CliPath)) {
-        throw "DevSpace CLI was not found: $CliPath"
+        Fail "DevSpace CLI was not found: $CliPath" "Rerun without -SkipNpmInstall so the checkout can build, or pass -CliPath pointing to dist\cli.js."
     }
 }
 
@@ -405,7 +433,7 @@ if (-not $PublicBaseUrl) {
     $PublicBaseUrl = [string]$existingConfig.publicBaseUrl
 }
 if (-not $PublicBaseUrl) {
-    throw "Missing -PublicBaseUrl. Use your stable ngrok/Cloudflare/Tailscale public origin without /mcp."
+    Fail "Missing -PublicBaseUrl." 'Pass the stable public origin without /mcp, for example -PublicBaseUrl "https://example.ngrok-free.dev".'
 }
 $providedPublicBaseUrl = $PublicBaseUrl.TrimEnd("/")
 $publicOrigin = Get-UrlOrigin $providedPublicBaseUrl
@@ -521,7 +549,7 @@ if ($installHermes) {
     }
     $hermesServer = Join-Path $HermesDir "server.py"
     if (-not (Test-Path -LiteralPath $hermesServer)) {
-        throw "hermes-gpt server.py was not found: $hermesServer"
+        Fail "hermes-gpt server.py was not found: $hermesServer" "Remove -SkipHermesInstall so the installer can clone hermes-gpt, or pass -HermesDir to the correct repo folder."
     }
 
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
@@ -656,25 +684,33 @@ $useSchtasks = $UserMode -or $NoElevate
 if ($useSchtasks) {
     & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR "wscript.exe $taskArgs" /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "schtasks.exe failed to register $taskName."
+        Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
     }
 } else {
     $principal = New-ScheduledTaskPrincipal `
         -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
         -LogonType Interactive `
         -RunLevel ($runLevel)
-    Register-ScheduledTask `
-        -TaskName $taskName `
-        -Action $action `
-        -Trigger @($logonTrigger, $pollTrigger) `
-        -Settings $settings `
-        -Principal $principal `
-        -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
-        -Force | Out-Null
+    try {
+        Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger @($logonTrigger, $pollTrigger) `
+            -Settings $settings `
+            -Principal $principal `
+            -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
+            -Force | Out-Null
+    } catch {
+        Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode to install a current-user task."
+    }
 }
 
 if (-not $SkipStart) {
-    Start-ScheduledTask -TaskName $taskName
+    try {
+        Start-ScheduledTask -TaskName $taskName
+    } catch {
+        Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or run this once: powershell.exe -ExecutionPolicy Bypass -File `"$InstallDir\devspace-watchdog.ps1`" -Once"
+    }
 }
 
 Write-Host "DevSpace watchdog installed."
@@ -703,4 +739,8 @@ if ($NgrokAgentBaseUrl) {
 if ($NgrokEndpointMode -eq "CloudEndpoint" -and $CloudEndpointPolicyPath) {
     Write-Host "Cloud Endpoint policy file: $CloudEndpointPolicyPath"
     Write-Host "Cloud Endpoint merge rule: $CloudEndpointRulePath"
+    Write-Host "Next: paste or merge the policy/rule into the ngrok Cloud Endpoint Traffic Policy."
 }
+Write-Host "Watchdog log: $(Join-Path $InstallDir "devspace-watchdog.log")"
+Write-Host "ngrok error log: $(Join-Path $InstallDir "ngrok-watchdog.err.log")"
+Write-Host "Troubleshooting: $script:InstallDocsPath"

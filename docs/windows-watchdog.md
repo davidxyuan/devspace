@@ -35,6 +35,57 @@ https://your-stable-domain.ngrok-free.dev/<machine>/hermes_chatgpt/mcp
 it with `-MachineName david` when the hostname is not the name you want to see
 inside ChatGPT.
 
+## New computer quick install
+
+If Git is not installed yet, download this repository as a ZIP from GitHub,
+extract it, open PowerShell in the extracted folder, and run one of these
+commands. `-InstallTools` installs Git, Node.js/npm, Python, and ngrok with
+winget when they are missing.
+
+For a direct ngrok Agent Endpoint:
+
+```powershell
+$env:NGROK_AUTHTOKEN = "paste-your-ngrok-token-here"
+
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-watchdog.ps1 `
+  -UserMode `
+  -Components DevSpace,Hermes `
+  -PublicBaseUrl "https://your-agent-endpoint.ngrok-free.dev" `
+  -NgrokEndpointMode AgentEndpoint `
+  -MachineName "$env:COMPUTERNAME" `
+  -McpNameSuffix "$env:COMPUTERNAME" `
+  -FullAccess `
+  -InstallTools
+```
+
+For a shared public ngrok Cloud Endpoint with one internal endpoint per
+computer:
+
+```powershell
+$env:NGROK_AUTHTOKEN = "paste-your-ngrok-token-here"
+
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\windows\install-devspace-watchdog.ps1 `
+  -UserMode `
+  -Components DevSpace,Hermes `
+  -PublicBaseUrl "https://your-cloud-endpoint.ngrok-free.dev" `
+  -NgrokEndpointMode CloudEndpoint `
+  -NgrokAgentBaseUrl "https://${env:COMPUTERNAME}-devspace.internal" `
+  -MachineName "$env:COMPUTERNAME" `
+  -McpNameSuffix "$env:COMPUTERNAME" `
+  -FullAccess `
+  -InstallTools
+```
+
+Remove `-FullAccess` and pass `-AllowedRoots "D:\projects;C:\Users\you\code"`
+when you want a narrow filesystem allowlist. Omit `-UserMode` when you want the
+installer to request administrator permission and register the watchdog with the
+highest run level.
+
+Cloud Endpoint mode also writes a Traffic Policy file and a merge-rule file
+under `%USERPROFILE%\.devspace`. Paste the full policy when this is the only
+computer on the Cloud Endpoint, or merge the rule into the existing
+`on_http_request:` list when several computers share one public URL.
+
 For this TYO machine, the shortest Agent Endpoint install is:
 
 ```powershell
@@ -288,11 +339,12 @@ Ask IT to allow one of these, in order of preference:
 - allow the chosen public endpoint hostname, the `.internal` endpoint hostname
   for Cloud Endpoint mode, and `dashboard.ngrok.com` for manual dashboard setup
 
-Runtime does not require VBScript, Bash, or `cmd.exe`. The watchdog runs through
-Windows Task Scheduler and launches PowerShell, Node.js, Python, and ngrok
-directly in hidden/background mode. The legacy
-`run-devspace-watchdog-hidden.vbs` and `run-hermes-gpt.cmd` files remain only
-for backward compatibility and manual debugging on older installs.
+Runtime does not require Bash. The scheduled task uses `wscript.exe` with
+`run-devspace-watchdog-hidden.vbs` as a hidden launcher so the per-minute
+watchdog does not flash a console window. The watchdog then launches PowerShell,
+Node.js, Python, and ngrok in hidden/background mode. `run-hermes-gpt.cmd`
+remains for legacy fallback; current installs start Hermes GPT directly through
+Python when the virtual environment is present.
 
 For a locked-down company machine where you do not have administrator rights,
 use standard-user mode. This mode does not request elevation and registers a
@@ -336,12 +388,12 @@ When `Hermes` is selected, the installer also checks for Hermes Agent. If it is
 missing, it runs the official Windows installer and skips the interactive setup
 wizard; configure Hermes credentials separately after install.
 
-In standard-user mode, the task runs with `LogonType: S4U`, so Windows starts
-the per-minute PowerShell watchdog in a non-interactive session instead of
-opening a visible console window. When ngrok cannot connect, the watchdog leaves
-the existing ngrok process running so the agent can reconnect instead of killing
-and restarting it every minute. The legacy `run-devspace-watchdog-hidden.vbs`
-launcher remains only for manual debugging on older installs.
+In standard-user mode, the task is registered through `schtasks.exe` and runs
+`wscript.exe "%USERPROFILE%\.devspace\run-devspace-watchdog-hidden.vbs" -Once`
+every minute. This avoids visible PowerShell or cmd windows while keeping the
+task usable without administrator rights. When ngrok cannot connect, the
+watchdog leaves the existing ngrok process running so the agent can reconnect
+instead of killing and restarting it every minute.
 
 If you use a non-ngrok tunnel, pass `-SkipNgrok` and manage the tunnel
 separately. A stable public base URL is still required for ChatGPT or another
@@ -351,3 +403,20 @@ Standard-user mode can only manage processes and folders the current Windows
 user can access. It is intended for corporate machines where administrator rights
 are unavailable. Install Git, Node.js, npm, and ngrok through approved company
 channels first, then run the installer with `-UserMode`.
+
+## Troubleshooting
+
+The installer prints `DevSpace watchdog install failed.` followed by a `Fix:`
+line for common setup problems. The most common cases are:
+
+| Error text | What to do |
+| --- | --- |
+| `Node.js LTS is missing`, `npm is missing`, `Git is missing`, `Python is missing`, or `ngrok.exe is missing` | Rerun the same command with `-InstallTools`, or install the missing tool manually and open a new PowerShell window. |
+| `winget.exe is not available` | Install App Installer/winget first, or install the missing tools manually. |
+| `Missing -PublicBaseUrl` | Pass the stable public origin, for example `-PublicBaseUrl "https://example.ngrok-free.dev"`. Do not include `/mcp`. |
+| `ngrok authtoken setup failed` | Check the token at `https://dashboard.ngrok.com/get-started/your-authtoken`, set `$env:NGROK_AUTHTOKEN`, and rerun. |
+| `schtasks.exe failed to register DevSpaceNgrokWatchdogUserPoller` | Open PowerShell as Administrator, delete the stale task with `schtasks.exe /Delete /TN DevSpaceNgrokWatchdogUserPoller /F`, then rerun. |
+| A cmd or PowerShell window flashes every minute | Update to this branch and rerun the installer. The task action should be `wscript.exe "%USERPROFILE%\.devspace\run-devspace-watchdog-hidden.vbs" -Once`. |
+| Public URL returns `502` | Check `http://127.0.0.1:8765/__router/status`, then check `%USERPROFILE%\.devspace\devspace-watchdog.log` and `ngrok-watchdog.err.log`. |
+| ngrok reports `ERR_NGROK_18021` | The ngrok account has too many concurrent endpoints. Stop another endpoint in the ngrok dashboard or use a plan with more endpoint capacity. |
+| Cloud Endpoint URL does not reach this computer | Merge the generated `.rule.yml` into the Cloud Endpoint Traffic Policy, then wait one minute or run `%USERPROFILE%\.devspace\devspace-watchdog.ps1 -Once`. |
