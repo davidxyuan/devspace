@@ -632,10 +632,10 @@ foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevS
     Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-$watchdogPath = Join-Path $InstallDir "devspace-watchdog.ps1"
-$taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogPath`" -Once -ConfigPath `"$watchdogConfigPath`""
+$launcherPath = Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs"
+$taskArgs = "`"$launcherPath`" -Once"
 $action = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
+    -Execute "wscript.exe" `
     -Argument $taskArgs
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
 $pollTrigger = New-ScheduledTaskTrigger `
@@ -654,7 +654,7 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.Hidden = $true
 $useSchtasks = $UserMode -or $NoElevate
 if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR "powershell.exe $taskArgs" /F | Out-Null
+    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR "wscript.exe $taskArgs" /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "schtasks.exe failed to register $taskName."
     }
