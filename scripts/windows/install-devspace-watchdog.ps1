@@ -334,6 +334,12 @@ if (-not $machineSlug) {
     throw "Missing machine name. Pass -MachineName."
 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$configPath = Join-Path $InstallDir "config.json"
+$authPath = Join-Path $InstallDir "auth.json"
+$watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
+$existingConfig = Read-JsonFile $configPath
+$existingAuth = Read-JsonFile $authPath
+$existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
 
 $needsNode = $installDevSpace -or $useRouter
 
@@ -346,6 +352,11 @@ if ($installDevSpace) {
 $hermesAgentPath = Install-HermesAgentIfNeeded
 
 if (-not $SkipNgrok) {
+    if (-not $NgrokPath) {
+        if ($existingWatchdogConfig.ngrokPath -and (Test-Path -LiteralPath ([string]$existingWatchdogConfig.ngrokPath))) {
+            $NgrokPath = [string]$existingWatchdogConfig.ngrokPath
+        }
+    }
     if (-not $NgrokPath) {
         $NgrokPath = Find-CommandPath "ngrok.exe"
         if (-not $NgrokPath) {
@@ -389,13 +400,6 @@ if ($installDevSpace) {
         throw "DevSpace CLI was not found: $CliPath"
     }
 }
-
-$configPath = Join-Path $InstallDir "config.json"
-$authPath = Join-Path $InstallDir "auth.json"
-$watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
-$existingConfig = Read-JsonFile $configPath
-$existingAuth = Read-JsonFile $authPath
-$existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
 
 if (-not $PublicBaseUrl) {
     $PublicBaseUrl = [string]$existingConfig.publicBaseUrl
@@ -629,9 +633,10 @@ foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevS
 }
 
 $watchdogPath = Join-Path $InstallDir "devspace-watchdog.ps1"
+$taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogPath`" -Once -ConfigPath `"$watchdogConfigPath`""
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogPath`" -Once -ConfigPath `"$watchdogConfigPath`""
+    -Argument $taskArgs
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
 $pollTrigger = New-ScheduledTaskTrigger `
     -Once `
@@ -647,20 +652,26 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable
 $settings.Hidden = $true
-$logonType = if ($UserMode -or $NoElevate) { "S4U" } else { "Interactive" }
-$principal = New-ScheduledTaskPrincipal `
-    -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-    -LogonType ($logonType) `
-    -RunLevel ($runLevel)
-
-Register-ScheduledTask `
-    -TaskName $taskName `
-    -Action $action `
-    -Trigger @($logonTrigger, $pollTrigger) `
-    -Settings $settings `
-    -Principal $principal `
-    -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
-    -Force | Out-Null
+$useSchtasks = $UserMode -or $NoElevate
+if ($useSchtasks) {
+    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR "powershell.exe $taskArgs" /F | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "schtasks.exe failed to register $taskName."
+    }
+} else {
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+        -LogonType Interactive `
+        -RunLevel ($runLevel)
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger @($logonTrigger, $pollTrigger) `
+        -Settings $settings `
+        -Principal $principal `
+        -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
+        -Force | Out-Null
+}
 
 if (-not $SkipStart) {
     Start-ScheduledTask -TaskName $taskName
