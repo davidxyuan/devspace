@@ -8,6 +8,8 @@ param(
     [string[]]$RouteAliasMachineNames = @(),
     [string]$CliPath,
     [string[]]$Components = @("DevSpace", "Hermes"),
+    [ValidateSet("Vbs", "PowerShell")]
+    [string]$TaskLauncher = "PowerShell",
     [switch]$NoFullAccess,
     [switch]$InstallTools,
     [switch]$SkipNpmInstall,
@@ -25,6 +27,7 @@ $params = @{
     MachineName = $MachineName
     McpNameSuffix = $McpNameSuffix
     RouteAliasMachineNames = $RouteAliasMachineNames
+    TaskLauncher = $TaskLauncher
 }
 
 if ($NgrokAgentBaseUrl) { $params.NgrokAgentBaseUrl = $NgrokAgentBaseUrl }

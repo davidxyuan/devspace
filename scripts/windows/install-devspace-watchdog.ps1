@@ -23,6 +23,8 @@ param(
     [string]$HermesAgentExe,
     [int]$HermesPort = 4750,
     [int]$RouterPort = 8765,
+    [ValidateSet("Vbs", "PowerShell")]
+    [string]$TaskLauncher = "Vbs",
     [switch]$UsePublishedPackage,
     [switch]$InstallTools,
     [switch]$SkipNpmInstall,
@@ -36,6 +38,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "watchdog-task-action.ps1")
 $script:InstallDocsPath = Join-Path ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))) "docs\windows-watchdog.md"
 
 trap {
@@ -660,11 +663,13 @@ foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevS
     Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-$launcherPath = Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs"
-$taskArgs = "`"$launcherPath`" -Once"
+$taskActionSpec = Get-DevSpaceWatchdogTaskActionSpec `
+    -TaskLauncher $TaskLauncher `
+    -InstallDir $InstallDir
+$taskCommand = $taskActionSpec.TaskCommand
 $action = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument $taskArgs
+    -Execute $taskActionSpec.Execute `
+    -Argument $taskActionSpec.Arguments
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
 $pollTrigger = New-ScheduledTaskTrigger `
     -Once `
@@ -682,7 +687,7 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.Hidden = $true
 $useSchtasks = $UserMode -or $NoElevate
 if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR "wscript.exe $taskArgs" /F | Out-Null
+    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
     }
@@ -717,6 +722,8 @@ Write-Host "DevSpace watchdog installed."
 Write-Host "Mode: $modeName"
 Write-Host "Machine: $machineSlug"
 Write-Host "Scheduled task: $taskName"
+Write-Host "Task launcher: $($taskActionSpec.Launcher)"
+Write-Host "Task action: $taskCommand"
 Write-Host "Config: $configPath"
 Write-Host "ngrok endpoint mode: $NgrokEndpointMode"
 Write-Host "Public router base URL: $publicOrigin"

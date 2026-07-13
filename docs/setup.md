@@ -135,3 +135,6 @@ The same setup rules apply.
 
 For a Windows machine that should recover automatically after reboot or an
 unexpected `devspace serve` exit, see [Windows Watchdog Setup](windows-watchdog.md).
+To choose between the VBS and direct PowerShell Scheduled Task actions, see the
+illustrated [Task Launcher Guide](windows-watchdog-task-launcher.md) or the
+[繁體中文說明](windows-watchdog-task-launcher.zh-TW.md).
