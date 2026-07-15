@@ -404,6 +404,16 @@ function Ensure-Hermes {
     if ($listeners.Count -eq 0) {
         Start-Hermes
         Start-Sleep -Seconds 4
+        return
+    }
+
+    $healthUrl = "http://127.0.0.1:$hermesPort/mcp"
+    if (-not (Test-HttpOk $healthUrl)) {
+        foreach ($ownerPid in $listeners) {
+            Stop-ProcessTree $ownerPid "unhealthy Hermes listener on port $hermesPort"
+        }
+        Start-Sleep -Seconds 2
+        Start-Hermes
     }
 }
 

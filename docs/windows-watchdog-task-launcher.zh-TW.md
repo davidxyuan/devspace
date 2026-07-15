@@ -140,6 +140,8 @@ Get-NetTCPConnection -State Listen |
 - `7676`：DevSpace MCP
 - `8765`：共用 MCP Router
 
+Watchdog 也會檢查 `http://127.0.0.1:4750/mcp`。像 `406 Not Acceptable` 這種快速的 MCP 回應代表服務正常；若請求逾時，Watchdog 會停止卡死的 Hermes 程序並重新啟動。
+
 ## 切換既有安裝
 
 使用原本相同的安裝參數重新執行 installer，只要把 `-TaskLauncher` 改成需要的值。安裝程式會用指定啟動器重建 Watchdog 排程。

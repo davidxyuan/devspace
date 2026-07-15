@@ -140,6 +140,8 @@ Typical ports are:
 - `7676` — DevSpace MCP
 - `8765` — shared MCP router
 
+The watchdog also probes Hermes at `http://127.0.0.1:4750/mcp`. A fast MCP response such as `406 Not Acceptable` counts as healthy; a timeout causes the stale Hermes listener to be stopped and restarted.
+
 ## Switch an existing installation
 
 Rerun the same installer command with the desired `-TaskLauncher` value. The installer recreates the watchdog task using the selected action.

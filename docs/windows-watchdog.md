@@ -4,10 +4,10 @@ DevSpace includes Windows scripts that can deploy a hidden Scheduled Task
 watchdog. The watchdog checks every minute that:
 
 - `devspace serve` is listening on the configured local port
-- optional `hermes-gpt` is listening on the configured local port
+- optional `hermes-gpt` is listening and responds on its `/mcp` endpoint
 - optional MCP router is listening when DevSpace and Hermes share one public URL
 - the configured ngrok tunnel points at that local port
-- duplicate or unhealthy DevSpace processes are cleaned up
+- duplicate, stopped, or unresponsive DevSpace and Hermes processes are cleaned up and restarted
 
 The Scheduled Task launcher is selectable. See the illustrated
 [Task Launcher Guide](windows-watchdog-task-launcher.md) or the
