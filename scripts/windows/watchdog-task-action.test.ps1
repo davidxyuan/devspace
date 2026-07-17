@@ -42,4 +42,15 @@ if (-not $invalidRejected) {
     throw "Invalid TaskLauncher value was not rejected."
 }
 
+$installerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-watchdog.ps1") -Raw
+if ($installerSource -notmatch '(?s)schtasks\.exe.+?/RU\s+\$taskUser\s+/NP\s+/RL\s+\$runLevel') {
+    throw "User-mode task registration must use a noninteractive, passwordless principal."
+}
+if ($installerSource -match '-LogonType\s+Interactive') {
+    throw "Elevated task registration must not use an interactive principal."
+}
+if ($installerSource -notmatch '-LogonType\s+S4U') {
+    throw "Elevated task registration must use an S4U principal."
+}
+
 Write-Host "watchdog-task-action tests passed."

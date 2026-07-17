@@ -432,7 +432,7 @@ line for common setup problems. The most common cases are:
 | `ngrok authtoken setup failed` | Check the token at `https://dashboard.ngrok.com/get-started/your-authtoken`, set `$env:NGROK_AUTHTOKEN`, and rerun. |
 | `does not support the required --url and --binding flags` or `unknown flag: --url` | The selected ngrok binary is outdated. Rerun with `-InstallTools` so the installer downloads the official latest stable agent, or pass `-NgrokPath` pointing to a current ngrok v3 binary. |
 | `schtasks.exe failed to register DevSpaceNgrokWatchdogUserPoller` | Open PowerShell as Administrator, delete the stale task with `schtasks.exe /Delete /TN DevSpaceNgrokWatchdogUserPoller /F`, then rerun. |
-| A cmd or PowerShell window flashes every minute | Use `-TaskLauncher Vbs` when Windows Script Host is permitted. |
+| A cmd or PowerShell window flashes every minute | Update the checkout and rerun the installer with `-TaskLauncher PowerShell`; then confirm the task principal reports `LogonType: S4U`. An older `InteractiveToken` task must be recreated. |
 | Kaspersky reports that VBScript attempted to start PowerShell, or VBS returns `Permission denied` | Rerun the installer with `-TaskLauncher PowerShell`. |
 | Public URL returns `502` | Check `http://127.0.0.1:8765/__router/status`, then check `%USERPROFILE%\.devspace\devspace-watchdog.log` and `ngrok-watchdog.err.log`. |
 | ngrok reports `ERR_NGROK_18021` | The ngrok account has too many concurrent endpoints. Stop another endpoint in the ngrok dashboard or use a plan with more endpoint capacity. |

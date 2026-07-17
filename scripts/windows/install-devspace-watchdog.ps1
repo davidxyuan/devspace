@@ -663,6 +663,7 @@ $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
 $runLevel = if ($UserMode -or $NoElevate) { "Limited" } else { "Highest" }
 $modeName = if ($UserMode -or $NoElevate) { "standard user" } else { "administrator" }
+$taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
     Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -692,14 +693,14 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.Hidden = $true
 $useSchtasks = $UserMode -or $NoElevate
 if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
+    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /RU $taskUser /NP /RL $runLevel /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
     }
 } else {
     $principal = New-ScheduledTaskPrincipal `
-        -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-        -LogonType Interactive `
+        -UserId $taskUser `
+        -LogonType S4U `
         -RunLevel ($runLevel)
     try {
         Register-ScheduledTask `
@@ -713,6 +714,11 @@ if ($useSchtasks) {
     } catch {
         Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode to install a current-user task."
     }
+}
+
+$registeredTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+if ([string]$registeredTask.Principal.LogonType -ne "S4U") {
+    Fail "$taskName was registered with LogonType $($registeredTask.Principal.LogonType), not S4U." "Delete the task and rerun the installer so the watchdog cannot open a window in the interactive desktop."
 }
 
 if (-not $SkipStart) {
