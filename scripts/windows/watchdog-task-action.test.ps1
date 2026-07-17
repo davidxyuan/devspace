@@ -61,5 +61,8 @@ if ($installerSource -match '-LogonType\s+Interactive') {
 if ($installerSource -notmatch '-LogonType\s+S4U') {
     throw "Elevated task registration must use an S4U principal."
 }
+if ($installerSource -match 'use -UserMode to install a current-user task|rerun with -UserMode for a current-user install') {
+    throw "PowerShell elevation errors must not suggest -UserMode as a way to avoid S4U registration."
+}
 
 Write-Host "watchdog-task-action tests passed."

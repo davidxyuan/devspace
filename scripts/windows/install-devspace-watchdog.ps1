@@ -106,7 +106,7 @@ function Restart-ElevatedIfNeeded {
     try {
         $process = Start-Process -FilePath "powershell.exe" -ArgumentList ($args -join " ") -Verb RunAs -Wait -PassThru
     } catch {
-        Fail "Administrator permission was not granted." "Approve the UAC prompt, or rerun with -UserMode for a current-user install."
+        Fail "Administrator permission was not granted." "Approve the UAC prompt so PowerShell can register an S4U task, or use -TaskLauncher Vbs only when Windows Script Host is permitted."
     }
     exit $process.ExitCode
 }
@@ -725,7 +725,7 @@ if ($useSchtasks) {
             -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
             -Force | Out-Null
     } catch {
-        Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode to install a current-user task."
+        Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Run the installer from an elevated PowerShell so it can register an S4U task."
     }
 }
 
