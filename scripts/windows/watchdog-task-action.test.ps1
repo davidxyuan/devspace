@@ -43,8 +43,17 @@ if (-not $invalidRejected) {
 }
 
 $installerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-watchdog.ps1") -Raw
-if ($installerSource -notmatch '(?s)schtasks\.exe.+?/RU\s+\$taskUser\s+/NP\s+/RL\s+\$runLevel') {
-    throw "User-mode task registration must use a noninteractive, passwordless principal."
+if ($installerSource -notmatch '(?s)if \(\$NoElevate\).+?\$TaskLauncher -eq "PowerShell".+?requires administrator permission') {
+    throw "Non-elevated PowerShell task registration must fail before installation."
+}
+if ($installerSource -notmatch '\$UserMode -and \$TaskLauncher -eq "Vbs"') {
+    throw "Only the VBS user-mode launcher may skip elevation."
+}
+if ($installerSource -notmatch '\$useSchtasks = \(\$UserMode -or \$NoElevate\) -and -not \(Test-IsElevated\)') {
+    throw "Elevated user-mode installs must use the S4U registration path."
+}
+if ($installerSource -notmatch '(?s)Stop-ScheduledTask -TaskName \$oldTaskName.+?if \(\$oldTaskName -ne \$taskName\).+?Unregister-ScheduledTask') {
+    throw "A failed replacement must leave the current watchdog task registered."
 }
 if ($installerSource -match '-LogonType\s+Interactive') {
     throw "Elevated task registration must not use an interactive principal."

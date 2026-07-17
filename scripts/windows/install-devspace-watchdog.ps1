@@ -66,7 +66,18 @@ function Test-IsElevated {
 }
 
 function Restart-ElevatedIfNeeded {
-    if ((Test-IsElevated) -or $UserMode -or $NoElevate) {
+    if (Test-IsElevated) {
+        return
+    }
+
+    if ($NoElevate) {
+        if ($TaskLauncher -eq "PowerShell") {
+            Fail "The PowerShell watchdog launcher requires administrator permission to register a noninteractive task." "Rerun without -NoElevate and approve UAC, or use -TaskLauncher Vbs when Windows Script Host is permitted."
+        }
+        return
+    }
+
+    if ($UserMode -and $TaskLauncher -eq "Vbs") {
         return
     }
 
@@ -666,7 +677,9 @@ $modeName = if ($UserMode -or $NoElevate) { "standard user" } else { "administra
 $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
     Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    if ($oldTaskName -ne $taskName) {
+        Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
 }
 
 $taskActionSpec = Get-DevSpaceWatchdogTaskActionSpec `
@@ -691,9 +704,9 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable
 $settings.Hidden = $true
-$useSchtasks = $UserMode -or $NoElevate
+$useSchtasks = ($UserMode -or $NoElevate) -and -not (Test-IsElevated)
 if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /RU $taskUser /NP /RL $runLevel /F | Out-Null
+    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
     }
@@ -716,9 +729,11 @@ if ($useSchtasks) {
     }
 }
 
-$registeredTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-if ([string]$registeredTask.Principal.LogonType -ne "S4U") {
-    Fail "$taskName was registered with LogonType $($registeredTask.Principal.LogonType), not S4U." "Delete the task and rerun the installer so the watchdog cannot open a window in the interactive desktop."
+if (-not $useSchtasks) {
+    $registeredTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    if ([string]$registeredTask.Principal.LogonType -ne "S4U") {
+        Fail "$taskName was registered with LogonType $($registeredTask.Principal.LogonType), not S4U." "Delete the task and rerun the installer so the watchdog cannot open a window in the interactive desktop."
+    }
 }
 
 if (-not $SkipStart) {
