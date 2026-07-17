@@ -41,10 +41,16 @@ inside ChatGPT.
 
 ## New computer quick install
 
+For a Traditional Chinese interactive command generator, open
+[`windows-new-pc-install.zh-TW.html`](windows-new-pc-install.zh-TW.html) in a
+browser. It generates the clone, install, verification, Cloud Endpoint policy,
+and ChatGPT MCP values from the machine name and public URL you enter.
+
 If Git is not installed yet, download this repository as a ZIP from GitHub,
 extract it, open PowerShell in the extracted folder, and run one of these
-commands. `-InstallTools` installs Git, Node.js/npm, Python, and ngrok with
-winget when they are missing.
+commands. `-InstallTools` uses winget for missing Git, Node.js/npm, and Python.
+ngrok is downloaded separately from the official latest-stable Windows x64
+distribution and checked for the required `--url` and `--binding` flags.
 
 For a direct ngrok Agent Endpoint:
 

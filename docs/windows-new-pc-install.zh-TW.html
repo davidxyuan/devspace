@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>全新 Windows 安裝 devspace_chatgpt + hermes_chatgpt</title>
+  <style>
+    :root{--bg:#0b1020;--panel:#151d31;--panel2:#1c2842;--line:#31405f;--text:#eef4ff;--muted:#aab7d2;--cyan:#7dd3fc;--mint:#a7f3d0;--warn:#fde68a;--bad:#fca5a5;--ok:#86efac;--code:#080d18}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:"Segoe UI","Microsoft JhengHei",system-ui,sans-serif;color:var(--text);line-height:1.65;background:radial-gradient(circle at 10% 0%,rgba(56,189,248,.13),transparent 32rem),radial-gradient(circle at 100% 18%,rgba(52,211,153,.1),transparent 28rem),var(--bg)}
+    .wrap{width:min(1120px,calc(100% - 28px));margin:auto}header{padding:48px 0 25px}h1{font-size:clamp(30px,5vw,52px);line-height:1.12;margin:14px 0 10px}h2{margin:0;font-size:25px}h3{margin:18px 0 8px}.lead{max-width:900px;color:var(--muted);font-size:18px}.badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 11px;color:var(--mint);background:rgba(21,29,49,.8)}
+    nav{position:sticky;top:0;z-index:10;background:rgba(11,16,32,.9);backdrop-filter:blur(12px);border-block:1px solid var(--line)}nav .wrap{display:flex;gap:8px;overflow:auto;padding:9px 0}nav a{white-space:nowrap;color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:8px}nav a:hover{background:var(--panel);color:var(--text)}
+    main{padding:22px 0 60px}.card{margin:18px 0;padding:21px;border:1px solid var(--line);border-radius:17px;background:linear-gradient(180deg,rgba(28,40,66,.96),rgba(21,29,49,.96));box-shadow:0 16px 45px rgba(0,0,0,.25);scroll-margin-top:70px}.head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.n{width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:linear-gradient(135deg,var(--cyan),var(--mint));color:#07111d;font-weight:900}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.summary{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}.mini{padding:16px;border:1px solid var(--line);border-radius:13px;background:rgba(8,13,24,.45)}
+    label{display:block;font-weight:800;margin-bottom:5px}.hint{display:block;color:var(--muted);font-size:13px;margin-top:5px;font-weight:400}input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;color:var(--text);background:var(--code);outline:none;font:inherit}input:focus,select:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(125,211,252,.12)}.check{display:flex;gap:10px;margin-top:15px;padding:12px;border:1px solid var(--line);border-radius:11px;background:rgba(8,13,24,.5)}.check input{width:auto;margin-top:5px}
+    .notice{margin:13px 0;padding:11px 13px;border-left:4px solid var(--warn);border-radius:8px;background:rgba(253,230,138,.08);color:#fff5c8}.notice.ok{border-color:var(--ok);background:rgba(134,239,172,.08);color:#dcffe8}.notice.bad{border-color:var(--bad);background:rgba(252,165,165,.08);color:#ffe4e4}.chips{display:flex;flex-wrap:wrap;gap:7px}.chip{border:1px solid var(--line);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:13px}
+    .code{position:relative;margin:11px 0}pre{margin:0;padding:17px 15px;border:1px solid var(--line);border-radius:11px;background:var(--code);color:#dce9ff;overflow:auto;white-space:pre-wrap;word-break:break-word;font:13px/1.6 Consolas,"Cascadia Code",monospace}.copy{position:absolute;top:8px;right:8px;border:1px solid var(--line);border-radius:7px;background:#243250;color:var(--text);padding:5px 9px;cursor:pointer}.copy:hover{border-color:var(--cyan)}button.primary{border:0;border-radius:10px;padding:10px 14px;font-weight:900;cursor:pointer;background:linear-gradient(135deg,var(--cyan),var(--mint));color:#07111d}.actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}
+    table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:9px;border-bottom:1px solid var(--line)}th{color:var(--mint)}details{margin:9px 0;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:rgba(8,13,24,.42)}summary{cursor:pointer;font-weight:800}.outputs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.out{padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(8,13,24,.5)}.out small{color:var(--muted)}.out code{display:block;color:var(--mint);word-break:break-all;margin-top:4px}footer{padding:0 0 38px;color:var(--muted);font-size:13px}
+    @media(max-width:780px){.grid,.summary,.outputs{grid-template-columns:1fr}.card{padding:16px}.wrap{width:min(100% - 18px,1120px)}}@media print{nav,.copy,.actions{display:none!important}body,.card,.mini,.out,details,pre{background:#fff;color:#111;box-shadow:none}.lead,.hint,footer,small{color:#444!important}}
+  </style>
+</head>
+<body>
+<header><div class="wrap">
+  <span class="badge">Windows 11 · 互動式安裝手冊 · ngrok latest 修正版</span>
+  <h1>全新電腦安裝<br>devspace_chatgpt + hermes_chatgpt</h1>
+  <p class="lead">填入電腦代號、ngrok URL 與權限後，本頁會即時產生下載、安裝、驗證及 ChatGPT MCP 設定指令。新版安裝器不再使用可能過舊的 winget ngrok，而是直接取得官方 latest stable 版本。</p>
+  <div class="summary">
+    <div class="mini"><h3>完成後會得到</h3><p><b>devspace_chatgpt_電腦代號</b>：遠端讀取、搜尋、修改及執行專案。</p><p><b>hermes_chatgpt_電腦代號</b>：呼叫 Hermes Owner／工作區工具。</p><div class="chips"><span class="chip">DevSpace 7676</span><span class="chip">Hermes 4750</span><span class="chip">Router 8765</span><span class="chip">ngrok 4040</span><span class="chip">官方 latest stable ngrok</span></div></div>
+    <div class="mini"><h3>先準備</h3><ol><li>不重複的電腦代號</li><li>ngrok 公開 Base URL</li><li>新的 ngrok Authtoken</li></ol><p class="hint">Token 只在本機瀏覽器產生指令，不會由此 HTML 上傳。</p></div>
+  </div>
+</div></header>
+<nav><div class="wrap"><a href="#config">1 設定</a><a href="#clone">2 下載</a><a href="#install">3 安裝</a><a href="#hermes">4 Hermes</a><a href="#cloud">5 Cloud Policy</a><a href="#verify">6 驗證</a><a href="#chatgpt">7 ChatGPT</a><a href="#trouble">故障排除</a></div></nav>
+<main class="wrap">
+<section id="config" class="card"><div class="head"><span class="n">1</span><h2>填寫設定</h2></div>
+  <div class="grid">
+    <div><label>電腦代號</label><input id="machine" value="newpc"><span class="hint">只用英文、數字、減號；會轉成小寫。</span></div>
+    <div><label>DevSpace 專案目錄</label><input id="dir" value="D:\devspace"><span class="hint">沒有 D 槽時可用 C:\devspace。</span></div>
+    <div><label>ngrok 公開 Base URL</label><input id="url" placeholder="https://你的名稱.ngrok-free.dev"><span class="hint">不要加 /mcp 或電腦路徑。</span></div>
+    <div><label>ngrok Authtoken</label><input id="token" type="password" placeholder="貼上新的 Token"></div>
+    <div><label>ngrok 模式</label><select id="mode"><option value="CloudEndpoint" selected>Cloud Endpoint：多台電腦共用公開網址</option><option value="AgentEndpoint">Agent Endpoint：本機獨占公開網址</option></select></div>
+    <div><label>Watchdog 啟動器</label><select id="launcher"><option value="PowerShell" selected>PowerShell：公司防毒阻擋 VBS 時</option><option value="Vbs">VBS：避免視窗閃爍</option></select></div>
+    <div><label>安裝權限</label><select id="access"><option value="user" selected>UserMode：不需管理員</option><option value="admin">Administrator：最高權限排程</option></select></div>
+    <div><label>限制存取目錄</label><input id="roots" value="D:\"><span class="hint">取消 FullAccess 才使用；多路徑以分號分隔。</span></div>
+  </div>
+  <div class="check"><input id="full" type="checkbox" checked><div><label for="full">整台電腦 FullAccess</label><span class="hint">會開放目前 Windows 帳號能看見的磁碟，並啟用 Hermes 寫入與命令工具。</span></div></div>
+  <div class="notice bad">電腦代號不要和現有的 tyo、oe、home 或其他已上線機器重複。ngrok Token 不要貼到聊天、截圖或公開紀錄中。</div>
+  <div class="actions"><button class="primary" id="regen">更新全部指令</button><button class="primary" id="showToken">顯示／隱藏 Token</button><button class="primary" onclick="window.print()">列印／另存 PDF</button></div>
+</section>
+
+<section id="clone" class="card"><div class="head"><span class="n">2</span><h2>下載或更新 DevSpace repo</h2></div>
+  <p>在 Windows PowerShell 執行。若 Git 不存在會先透過 winget 安裝，然後抓取 <code>codex/chatgpt-mcp-router-fix</code> 分支。</p>
+  <div class="code"><button class="copy" data-copy="cloneCode">複製</button><pre id="cloneCode"></pre></div>
+</section>
+
+<section id="install" class="card"><div class="head"><span class="n">3</span><h2>一鍵安裝 DevSpace + Hermes + Watchdog</h2></div>
+  <p><code>-InstallTools</code> 會用 winget 補齊 Git、Node.js/npm、Python；ngrok 則直接從官方 latest-stable 下載位置取得 Windows x64 版本。</p>
+  <div class="notice ok">安裝器會把 ngrok 放在 <code>%USERPROFILE%\.devspace\tools\ngrok\&lt;版本&gt;\ngrok.exe</code>，並在建立 Watchdog 前確認它支援 <code>--url</code> 和 <code>--binding</code>。</div>
+  <div class="code"><button class="copy" data-copy="installCode">複製</button><pre id="installCode"></pre></div>
+  <p class="hint">安裝失敗可修正原因後重貼同一段。安裝器可重複執行。</p>
+</section>
+
+<section id="hermes" class="card"><div class="head"><span class="n">4</span><h2>設定 Hermes 模型與登入</h2></div>
+  <p>Hermes Agent 安裝時會略過互動精靈，因此第一次要執行：</p>
+  <div class="code"><button class="copy" data-copy="hermesCode">複製</button><pre id="hermesCode">hermes setup
+hermes status
+hermes doctor
+hermes -z "請只回答：Hermes OK"</pre></div>
+  <div class="notice">找不到 <code>hermes</code> 時，關閉並重開 PowerShell，或執行 <code>%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe setup</code>。</div>
+</section>
+
+<section id="cloud" class="card"><div class="head"><span class="n">5</span><h2>Cloud Endpoint Traffic Policy</h2></div><div id="cloudBody"></div></section>
+
+<section id="verify" class="card"><div class="head"><span class="n">6</span><h2>啟動與完整驗證</h2></div>
+  <div class="code"><button class="copy" data-copy="verifyCode">複製</button><pre id="verifyCode"></pre></div>
+  <table><thead><tr><th>項目</th><th>正常結果</th></tr></thead><tbody>
+    <tr><td>DevSpace 7676</td><td>HTTP 200</td></tr><tr><td>Hermes 4750</td><td>無 MCP headers 時可能回 406，代表已到達服務</td></tr><tr><td>Router 8765</td><td>回傳 JSON 狀態</td></tr><tr><td>ngrok 版本</td><td>顯示 ngrok 3.x，help 可找到 --url 與 --binding</td></tr><tr><td>ngrok 4040</td><td>回傳 tunnel 資料</td></tr>
+  </tbody></table>
+</section>
+
+<section id="chatgpt" class="card"><div class="head"><span class="n">7</span><h2>加入 ChatGPT 自訂 MCP</h2></div>
+  <ol><li>開啟 ChatGPT 應用程式／連接器管理頁。</li><li>新增 DevSpace 名稱與 URL。</li><li>新增 Hermes 名稱與 URL。</li><li>完成 DevSpace OAuth 擁有者授權。</li></ol>
+  <div class="outputs"><div class="out"><small>DevSpace 名稱</small><code id="devName"></code></div><div class="out"><small>DevSpace URL</small><code id="devUrl"></code></div><div class="out"><small>Hermes 名稱</small><code id="hermesName"></code></div><div class="out"><small>Hermes URL</small><code id="hermesUrl"></code></div></div>
+</section>
+
+<section id="trouble" class="card"><div class="head"><span class="n">!</span><h2>故障排除</h2></div>
+  <details open><summary>unknown flag: --url</summary><p>Watchdog 仍使用舊版 ngrok。先更新 repo，再重新執行第 3 步完整安裝；必須保留 <code>-InstallTools</code>，新版安裝器才會下載官方 latest stable 並更新設定路徑。</p><div class="code"><button class="copy" data-copy="repairCode">複製</button><pre id="repairCode"></pre></div><p class="hint">不要只依賴 <code>winget upgrade ngrok</code>，winget 來源可能仍停留在舊版。</p></details>
+  <details><summary>127.0.0.1:4040 無法連線</summary><p>代表 ngrok 沒有成功啟動。先跑一次 Watchdog，再查看 ngrok 錯誤日誌。</p><div class="code"><button class="copy" data-copy="logsCode">複製</button><pre id="logsCode">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.devspace\devspace-watchdog.ps1" -Once -ConfigPath "$env:USERPROFILE\.devspace\devspace-watchdog.config.json"
+Get-Content "$env:USERPROFILE\.devspace\devspace-watchdog.log" -Tail 100
+Get-Content "$env:USERPROFILE\.devspace\ngrok-watchdog.err.log" -Tail 100</pre></div></details>
+  <details><summary>公司憑證／TLS 掃描阻擋 ngrok</summary><p>請 IT 信任 <code>ngrok.exe</code>，或排除 <code>connect.ngrok-agent.com:443</code> 的加密流量掃描。</p></details>
+  <details><summary>ERR_NGROK_18021</summary><p>ngrok 帳號同時 endpoint 過多。停止不用的 endpoint 或使用可容納更多 endpoint 的方案。</p></details>
+  <details><summary>Cloud Endpoint 無法路由</summary><p>把新機器的 <code>.rule.yml</code> 合併到既有 Traffic Policy 的同一個 <code>on_http_request:</code> 清單，不要建立第二個頂層 key。</p></details>
+</section>
+</main>
+<footer class="wrap">檔案位置：<code>docs/windows-new-pc-install.zh-TW.html</code>。此頁隨 DevSpace repo 一起版本控管。</footer>
+<script>
+const $=id=>document.getElementById(id);
+const ids=['machine','dir','url','token','mode','launcher','access','roots','full'];
+const slug=s=>(s||'newpc').toLowerCase().trim().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'')||'newpc';
+const ps=s=>String(s||'').replace(/`/g,'``').replace(/"/g,'`"');
+const origin=s=>(s||'https://YOUR-NGROK-URL.ngrok-free.dev').trim().replace(/\/+$/,'');
+function cfg(){return{m:slug($('machine').value),d:$('dir').value.trim()||'D:\\devspace',u:origin($('url').value),t:$('token').value.trim()||'PASTE-YOUR-NEW-NGROK-TOKEN',mode:$('mode').value,launch:$('launcher').value,user:$('access').value==='user',roots:$('roots').value.trim()||'D:\\',full:$('full').checked}}
+function render(){const c=cfg();$('machine').value=c.m;let parent=c.d.replace(/[\\\/][^\\\/]+$/,'')||'C:\\';if(/^[A-Za-z]:$/.test(parent))parent+='\\';
+const clone=`$ErrorActionPreference = "Stop"
+$repo = "https://github.com/davidxyuan/devspace.git"
+$branch = "codex/chatgpt-mcp-router-fix"
+$dest = "${ps(c.d)}"
+
+if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { throw "找不到 winget，請先安裝 Microsoft App Installer。" }
+if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
+  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+  $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+}
+if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw "Git 安裝後尚未進入 PATH，請重開 PowerShell 再執行。" }
+if (Test-Path (Join-Path $dest ".git")) {
+  Set-Location $dest
+  git switch $branch
+  git pull --ff-only
+} elseif (Test-Path $dest) {
+  throw "$dest 已存在但不是 Git repo。"
+} else {
+  New-Item -ItemType Directory -Force -Path "${ps(parent)}" | Out-Null
+  git clone --branch $branch --single-branch $repo $dest
+  Set-Location $dest
+}
+git status --short
+git branch --show-current`;
+let a=[];if(c.user)a.push('  -UserMode `');a.push(`  -TaskLauncher ${c.launch} \``);a.push('  -Components DevSpace,Hermes `');a.push(`  -PublicBaseUrl "${ps(c.u)}" \``);a.push(`  -NgrokEndpointMode ${c.mode} \``);if(c.mode==='CloudEndpoint')a.push(`  -NgrokAgentBaseUrl "https://${c.m}-devspace.internal" \``);a.push(`  -MachineName "${c.m}" \``);a.push(`  -McpNameSuffix "${c.m}" \``);a.push(c.full?'  -FullAccess `':`  -AllowedRoots "${ps(c.roots)}" \``);a.push('  -InstallTools');
+const install=`Set-Location "${ps(c.d)}"
+$env:NGROK_AUTHTOKEN = "${ps(c.t)}"
+
+powershell.exe -ExecutionPolicy Bypass -File .\\scripts\\windows\\install-devspace-watchdog.ps1 \`
+${a.join('\n')}`;
+const verify=`powershell.exe -NoProfile -ExecutionPolicy Bypass \`
+  -File "$env:USERPROFILE\\.devspace\\devspace-watchdog.ps1" \`
+  -Once \`
+  -ConfigPath "$env:USERPROFILE\\.devspace\\devspace-watchdog.config.json"
+
+Invoke-WebRequest http://127.0.0.1:7676/healthz
+try { Invoke-WebRequest http://127.0.0.1:4750/mcp } catch { "Hermes HTTP status: " + $_.Exception.Response.StatusCode.value__ }
+Invoke-RestMethod http://127.0.0.1:8765/__router/status
+
+$config = Get-Content "$env:USERPROFILE\\.devspace\\devspace-watchdog.config.json" | ConvertFrom-Json
+$config.ngrokPath
+& $config.ngrokPath version
+& $config.ngrokPath http --help | Select-String -Pattern "--url|--binding"
+Invoke-RestMethod http://127.0.0.1:4040/api/tunnels
+Get-ScheduledTask | Where-Object TaskName -Like "DevSpaceNgrokWatchdog*"`;
+const repair=`Set-Location "${ps(c.d)}"
+git switch codex/chatgpt-mcp-router-fix
+git pull --ff-only
+
+# 回到本頁第 3 步，重新執行完整安裝指令，並保留 -InstallTools。`;
+$('cloneCode').textContent=clone;$('installCode').textContent=install;$('verifyCode').textContent=verify;$('repairCode').textContent=repair;
+const dev=`${c.u}/${c.m}/devspace_chatgpt/mcp`,her=`${c.u}/${c.m}/hermes_chatgpt/mcp`;$('devName').textContent=`devspace_chatgpt_${c.m}`;$('hermesName').textContent=`hermes_chatgpt_${c.m}`;$('devUrl').textContent=dev;$('hermesUrl').textContent=her;
+$('cloudBody').innerHTML=c.mode==='CloudEndpoint'?`<p>安裝後讀取以下規則，加入既有 Cloud Endpoint Traffic Policy：</p><div class="code"><button class="copy" data-copy="policyCode">複製</button><pre id="policyCode">Get-Content "$env:USERPROFILE\\.devspace\\ngrok-cloud-endpoint-${c.m}.rule.yml"</pre></div><div class="notice">合併到同一個 <code>on_http_request:</code> 清單。</div>`:`<p>Agent Endpoint 模式不需要合併 Cloud Traffic Policy；請確認公開 URL 只由此電腦使用。</p>`;bind();}
+async function cp(id,b){const e=$(id),text=e?e.textContent:'';try{await navigator.clipboard.writeText(text);const old=b.textContent;b.textContent='已複製';setTimeout(()=>b.textContent=old,1000)}catch{const r=document.createRange();r.selectNodeContents(e);const s=getSelection();s.removeAllRanges();s.addRange(r);document.execCommand('copy');s.removeAllRanges()}}
+function bind(){document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>cp(b.dataset.copy,b))}
+$('regen').onclick=render;$('showToken').onclick=()=>{$('token').type=$('token').type==='password'?'text':'password'};ids.forEach(id=>$(id).addEventListener(id==='full'||id==='mode'||id==='launcher'||id==='access'?'change':'input',render));render();
+</script>
+</body>
+</html>
