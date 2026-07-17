@@ -26,7 +26,7 @@
     "dev": "node scripts/dev-server.mjs",
     "start": "node dist/cli.js serve",
     "test": "tsx src/config.test.ts && tsx src/oauth-provider.test.ts && tsx src/server-auth-metadata.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/review-checkpoints.test.ts",
-    "test:windows-watchdog": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/watchdog-task-action.test.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/watchdog-hermes-health.test.ps1",
+    "test:windows-watchdog": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/watchdog-task-action.test.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/watchdog-hermes-health.test.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/ngrok-install.test.ps1",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [],

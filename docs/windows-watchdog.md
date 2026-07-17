@@ -372,12 +372,13 @@ Install only one MCP by changing `-Components`:
 -Components Hermes
 ```
 
-`-InstallTools` uses `winget` to install missing prerequisites:
-
-- Git for Windows
-- Node.js LTS and npm
-- Python 3, when `Hermes` is selected
-- ngrok
+`-InstallTools` uses `winget` to install Git, Node.js/npm, and Python when they
+are missing. ngrok is handled separately: the installer downloads the official
+latest stable Windows x64 agent directly from ngrok's distribution URL, stores
+it under `%USERPROFILE%\.devspace\tools\ngrok\<version>\ngrok.exe`, and verifies
+that the binary supports the required `--url` and `--binding` flags before the
+watchdog configuration is written. This avoids stale package-manager builds that
+can fail with `unknown flag: --url`.
 
 The installer builds this checkout by default. In administrator mode it registers
 `DevSpaceNgrokWatchdogPoller` with `RunLevel: Highest`; in standard-user mode it
@@ -419,10 +420,11 @@ line for common setup problems. The most common cases are:
 
 | Error text | What to do |
 | --- | --- |
-| `Node.js LTS is missing`, `npm is missing`, `Git is missing`, `Python is missing`, or `ngrok.exe is missing` | Rerun the same command with `-InstallTools`, or install the missing tool manually and open a new PowerShell window. |
+| `Node.js LTS is missing`, `npm is missing`, `Git is missing`, `Python is missing`, or `ngrok.exe is missing` | Rerun the same command with `-InstallTools`. Git, Node.js/npm, and Python use winget; ngrok is downloaded from the official latest-stable distribution. |
 | `winget.exe is not available` | Install App Installer/winget first, or install the missing tools manually. |
 | `Missing -PublicBaseUrl` | Pass the stable public origin, for example `-PublicBaseUrl "https://example.ngrok-free.dev"`. Do not include `/mcp`. |
 | `ngrok authtoken setup failed` | Check the token at `https://dashboard.ngrok.com/get-started/your-authtoken`, set `$env:NGROK_AUTHTOKEN`, and rerun. |
+| `does not support the required --url and --binding flags` or `unknown flag: --url` | The selected ngrok binary is outdated. Rerun with `-InstallTools` so the installer downloads the official latest stable agent, or pass `-NgrokPath` pointing to a current ngrok v3 binary. |
 | `schtasks.exe failed to register DevSpaceNgrokWatchdogUserPoller` | Open PowerShell as Administrator, delete the stale task with `schtasks.exe /Delete /TN DevSpaceNgrokWatchdogUserPoller /F`, then rerun. |
 | A cmd or PowerShell window flashes every minute | Use `-TaskLauncher Vbs` when Windows Script Host is permitted. |
 | Kaspersky reports that VBScript attempted to start PowerShell, or VBS returns `Permission denied` | Rerun the installer with `-TaskLauncher PowerShell`. |

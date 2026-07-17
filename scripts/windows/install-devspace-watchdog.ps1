@@ -39,6 +39,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "watchdog-task-action.ps1")
+. (Join-Path $PSScriptRoot "ngrok-install.ps1")
 $script:InstallDocsPath = Join-Path ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))) "docs\windows-watchdog.md"
 
 trap {
@@ -121,8 +122,9 @@ function Install-WingetPackage([string]$packageId, [string]$displayName) {
     }
 
     Write-Host "Installing $displayName with winget..."
-    & $winget install --id $packageId --exact --source winget --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
+    & $winget install --id $packageId --exact --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Host
+    $wingetExitCode = $LASTEXITCODE
+    if ($wingetExitCode -ne 0) {
         Fail "winget failed to install $displayName ($packageId)." "Open PowerShell as Administrator and rerun with -InstallTools, or install $displayName manually and rerun this installer."
     }
     Refresh-Path
@@ -378,6 +380,13 @@ if ($installDevSpace) {
 $hermesAgentPath = Install-HermesAgentIfNeeded
 
 if (-not $SkipNgrok) {
+    if (-not $NgrokPath -and $InstallTools) {
+        try {
+            $NgrokPath = Install-LatestNgrokAgent -InstallRoot $InstallDir
+        } catch {
+            Fail "The latest stable ngrok agent could not be installed: $($_.Exception.Message)" "Check HTTPS access to bin.equinox.io, then rerun the installer. You can also download the official latest ngrok v3 binary manually and pass -NgrokPath."
+        }
+    }
     if (-not $NgrokPath) {
         if ($existingWatchdogConfig.ngrokPath -and (Test-Path -LiteralPath ([string]$existingWatchdogConfig.ngrokPath))) {
             $NgrokPath = [string]$existingWatchdogConfig.ngrokPath
@@ -385,16 +394,12 @@ if (-not $SkipNgrok) {
     }
     if (-not $NgrokPath) {
         $NgrokPath = Find-CommandPath "ngrok.exe"
-        if (-not $NgrokPath) {
-            if (-not $InstallTools) {
-                Fail "ngrok.exe is missing." "Rerun with -InstallTools so winget installs ngrok, or pass -NgrokPath with the full ngrok.exe path."
-            }
-            Install-WingetPackage "Ngrok.Ngrok" "ngrok"
-            $NgrokPath = Find-CommandPath "ngrok.exe"
-        }
     }
     if (-not $NgrokPath -or -not (Test-Path -LiteralPath $NgrokPath)) {
-        Fail "ngrok.exe was not found." "Pass -NgrokPath with the full ngrok.exe path, or install ngrok and open a new PowerShell window."
+        Fail "ngrok.exe was not found." "Rerun with -InstallTools to download the official latest stable ngrok agent, or pass -NgrokPath with the full path to a current ngrok v3 binary."
+    }
+    if (-not (Test-NgrokEndpointFlagSupport $NgrokPath)) {
+        Fail "The selected ngrok agent does not support the required --url and --binding flags: $NgrokPath" "Rerun with -InstallTools to install the official latest stable ngrok agent, or pass -NgrokPath pointing to a current ngrok v3 binary."
     }
     $effectiveNgrokAuthtoken = if ($NgrokAuthtoken) { $NgrokAuthtoken } elseif ($env:NGROK_AUTHTOKEN) { $env:NGROK_AUTHTOKEN } else { "" }
     if ($effectiveNgrokAuthtoken) {
