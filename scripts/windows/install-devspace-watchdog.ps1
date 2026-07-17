@@ -102,7 +102,7 @@ function Restart-ElevatedIfNeeded {
     }
     $args += "-NoElevate"
 
-    Write-Host "Requesting administrator permission to install tools and register the Highest scheduled task..."
+    Write-Host "Requesting administrator permission to install tools and register the scheduled task..."
     try {
         $process = Start-Process -FilePath "powershell.exe" -ArgumentList ($args -join " ") -Verb RunAs -Wait -PassThru
     } catch {
