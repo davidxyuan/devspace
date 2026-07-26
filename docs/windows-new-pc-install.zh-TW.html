@@ -46,13 +46,14 @@
   <div class="actions"><button class="primary" id="regen">更新全部指令</button><button class="primary" id="showToken">顯示／隱藏 Token</button><button class="primary" onclick="window.print()">列印／另存 PDF</button></div>
 </section>
 
-<section id="clone" class="card"><div class="head"><span class="n">2</span><h2>下載或更新 DevSpace repo</h2></div>
-  <p>在 Windows PowerShell 執行。若 Git 不存在會先透過 winget 安裝，然後抓取 <code>codex/chatgpt-mcp-router-fix</code> 分支。</p>
+<section id="clone" class="card"><div class="head"><span class="n">2</span><h2>一行安裝已測試版本</h2></div>
+  <p>在 Windows PowerShell 執行。這會安裝 DevSpace 1.0.4 與 Hermes-GPT 0.5.0 的已測試 commit、相依套件與命令，但不會複製或建立 OAuth、密鑰、路由、SQLite 或排程工作。</p>
   <div class="code"><button class="copy" data-copy="cloneCode">複製</button><pre id="cloneCode"></pre></div>
+  <p class="hint">版本集中在 <code>scripts/windows/install-tested-stack.ps1</code> 頂端的「Tested stack manifest」。驗證新版本後只需一起更新 repo、ref、commit、version；安裝邏輯不用改，也不會自動追蹤 latest。</p>
 </section>
 
-<section id="install" class="card"><div class="head"><span class="n">3</span><h2>一鍵安裝 DevSpace + Hermes + Watchdog</h2></div>
-  <p><code>-InstallTools</code> 會用 winget 補齊 Git、Node.js/npm、Python；ngrok 則直接從官方 latest-stable 下載位置取得 Windows x64 版本。</p>
+<section id="install" class="card"><div class="head"><span class="n">3</span><h2>每台電腦各自設定</h2></div>
+  <p>第 2 步只安裝程式碼與相依套件。完成後，請填入這台電腦自己的公開 URL、允許目錄、ngrok token 與工作排程設定。</p>
   <div class="notice ok">安裝器會把 ngrok 放在 <code>%USERPROFILE%\.devspace\tools\ngrok\&lt;版本&gt;\ngrok.exe</code>，並在建立 Watchdog 前確認它支援 <code>--url</code> 和 <code>--binding</code>。</div>
   <div class="code"><button class="copy" data-copy="installCode">複製</button><pre id="installCode"></pre></div>
   <p class="hint">安裝失敗可修正原因後重貼同一段。安裝器可重複執行。</p>
@@ -100,35 +101,16 @@ const ps=s=>String(s||'').replace(/`/g,'``').replace(/"/g,'`"');
 const origin=s=>(s||'https://YOUR-NGROK-URL.ngrok-free.dev').trim().replace(/\/+$/,'');
 function cfg(){return{m:slug($('machine').value),d:$('dir').value.trim()||'D:\\devspace',u:origin($('url').value),t:$('token').value.trim()||'PASTE-YOUR-NEW-NGROK-TOKEN',mode:$('mode').value,launch:$('launcher').value,user:$('access').value==='user',roots:$('roots').value.trim()||'D:\\',full:$('full').checked}}
 function render(){const c=cfg();$('machine').value=c.m;let parent=c.d.replace(/[\\\/][^\\\/]+$/,'')||'C:\\';if(/^[A-Za-z]:$/.test(parent))parent+='\\';
-const clone=`$ErrorActionPreference = "Stop"
-$repo = "https://github.com/davidxyuan/devspace.git"
-$branch = "codex/chatgpt-mcp-router-fix"
-$dest = "${ps(c.d)}"
-
-if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { throw "找不到 winget，請先安裝 Microsoft App Installer。" }
-if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
-  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
-  $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
-}
-if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw "Git 安裝後尚未進入 PATH，請重開 PowerShell 再執行。" }
-if (Test-Path (Join-Path $dest ".git")) {
-  Set-Location $dest
-  git switch $branch
-  git pull --ff-only
-} elseif (Test-Path $dest) {
-  throw "$dest 已存在但不是 Git repo。"
-} else {
-  New-Item -ItemType Directory -Force -Path "${ps(parent)}" | Out-Null
-  git clone --branch $branch --single-branch $repo $dest
-  Set-Location $dest
-}
-git status --short
-git branch --show-current`;
+const clone=`& ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/install-tested-windows-stack/scripts/windows/install-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}"`;
 let a=[];if(c.user)a.push('  -UserMode `');a.push(`  -TaskLauncher ${c.launch} \``);a.push('  -Components DevSpace,Hermes `');a.push(`  -PublicBaseUrl "${ps(c.u)}" \``);a.push(`  -NgrokEndpointMode ${c.mode} \``);if(c.mode==='CloudEndpoint')a.push(`  -NgrokAgentBaseUrl "https://${c.m}-devspace.internal" \``);a.push(`  -MachineName "${c.m}" \``);a.push(`  -McpNameSuffix "${c.m}" \``);a.push(c.full?'  -FullAccess `':`  -AllowedRoots "${ps(c.roots)}" \``);a.push('  -InstallTools');
-const install=`Set-Location "${ps(c.d)}"
+const install=`$stack = "${ps(c.d)}"
 $env:NGROK_AUTHTOKEN = "${ps(c.t)}"
 
-powershell.exe -ExecutionPolicy Bypass -File .\\scripts\\windows\\install-devspace-watchdog.ps1 \`
+powershell.exe -ExecutionPolicy Bypass -File "$stack\\devspace\\scripts\\windows\\install-devspace-watchdog.ps1" \`
+  -HermesDir "$stack\\hermes-gpt" \`
+  -CliPath "$stack\\devspace\\dist\\cli.js" \`
+  -SkipNpmInstall \`
+  -SkipHermesInstall \`
 ${a.join('\n')}`;
 const verify=`powershell.exe -NoProfile -ExecutionPolicy Bypass \`
   -File "$env:USERPROFILE\\.devspace\\devspace-watchdog.ps1" \`
@@ -145,11 +127,8 @@ $config.ngrokPath
 & $config.ngrokPath http --help | Select-String -Pattern "--url|--binding"
 Invoke-RestMethod http://127.0.0.1:4040/api/tunnels
 Get-ScheduledTask | Where-Object TaskName -Like "DevSpaceNgrokWatchdog*"`;
-const repair=`Set-Location "${ps(c.d)}"
-git switch codex/chatgpt-mcp-router-fix
-git pull --ff-only
-
-# 回到本頁第 3 步，重新執行完整安裝指令，並保留 -InstallTools。`;
+const repair=`# 重新執行第 2 步；安裝器仍固定到 manifest 內的已測試 commits。
+# 再回到本頁第 3 步，使用這台電腦自己的設定。`;
 $('cloneCode').textContent=clone;$('installCode').textContent=install;$('verifyCode').textContent=verify;$('repairCode').textContent=repair;
 const dev=`${c.u}/${c.m}/devspace_chatgpt/mcp`,her=`${c.u}/${c.m}/hermes_chatgpt/mcp`;$('devName').textContent=`devspace_chatgpt_${c.m}`;$('hermesName').textContent=`hermes_chatgpt_${c.m}`;$('devUrl').textContent=dev;$('hermesUrl').textContent=her;
 $('cloudBody').innerHTML=c.mode==='CloudEndpoint'?`<p>安裝後讀取以下規則，加入既有 Cloud Endpoint Traffic Policy：</p><div class="code"><button class="copy" data-copy="policyCode">複製</button><pre id="policyCode">Get-Content "$env:USERPROFILE\\.devspace\\ngrok-cloud-endpoint-${c.m}.rule.yml"</pre></div><div class="notice">合併到同一個 <code>on_http_request:</code> 清單。</div>`:`<p>Agent Endpoint 模式不需要合併 Cloud Traffic Policy；請確認公開 URL 只由此電腦使用。</p>`;bind();}
