@@ -5,6 +5,7 @@ import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import { createManagedWorktree } from "./git-worktrees.js";
 import { assertAllowedPath, isPathInsideRoot, resolveAllowedPath } from "./roots.js";
 import { loadWorkspaceSkills, markSkillActivated, resolveSkillReadPath, } from "./skills.js";
+import { loadLocalAgentProfiles, } from "./local-agent-profiles.js";
 export class WorkspaceRegistry {
     config;
     store;
@@ -48,6 +49,7 @@ export class WorkspaceRegistry {
                 }
                 : undefined,
             ...this.loadSkillsForWorkspace(root),
+            agentProfiles: [],
             activatedSkillDirs: new Set(),
         };
         this.store?.touchSession(workspaceId);
@@ -118,6 +120,7 @@ export class WorkspaceRegistry {
             sourceRoot: input.sourceRoot,
             worktree: input.worktree,
             ...this.loadSkillsForWorkspace(input.root),
+            agentProfiles: await loadLocalAgentProfiles(this.config, input.root),
             activatedSkillDirs: new Set(),
         };
         this.store?.createSession({

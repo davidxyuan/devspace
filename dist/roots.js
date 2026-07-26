@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 export class AccessDeniedError extends Error {
     constructor(message) {
         super(message);
@@ -19,7 +19,10 @@ export function isPathInsideRoot(path, root) {
     const resolvedRoot = resolve(expandHomePath(root));
     const relationship = relative(resolvedRoot, resolvedPath);
     return (relationship === "" ||
-        (!relationship.startsWith("..") && relationship !== ".." && !relationship.includes(`..${sep}`)));
+        (!isAbsolute(relationship) &&
+            !relationship.startsWith("..") &&
+            relationship !== ".." &&
+            !relationship.includes(`..${sep}`)));
 }
 export function assertAllowedPath(path, allowedRoots) {
     const resolvedPath = resolve(expandHomePath(path));

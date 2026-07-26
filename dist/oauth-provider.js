@@ -1,10 +1,8 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { AccessDeniedError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 const CODE_TTL_MS = 5 * 60 * 1000;
-const OAUTH_STATE_VERSION = 1;
 function randomToken() {
     return randomBytes(32).toString("base64url");
 }
@@ -77,65 +75,17 @@ ${hiddenFields}
 function requestedScopesAllowed(requested, supported) {
     return requested.every((scope) => supported.includes(scope));
 }
-function redirectHostAllowed(redirectUri, allowedHosts) {
-    let parsed;
-    try {
-        parsed = new URL(redirectUri);
-    }
-    catch {
-        return false;
-    }
-    if (["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
-        return true;
-    return allowedHosts.includes(parsed.hostname);
-}
-export class InMemoryOAuthClientsStore {
-    allowedRedirectHosts;
-    onChange;
-    clients;
-    constructor(allowedRedirectHosts, clients, onChange = () => { }) {
-        this.allowedRedirectHosts = allowedRedirectHosts;
-        this.onChange = onChange;
-        this.clients = clients ?? new Map();
-    }
-    getClient(clientId) {
-        return this.clients.get(clientId);
-    }
-    registerClient(client) {
-        if (!client.redirect_uris.every((uri) => redirectHostAllowed(uri, this.allowedRedirectHosts))) {
-            throw new InvalidRequestError("Client redirect_uri is not allowed for this DevSpace server");
-        }
-        const now = Math.floor(Date.now() / 1000);
-        const registered = {
-            ...client,
-            client_id: `devspace-${randomUUID()}`,
-            client_id_issued_at: now,
-            token_endpoint_auth_method: client.token_endpoint_auth_method ?? "none",
-            grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],
-            response_types: client.response_types ?? ["code"],
-        };
-        this.clients.set(registered.client_id, registered);
-        this.onChange();
-        return registered;
-    }
-}
 export class SingleUserOAuthProvider {
     config;
     clientsStore;
     codes = new Map();
-    accessTokens = new Map();
-    refreshTokens = new Map();
+    oauthStore;
     resourceServerUrl;
-    stateStore;
     constructor(config, resourceServerUrl, stateDir) {
         this.config = config;
         this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-        this.stateStore = stateDir ? new OAuthStateStore(stateDir) : undefined;
-        const restored = this.stateStore?.load() ?? {};
-        this.accessTokens = restoreTokenMap(restored.accessTokens);
-        this.refreshTokens = restoreTokenMap(restored.refreshTokens);
-        this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts, restoreMap(restored.clients), () => this.persistState());
-        this.pruneExpiredTokens();
+        this.oauthStore = new SqliteOAuthStore(stateDir);
+        this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
     }
     async authorize(client, params, res) {
         if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
@@ -194,12 +144,9 @@ export class SingleUserOAuthProvider {
         return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, record.params.resource);
     }
     async exchangeRefreshToken(client, refreshToken, scopes, resource) {
-        const record = this.refreshTokens.get(hashToken(refreshToken));
+        const refreshTokenHash = hashToken(refreshToken);
+        const record = this.oauthStore.getRefreshToken(refreshTokenHash);
         if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
-            if (record) {
-                this.refreshTokens.delete(hashToken(refreshToken));
-                this.persistState();
-            }
             throw new InvalidGrantError("Invalid refresh token");
         }
         if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
@@ -209,16 +156,11 @@ export class SingleUserOAuthProvider {
         if (!requestedScopes.every((scope) => record.scopes.includes(scope))) {
             throw new AccessDeniedError("Refresh token cannot grant requested scopes");
         }
-        this.refreshTokens.delete(hashToken(refreshToken));
-        return this.issueTokens(client.client_id, requestedScopes, resource ?? record.resource);
+        return this.issueTokens(client.client_id, requestedScopes, resource ?? (record.resource ? new URL(record.resource) : undefined), refreshTokenHash);
     }
     async verifyAccessToken(token) {
-        const record = this.accessTokens.get(hashToken(token));
+        const record = this.oauthStore.getAccessToken(hashToken(token));
         if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
-            if (record) {
-                this.accessTokens.delete(hashToken(token));
-                this.persistState();
-            }
             throw new InvalidTokenError("Invalid or expired access token");
         }
         return {
@@ -226,14 +168,16 @@ export class SingleUserOAuthProvider {
             clientId: record.clientId,
             scopes: record.scopes,
             expiresAt: record.expiresAt,
-            resource: record.resource,
+            resource: record.resource ? new URL(record.resource) : undefined,
         };
     }
     async revokeToken(_client, request) {
         const hashed = hashToken(request.token);
-        this.accessTokens.delete(hashed);
-        this.refreshTokens.delete(hashed);
-        this.persistState();
+        this.oauthStore.deleteAccessToken(hashed);
+        this.oauthStore.deleteRefreshToken(hashed);
+    }
+    close() {
+        this.oauthStore.close();
     }
     validCodeRecord(client, authorizationCode) {
         const record = this.codes.get(authorizationCode);
@@ -242,27 +186,31 @@ export class SingleUserOAuthProvider {
         }
         return record;
     }
-    issueTokens(clientId, scopes, resource) {
+    issueTokens(clientId, scopes, resource, consumedRefreshTokenHash) {
         const now = Math.floor(Date.now() / 1000);
         const accessToken = randomToken();
         const refreshToken = randomToken();
         const accessExpiresAt = now + this.config.accessTokenTtlSeconds;
         const refreshExpiresAt = now + this.config.refreshTokenTtlSeconds;
-        this.accessTokens.set(hashToken(accessToken), {
-            token: accessToken,
-            clientId,
-            scopes,
-            expiresAt: accessExpiresAt,
-            resource,
-        });
-        this.refreshTokens.set(hashToken(refreshToken), {
-            token: refreshToken,
-            clientId,
-            scopes,
-            expiresAt: refreshExpiresAt,
-            resource,
-        });
-        this.persistState();
+        const saved = this.oauthStore.saveTokenPair({
+            accessTokenHash: hashToken(accessToken),
+            accessToken: {
+                clientId,
+                scopes,
+                expiresAt: accessExpiresAt,
+                resource: resource?.href,
+            },
+            refreshTokenHash: hashToken(refreshToken),
+            refreshToken: {
+                clientId,
+                scopes,
+                expiresAt: refreshExpiresAt,
+                resource: resource?.href,
+            },
+        }, consumedRefreshTokenHash);
+        if (!saved) {
+            throw new InvalidGrantError("Invalid refresh token");
+        }
         return {
             access_token: accessToken,
             token_type: "bearer",
@@ -270,33 +218,6 @@ export class SingleUserOAuthProvider {
             refresh_token: refreshToken,
             scope: scopes.join(" "),
         };
-    }
-    pruneExpiredTokens() {
-        const now = Math.floor(Date.now() / 1000);
-        let changed = false;
-        for (const [key, record] of this.accessTokens.entries()) {
-            if (record.expiresAt < now) {
-                this.accessTokens.delete(key);
-                changed = true;
-            }
-        }
-        for (const [key, record] of this.refreshTokens.entries()) {
-            if (record.expiresAt < now) {
-                this.refreshTokens.delete(key);
-                changed = true;
-            }
-        }
-        if (changed) {
-            this.persistState();
-        }
-    }
-    persistState() {
-        this.stateStore?.save({
-            version: OAUTH_STATE_VERSION,
-            clients: serializeMap(this.clientsStore.clients),
-            accessTokens: serializeTokenMap(this.accessTokens),
-            refreshTokens: serializeTokenMap(this.refreshTokens),
-        });
     }
 }
 function authorizationFormFields(client, params) {
@@ -313,72 +234,4 @@ function authorizationFormFields(client, params) {
 }
 function hashToken(token) {
     return createHash("sha256").update(token).digest("base64url");
-}
-class OAuthStateStore {
-    path;
-    constructor(stateDir) {
-        this.path = join(stateDir, "oauth-state.json");
-    }
-    load() {
-        try {
-            if (!existsSync(this.path))
-                return {};
-            const parsed = JSON.parse(readFileSync(this.path, "utf8"));
-            if (parsed?.version !== OAUTH_STATE_VERSION)
-                return {};
-            return parsed;
-        }
-        catch {
-            return {};
-        }
-    }
-    save(snapshot) {
-        mkdirSync(dirname(this.path), { recursive: true });
-        const tmpPath = `${this.path}.tmp-${process.pid}`;
-        writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), "utf8");
-        renameSync(tmpPath, this.path);
-    }
-}
-function restoreMap(entries) {
-    return new Map(Array.isArray(entries) ? entries : []);
-}
-function serializeMap(map) {
-    return Array.from(map.entries());
-}
-function restoreTokenMap(entries) {
-    const map = new Map();
-    if (!Array.isArray(entries))
-        return map;
-    for (const [key, record] of entries) {
-        if (!record?.clientId || !Array.isArray(record.scopes) || !record.expiresAt) {
-            continue;
-        }
-        map.set(key, {
-            ...record,
-            resource: reviveResource(record.resource),
-        });
-    }
-    return map;
-}
-function serializeTokenMap(map) {
-    return Array.from(map.entries()).map(([key, record]) => {
-        const { token: _token, ...safeRecord } = record;
-        return [
-            key,
-            {
-                ...safeRecord,
-                resource: safeRecord.resource?.href,
-            },
-        ];
-    });
-}
-function reviveResource(resource) {
-    if (!resource)
-        return undefined;
-    try {
-        return new URL(resource);
-    }
-    catch {
-        return undefined;
-    }
 }
