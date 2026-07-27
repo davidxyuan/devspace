@@ -28,8 +28,19 @@
     <div class="mini"><h3>先準備</h3><ol><li>不重複的電腦代號</li><li>ngrok 公開 Base URL</li><li>新的 ngrok Authtoken</li></ol><p class="hint">Token 只在本機瀏覽器產生指令，不會由此 HTML 上傳。</p></div>
   </div>
 </div></header>
-<nav><div class="wrap"><a href="#config">1 設定</a><a href="#clone">2 下載</a><a href="#install">3 安裝</a><a href="#hermes">4 Hermes</a><a href="#cloud">5 Cloud Policy</a><a href="#verify">6 驗證</a><a href="#chatgpt">7 ChatGPT</a><a href="#trouble">故障排除</a></div></nav>
+<nav><div class="wrap"><a href="#existing-upgrade">既有機升級</a><a href="#config">全新機 1 設定</a><a href="#clone">2 下載</a><a href="#install">3 安裝</a><a href="#hermes">4 Hermes</a><a href="#cloud">5 Cloud Policy</a><a href="#verify">6 驗證</a><a href="#chatgpt">7 ChatGPT</a><a href="#trouble">故障排除</a></div></nav>
 <main class="wrap">
+<section id="existing-upgrade" class="card"><div class="head"><span class="n">↑</span><h2>既有電腦：安全原地升級（不要使用下方全新機流程）</h2></div>
+  <div class="notice bad">這條路徑只適用於已由 DevSpace Watchdog 管理、且 repo origin 可辨識的舊版 DevSpace/Hermes-GPT。它不會猜測遺失的狀態，也不會重建密鑰。無法完整備份、辨識唯一排程或保存 OAuth 時會拒絕執行。</div>
+  <p>先關閉會修改 DevSpace/Hermes repo 的工具，確認磁碟空間足以完整備份兩個 checkout、<code>%USERPROFILE%\.devspace</code> 與 Hermes 的未追蹤檔案。舊 repo 不可有尚未提交的 tracked 變更；未追蹤的 launcher/config 會包含在 rollback backup。</p>
+  <h3>1. 唯讀預檢</h3>
+  <div class="code"><button class="copy" data-copy="upgradeDryCode">複製</button><pre id="upgradeDryCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1"))) -DryRun</pre></div>
+  <h3>2. 一行升級</h3>
+  <div class="code"><button class="copy" data-copy="upgradeCode">複製</button><pre id="upgradeCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1")))</pre></div>
+  <p>升級器會先短暫停止原排程以固定狀態，建立 timestamp rollback backup；若備份失敗會重啟原排程並拒絕升級。備份保留原始 task XML、ngrok 設定、owner/auth、allowed roots、完整 watchdog JSON、<code>.local\share\devspace</code> OAuth/SQLite、<code>%LOCALAPPDATA%\hermes</code>、Hermes 使用者/未追蹤檔案及兩個 repo，再固定升級至 DevSpace 1.0.4 與 Hermes-GPT 0.5.0。舊 <code>oauth-state.json</code> 不會被覆寫；匯入 SQLite 會在單一 transaction 內完成並核對 clients/access/refresh counts。</p>
+  <h3>3. 只驗證目前服務</h3>
+  <div class="code"><button class="copy" data-copy="upgradeVerifyCode">複製</button><pre id="upgradeVerifyCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1"))) -VerifyOnly</pre></div>
+</section>
 <section id="config" class="card"><div class="head"><span class="n">1</span><h2>填寫設定</h2></div>
   <div class="grid">
     <div><label>電腦代號</label><input id="machine" value="newpc"><span class="hint">只用英文、數字、減號；會轉成小寫。</span></div>
