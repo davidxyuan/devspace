@@ -12,7 +12,9 @@ $source = Get-Content $path -Raw
     "rollback-manifest.json",
     "migrate-oauth-json-to-sqlite.mjs",
     "credentials will not be regenerated",
-    "Watchdog configuration changed unexpectedly",
-    "task definition or privilege mode changed unexpectedly"
+    "Owner auth changed unexpectedly",
+    "Task privilege/definition changed unexpectedly",
+    "Detected action:",
+    'if ($Action -eq "Upgrade")'
 ) | ForEach-Object { if (-not $source.Contains($_)) { throw "Missing safety behavior: $_" } }
 Write-Host "existing stack upgrade installer tests passed."

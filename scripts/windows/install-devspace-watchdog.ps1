@@ -34,12 +34,37 @@ param(
     [switch]$SkipNgrok,
     [switch]$SkipStart,
     [switch]$UserMode,
-    [switch]$NoElevate
+    [switch]$NoElevate,
+    [ValidateSet("minimal", "full", "codex")][string]$DevSpaceToolMode = "minimal",
+    [ValidateSet("off", "changes", "full")][string]$DevSpaceWidgets = "off",
+    [ValidateSet("On", "Off")][string]$DevSpaceSkills = "Off",
+    [ValidateSet("On", "Off")][string]$DevSpaceSubagents = "Off",
+    [ValidateSet("On", "Off")][string]$HermesBridge = "On",
+    [ValidateSet("On", "Off")][string]$HermesReadOnlyTools = "On",
+    [ValidateSet("On", "Off")][string]$HermesVision = "Off",
+    [ValidateSet("On", "Off")][string]$HermesWeb = "Off",
+    [ValidateSet("On", "Off")][string]$HermesDiagnostics = "On",
+    [ValidateSet("On", "Off")][string]$HermesRunner = "Off",
+    [ValidateSet("On", "Off")][string]$HermesRunnerWrite = "Off",
+    [ValidateSet("On", "Off")][string]$HermesWorkspaceWrite = "Off",
+    [ValidateSet("On", "Off")][string]$HermesMemoryWrite = "Off",
+    [ValidateSet("On", "Off")][string]$HermesTerminal = "Off",
+    [ValidateSet("On", "Off")][string]$HermesOperator = "Off",
+    [ValidateSet("On", "Off")][string]$HermesOperatorDirect = "Off",
+    [ValidateSet("On", "Off")][string]$HermesOwnerMode = "Off",
+    [ValidateSet("On", "Off")][string]$HermesCron = "Off",
+    [ValidateSet("On", "Off")][string]$HermesCronWrite = "Off",
+    [ValidateSet("On", "Off")][string]$HermesSkillWrite = "Off",
+    [ValidateSet("On", "Off")][string]$HermesPrivateNetwork = "Off",
+    [ValidateSet("restricted", "full")][string]$HermesFilesystemScope = "restricted",
+    [string[]]$HermesAllowedRoots = @(),
+    [string]$CapabilitySelection = ""
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "watchdog-task-action.ps1")
 . (Join-Path $PSScriptRoot "ngrok-install.ps1")
+. (Join-Path $PSScriptRoot "capability-config.ps1")
 $script:InstallDocsPath = Join-Path ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))) "docs\windows-watchdog.md"
 
 trap {
@@ -368,6 +393,15 @@ $watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
 $existingConfig = Read-JsonFile $configPath
 $existingAuth = Read-JsonFile $authPath
 $existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
+foreach ($entry in (ConvertFrom-CapabilitySelection $CapabilitySelection).GetEnumerator()) {
+    Set-Variable -Name $entry.Key -Value $entry.Value
+}
+$devspaceCapabilities = New-DevSpaceCapabilityConfig $DevSpaceToolMode $DevSpaceWidgets $DevSpaceSkills $DevSpaceSubagents
+$hermesCapabilities = New-HermesCapabilityConfig `
+    $HermesBridge $HermesReadOnlyTools $HermesVision $HermesWeb $HermesDiagnostics `
+    $HermesRunner $HermesRunnerWrite $HermesWorkspaceWrite $HermesMemoryWrite $HermesTerminal `
+    $HermesOperator $HermesOperatorDirect $HermesOwnerMode $HermesCron $HermesCronWrite `
+    $HermesSkillWrite $HermesPrivateNetwork $HermesFilesystemScope $HermesAllowedRoots
 
 $needsNode = $installDevSpace -or $useRouter
 
@@ -562,17 +596,39 @@ if ($installHermes) {
 
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
     $hermesWorkingDirectory = $HermesDir
-    $hermesFullAccessEnabled = [bool]$FullAccess
-    $hermesFullAccessEnv = if ($FullAccess) {
-@"
-set "HERMES_GPT_ENABLE_WRITE=1"
-set "HERMES_GPT_ENABLE_MEMORY_WRITE=1"
-set "HERMES_GPT_ENABLE_SESSION_SEARCH=1"
-set "HERMES_GPT_ENABLE_TERMINAL=1"
-"@
-    } else {
-        ""
+    $hermesFullAccessEnabled = $false
+    $hermesCapabilityEnv = @()
+    $cmdGates = [ordered]@{
+        HERMES_GPT_ENABLE_CODEX=$hermesCapabilities.bridge; HERMES_GPT_ENABLE_MCP=$hermesCapabilities.bridge
+        HERMES_GPT_ENABLE_SESSION_SEARCH=$hermesCapabilities.readOnlyTools
+        HERMES_GPT_ENABLE_VISION=$hermesCapabilities.vision; HERMES_GPT_ENABLE_WEB=$hermesCapabilities.web
+        HERMES_GPT_ENABLE_DIAGNOSTICS=$hermesCapabilities.diagnostics
+        HERMES_GPT_ENABLE_CODEX_RUNNER=$hermesCapabilities.runner
+        HERMES_GPT_ALLOW_CODEX_WRITE=$hermesCapabilities.runnerWrite
+        HERMES_GPT_ENABLE_WRITE=$hermesCapabilities.workspaceWrite
+        HERMES_GPT_ENABLE_MEMORY_WRITE=$hermesCapabilities.memoryWrite
+        HERMES_GPT_ENABLE_TERMINAL=$hermesCapabilities.terminal
+        HERMES_GPT_OPERATOR_ENABLED=$hermesCapabilities.operator; HERMES_GPT_ENABLE_CRON=$hermesCapabilities.cron
+        HERMES_GPT_ALLOW_WRITE=($hermesCapabilities.cronWrite -or $hermesCapabilities.skillWrite)
+        HERMES_GPT_ALLOW_CRON_WRITE=$hermesCapabilities.cronWrite
+        HERMES_GPT_ALLOW_SKILL_WRITE=$hermesCapabilities.skillWrite
+        HERMES_GPT_ALLOW_PRIVATE_NETWORK=$hermesCapabilities.privateNetwork
     }
+    foreach ($entry in $cmdGates.GetEnumerator()) {
+        if ($entry.Value) { $hermesCapabilityEnv += "set `"$($entry.Key)=1`"" }
+    }
+    $hermesRoots = if ($hermesCapabilities.filesystemScope -eq "full") { @(Get-FullAccessRoots) } else { @($hermesCapabilities.allowedRoots) }
+    if ($hermesRoots.Count) {
+        $hermesCapabilityEnv += "set `"HERMES_GPT_CODEX_ALLOWED_ROOTS=$($hermesRoots -join ',')`""
+        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_ALLOWED_PATHS=$($hermesRoots -join ',')`""
+    }
+    if ($hermesCapabilities.operator) {
+        $level = if ($hermesCapabilities.ownerMode) { "owner" } elseif ($hermesCapabilities.workspaceWrite -or $hermesCapabilities.runner) { "workspace" } elseif ($hermesCapabilities.skillWrite) { "skills_config" } elseif ($hermesCapabilities.cronWrite) { "cron" } else { "read_only" }
+        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_LEVEL=$level`""
+        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_APPLY_MODE=$(if ($hermesCapabilities.operatorDirect) { 'direct' } else { 'dry_run' })`""
+    }
+    if ($hermesCapabilities.ownerMode) { $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACK=I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"' }
+    $hermesFullAccessEnv = $hermesCapabilityEnv -join [Environment]::NewLine
     @"
 @echo off
 set "HERMES_HOME=%LOCALAPPDATA%\hermes"
@@ -639,6 +695,7 @@ $watchdogConfig = [ordered]@{
     ngrokBinding = $NgrokBinding
     mcpNameSuffix = if ($McpNameSuffix) { ConvertTo-Slug $McpNameSuffix } else { "" }
     routeAliasMachineNames = @($routeMachineSlugs | Where-Object { $_ -ne $machineSlug })
+    capabilities = [ordered]@{ devspace = $devspaceCapabilities; hermes = $hermesCapabilities }
     cloudEndpointPolicyPath = ""
 }
 

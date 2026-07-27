@@ -28,18 +28,51 @@
     <div class="mini"><h3>先準備</h3><ol><li>不重複的電腦代號</li><li>ngrok 公開 Base URL</li><li>新的 ngrok Authtoken</li></ol><p class="hint">Token 只在本機瀏覽器產生指令，不會由此 HTML 上傳。</p></div>
   </div>
 </div></header>
-<nav><div class="wrap"><a href="#existing-upgrade">既有機升級</a><a href="#config">全新機 1 設定</a><a href="#clone">2 下載</a><a href="#install">3 安裝</a><a href="#hermes">4 Hermes</a><a href="#cloud">5 Cloud Policy</a><a href="#verify">6 驗證</a><a href="#chatgpt">7 ChatGPT</a><a href="#trouble">故障排除</a></div></nav>
+<nav><div class="wrap"><a href="#detect-apply">偵測並套用</a><a href="#capabilities">能力權限</a><a href="#existing-upgrade">進階既有機</a><a href="#config">全新機設定</a><a href="#trouble">故障排除</a></div></nav>
 <main class="wrap">
+<section id="detect-apply" class="card"><div class="head"><span class="n">A</span><h2>統一入口：先偵測，再安全套用</h2></div>
+  <div class="notice bad">Home 類既有安裝不可使用全新機流程。Auto 會先檢查：未安裝→Fresh；兩者都較舊→安全升級；兩者皆為測試版→只改權限；較新、混合、dirty 或不明→拒絕，不降版、不覆寫。</div>
+  <label>執行路徑</label><select id="workflow"><option value="auto" selected>Auto：建議，偵測後決定</option><option value="fresh">Fresh only：僅無安裝時允許</option><option value="upgrade">Existing upgrade：明確要求版本升級</option><option value="caps">Permission change only：不 checkout/npm/pip/link</option></select>
+  <div class="code"><button class="copy" data-copy="detectCode">複製</button><pre id="detectCode"></pre></div>
+  <p class="hint">先加 <code>-DryRun</code> 會顯示偵測版本、選定動作與完整 capability before/after；<code>-VerifyOnly</code> 只驗證服務。</p>
+</section>
+<section id="capabilities" class="card"><div class="head"><span class="n">C</span><h2>能力與權限（全新機預設最小權限）</h2></div>
+  <div class="grid">
+    <div><label>DevSpace tools</label><select id="devTool"><option value="minimal" selected>minimal</option><option value="codex">codex</option><option value="full">full</option></select></div>
+    <div><label>DevSpace widgets</label><select id="devWidgets"><option value="off" selected>off</option><option value="changes">changes</option><option value="full">full</option></select></div>
+    <div><label><input id="devSkills" type="checkbox"> DevSpace skills</label></div>
+    <div><label><input id="devSubagents" type="checkbox"> DevSpace subagents（實驗）</label></div>
+    <div><label><input id="hBridge" type="checkbox" checked> Hermes bridge / MCP（低風險）</label></div>
+    <div><label><input id="hRead" type="checkbox" checked> Hermes read-only/session tools（低風險）</label></div>
+    <div><label><input id="hVision" type="checkbox"> Vision（可能傳送影像）</label></div>
+    <div><label><input id="hWeb" type="checkbox"> Web search/extract（外部網路）</label></div>
+    <div><label><input id="hDiag" type="checkbox" checked> Diagnostics（唯讀）</label></div>
+    <div><label><input id="hRunner" type="checkbox"> Codex runner（執行工作）</label></div>
+    <div><label><input id="hRunnerWrite" type="checkbox"> Runner workspace-write（高風險）</label></div>
+    <div><label><input id="hWorkspaceWrite" type="checkbox"> Workspace file write（高風險）</label></div>
+    <div><label><input id="hMemoryWrite" type="checkbox"> Memory write</label></div>
+    <div><label><input id="hTerminal" type="checkbox"> Terminal/raw command（最高風險）</label></div>
+    <div><label><input id="hOperator" type="checkbox"> Operator</label></div>
+    <div><label><input id="hDirect" type="checkbox"> Operator direct apply（高風險）</label></div>
+    <div><label><input id="hOwner" type="checkbox"> Owner mode + acknowledgement（break-glass）</label></div>
+    <div><label><input id="hCron" type="checkbox"> Cron planning</label></div>
+    <div><label><input id="hCronWrite" type="checkbox"> Cron writes（高風險）</label></div>
+    <div><label><input id="hSkillWrite" type="checkbox"> Skill writes（高風險）</label></div>
+    <div><label><input id="hPrivate" type="checkbox"> Private-network access（SSRF 風險）</label></div>
+    <div><label>Hermes filesystem scope</label><select id="hFs"><option value="restricted" selected>restricted：使用核准 roots</option><option value="full">full：所有磁碟（高風險）</option></select></div>
+  </div>
+  <div class="notice">DevSpace 的 FullAccess 與 Hermes 的執行、寫入、Terminal、Operator、private network 完全分開；勾選一項不會暗中開啟其他項目。相依條件不成立時安裝器會拒絕。</div>
+</section>
 <section id="existing-upgrade" class="card"><div class="head"><span class="n">↑</span><h2>既有電腦：安全原地升級（不要使用下方全新機流程）</h2></div>
   <div class="notice bad">這條路徑只適用於已由 DevSpace Watchdog 管理、且 repo origin 可辨識的舊版 DevSpace/Hermes-GPT。它不會猜測遺失的狀態，也不會重建密鑰。無法完整備份、辨識唯一排程或保存 OAuth 時會拒絕執行。</div>
   <p>先關閉會修改 DevSpace/Hermes repo 的工具，確認磁碟空間足以完整備份兩個 checkout、<code>%USERPROFILE%\.devspace</code> 與 Hermes 的未追蹤檔案。舊 repo 不可有尚未提交的 tracked 變更；未追蹤的 launcher/config 會包含在 rollback backup。</p>
   <h3>1. 唯讀預檢</h3>
-  <div class="code"><button class="copy" data-copy="upgradeDryCode">複製</button><pre id="upgradeDryCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1"))) -DryRun</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeDryCode">複製</button><pre id="upgradeDryCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1"))) -DryRun</pre></div>
   <h3>2. 一行升級</h3>
-  <div class="code"><button class="copy" data-copy="upgradeCode">複製</button><pre id="upgradeCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1")))</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeCode">複製</button><pre id="upgradeCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1")))</pre></div>
   <p>升級器會先短暫停止原排程以固定狀態，建立 timestamp rollback backup；若備份失敗會重啟原排程並拒絕升級。備份保留原始 task XML、ngrok 設定、owner/auth、allowed roots、完整 watchdog JSON、<code>.local\share\devspace</code> OAuth/SQLite、<code>%LOCALAPPDATA%\hermes</code>、Hermes 使用者/未追蹤檔案及兩個 repo，再固定升級至 DevSpace 1.0.4 與 Hermes-GPT 0.5.0。舊 <code>oauth-state.json</code> 不會被覆寫；匯入 SQLite 會在單一 transaction 內完成並核對 clients/access/refresh counts。</p>
   <h3>3. 只驗證目前服務</h3>
-  <div class="code"><button class="copy" data-copy="upgradeVerifyCode">複製</button><pre id="upgradeVerifyCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-safe-in-place-upgrade/scripts/windows/upgrade-existing-tested-stack.ps1"))) -VerifyOnly</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeVerifyCode">複製</button><pre id="upgradeVerifyCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1"))) -VerifyOnly</pre></div>
 </section>
 <section id="config" class="card"><div class="head"><span class="n">1</span><h2>填寫設定</h2></div>
   <div class="grid">
@@ -52,7 +85,7 @@
     <div><label>安裝權限</label><select id="access"><option value="user" selected>UserMode：不需管理員</option><option value="admin">Administrator：最高權限排程</option></select></div>
     <div><label>限制存取目錄</label><input id="roots" value="D:\"><span class="hint">取消 FullAccess 才使用；多路徑以分號分隔。</span></div>
   </div>
-  <div class="check"><input id="full" type="checkbox" checked><div><label for="full">整台電腦 FullAccess</label><span class="hint">會開放目前 Windows 帳號能看見的磁碟，並啟用 Hermes 寫入與命令工具。</span></div></div>
+  <div class="check"><input id="full" type="checkbox"><div><label for="full">DevSpace 整台電腦 FullAccess</label><span class="hint">只控制 DevSpace filesystem roots；不會啟用 Hermes 寫入、Terminal、Operator 或 private network。</span></div></div>
   <div class="notice bad">電腦代號不要和現有的 tyo、oe、home 或其他已上線機器重複。ngrok Token 不要貼到聊天、截圖或公開紀錄中。</div>
   <div class="actions"><button class="primary" id="regen">更新全部指令</button><button class="primary" id="showToken">顯示／隱藏 Token</button><button class="primary" onclick="window.print()">列印／另存 PDF</button></div>
 </section>
@@ -106,14 +139,23 @@ Get-Content "$env:USERPROFILE\.devspace\ngrok-watchdog.err.log" -Tail 100</pre><
 <footer class="wrap">檔案位置：<code>docs/windows-new-pc-install.zh-TW.html</code>。此頁隨 DevSpace repo 一起版本控管。</footer>
 <script>
 const $=id=>document.getElementById(id);
-const ids=['machine','dir','url','token','mode','launcher','access','roots','full'];
+const ids=['machine','dir','url','token','mode','launcher','access','roots','full','workflow','devTool','devWidgets','devSkills','devSubagents','hBridge','hRead','hVision','hWeb','hDiag','hRunner','hRunnerWrite','hWorkspaceWrite','hMemoryWrite','hTerminal','hOperator','hDirect','hOwner','hCron','hCronWrite','hSkillWrite','hPrivate','hFs'];
 const slug=s=>(s||'newpc').toLowerCase().trim().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'')||'newpc';
 const ps=s=>String(s||'').replace(/`/g,'``').replace(/"/g,'`"');
 const origin=s=>(s||'https://YOUR-NGROK-URL.ngrok-free.dev').trim().replace(/\/+$/,'');
 function cfg(){return{m:slug($('machine').value),d:$('dir').value.trim()||'D:\\devspace',u:origin($('url').value),t:$('token').value.trim()||'PASTE-YOUR-NEW-NGROK-TOKEN',mode:$('mode').value,launch:$('launcher').value,user:$('access').value==='user',roots:$('roots').value.trim()||'D:\\',full:$('full').checked}}
 function render(){const c=cfg();$('machine').value=c.m;let parent=c.d.replace(/[\\\/][^\\\/]+$/,'')||'C:\\';if(/^[A-Za-z]:$/.test(parent))parent+='\\';
+const on=id=>$(id).checked?'On':'Off';
+const caps=[`DevSpaceToolMode=${$('devTool').value}`,`DevSpaceWidgets=${$('devWidgets').value}`,`DevSpaceSkills=${on('devSkills')}`,`DevSpaceSubagents=${on('devSubagents')}`,`HermesBridge=${on('hBridge')}`,`HermesReadOnlyTools=${on('hRead')}`,`HermesVision=${on('hVision')}`,`HermesWeb=${on('hWeb')}`,`HermesDiagnostics=${on('hDiag')}`,`HermesRunner=${on('hRunner')}`,`HermesRunnerWrite=${on('hRunnerWrite')}`,`HermesWorkspaceWrite=${on('hWorkspaceWrite')}`,`HermesMemoryWrite=${on('hMemoryWrite')}`,`HermesTerminal=${on('hTerminal')}`,`HermesOperator=${on('hOperator')}`,`HermesOperatorDirect=${on('hDirect')}`,`HermesOwnerMode=${on('hOwner')}`,`HermesCron=${on('hCron')}`,`HermesCronWrite=${on('hCronWrite')}`,`HermesSkillWrite=${on('hSkillWrite')}`,`HermesPrivateNetwork=${on('hPrivate')}`,`HermesFilesystemScope=${$('hFs').value}`].join(';');
+const raw='https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/';
+const common=` -CapabilitySelection "${caps}" -HermesAllowedRoots "${ps(c.roots)}"`;
+let detect;
+if($('workflow').value==='upgrade')detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}upgrade-existing-tested-stack.ps1"))) -Action Upgrade${common}`;
+else if($('workflow').value==='caps')detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}upgrade-existing-tested-stack.ps1"))) -Action CapabilitiesOnly${common}`;
+else detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}detect-and-apply-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}" -PublicBaseUrl "${ps(c.u)}" -NgrokAuthtoken "${ps(c.t)}" -NgrokEndpointMode ${c.mode} -MachineName "${c.m}" -AllowedRoots "${ps(c.roots)}"${c.full?' -FullAccess':''}${common}`;
+$('detectCode').textContent=detect;
 const clone=`& ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/install-tested-windows-stack/scripts/windows/install-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}"`;
-let a=[];if(c.user)a.push('  -UserMode `');a.push(`  -TaskLauncher ${c.launch} \``);a.push('  -Components DevSpace,Hermes `');a.push(`  -PublicBaseUrl "${ps(c.u)}" \``);a.push(`  -NgrokEndpointMode ${c.mode} \``);if(c.mode==='CloudEndpoint')a.push(`  -NgrokAgentBaseUrl "https://${c.m}-devspace.internal" \``);a.push(`  -MachineName "${c.m}" \``);a.push(`  -McpNameSuffix "${c.m}" \``);a.push(c.full?'  -FullAccess `':`  -AllowedRoots "${ps(c.roots)}" \``);a.push('  -InstallTools');
+let a=[];if(c.user)a.push('  -UserMode `');a.push(`  -TaskLauncher ${c.launch} \``);a.push('  -Components DevSpace,Hermes `');a.push(`  -PublicBaseUrl "${ps(c.u)}" \``);a.push(`  -NgrokEndpointMode ${c.mode} \``);if(c.mode==='CloudEndpoint')a.push(`  -NgrokAgentBaseUrl "https://${c.m}-devspace.internal" \``);a.push(`  -MachineName "${c.m}" \``);a.push(`  -McpNameSuffix "${c.m}" \``);a.push(c.full?'  -FullAccess `':`  -AllowedRoots "${ps(c.roots)}" \``);a.push(`  -CapabilitySelection "${caps}" \``);a.push(`  -HermesAllowedRoots "${ps(c.roots)}" \``);a.push('  -InstallTools');
 const install=`$stack = "${ps(c.d)}"
 $env:NGROK_AUTHTOKEN = "${ps(c.t)}"
 

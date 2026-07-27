@@ -52,6 +52,12 @@ $mutexName = "Local\DevSpaceWatchdog-$([Convert]::ToBase64String([Text.Encoding]
 $env:PORT = "$port"
 $env:DEVSPACE_TRUST_PROXY = "true"
 $env:DEVSPACE_PUBLIC_BASE_URL = $publicBaseUrl
+if ($config.capabilities.devspace) {
+    $env:DEVSPACE_TOOL_MODE = [string]$config.capabilities.devspace.toolMode
+    $env:DEVSPACE_WIDGETS = [string]$config.capabilities.devspace.widgets
+    $env:DEVSPACE_SKILLS = if ([bool]$config.capabilities.devspace.skills) { "1" } else { "0" }
+    $env:DEVSPACE_SUBAGENTS = if ([bool]$config.capabilities.devspace.subagents) { "1" } else { "0" }
+}
 
 function Write-WatchdogLog([string]$message) {
     $timestamp = Get-Date -Format o
@@ -329,18 +335,58 @@ function Start-Hermes {
     Write-WatchdogLog "starting hermes-gpt on 127.0.0.1:$hermesPort; stdout=$outPath; stderr=$errPath"
 
     if ($hermesPython -and $hermesServer -and (Test-Path -LiteralPath $hermesPython) -and (Test-Path -LiteralPath $hermesServer)) {
-        $previousHermesHome = $env:HERMES_HOME
-        $previousWrite = $env:HERMES_GPT_ENABLE_WRITE
-        $previousMemoryWrite = $env:HERMES_GPT_ENABLE_MEMORY_WRITE
-        $previousSessionSearch = $env:HERMES_GPT_ENABLE_SESSION_SEARCH
-        $previousTerminal = $env:HERMES_GPT_ENABLE_TERMINAL
-        $previousOperatorEnabled = $env:HERMES_GPT_OPERATOR_ENABLED
-        $previousOperatorLevel = $env:HERMES_GPT_OPERATOR_LEVEL
-        $previousOperatorApplyMode = $env:HERMES_GPT_OPERATOR_APPLY_MODE
-        $previousOwnerAck = $env:HERMES_GPT_OWNER_ACK
+        $hermesEnvNames = @(
+            "HERMES_HOME", "HERMES_GPT_ENABLE_WRITE", "HERMES_GPT_ENABLE_MEMORY_WRITE",
+            "HERMES_GPT_ENABLE_SESSION_SEARCH", "HERMES_GPT_ENABLE_TERMINAL",
+            "HERMES_GPT_ENABLE_VISION", "HERMES_GPT_ENABLE_WEB", "HERMES_GPT_ENABLE_CODEX",
+            "HERMES_GPT_ENABLE_MCP", "HERMES_GPT_ENABLE_CRON", "HERMES_GPT_ENABLE_DIAGNOSTICS",
+            "HERMES_GPT_ENABLE_CODEX_RUNNER", "HERMES_GPT_ALLOW_CODEX_WRITE",
+            "HERMES_GPT_ALLOW_WRITE", "HERMES_GPT_ALLOW_CRON_WRITE", "HERMES_GPT_ALLOW_SKILL_WRITE",
+            "HERMES_GPT_CODEX_ALLOWED_ROOTS", "HERMES_GPT_ALLOW_PRIVATE_NETWORK",
+            "HERMES_GPT_OPERATOR_ENABLED", "HERMES_GPT_OPERATOR_LEVEL",
+            "HERMES_GPT_OPERATOR_APPLY_MODE", "HERMES_GPT_OPERATOR_ALLOWED_PATHS",
+            "HERMES_GPT_OWNER_ACK"
+        )
+        $previousHermesEnv = @{}
+        foreach ($name in $hermesEnvNames) { $previousHermesEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process") }
         try {
             $env:HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
-            if ($hermesFullAccess) {
+            $caps = $config.capabilities.hermes
+            if ($caps) {
+                $gateValues = [ordered]@{
+                    HERMES_GPT_ENABLE_CODEX = [bool]$caps.bridge
+                    HERMES_GPT_ENABLE_MCP = [bool]$caps.bridge
+                    HERMES_GPT_ENABLE_SESSION_SEARCH = [bool]$caps.readOnlyTools
+                    HERMES_GPT_ENABLE_VISION = [bool]$caps.vision
+                    HERMES_GPT_ENABLE_WEB = [bool]$caps.web
+                    HERMES_GPT_ENABLE_DIAGNOSTICS = [bool]$caps.diagnostics
+                    HERMES_GPT_ENABLE_CODEX_RUNNER = [bool]$caps.runner
+                    HERMES_GPT_ALLOW_CODEX_WRITE = [bool]$caps.runnerWrite
+                    HERMES_GPT_ENABLE_WRITE = [bool]$caps.workspaceWrite
+                    HERMES_GPT_ENABLE_MEMORY_WRITE = [bool]$caps.memoryWrite
+                    HERMES_GPT_ENABLE_TERMINAL = [bool]$caps.terminal
+                    HERMES_GPT_OPERATOR_ENABLED = [bool]$caps.operator
+                    HERMES_GPT_ENABLE_CRON = [bool]$caps.cron
+                    HERMES_GPT_ALLOW_WRITE = ([bool]$caps.cronWrite -or [bool]$caps.skillWrite)
+                    HERMES_GPT_ALLOW_CRON_WRITE = [bool]$caps.cronWrite
+                    HERMES_GPT_ALLOW_SKILL_WRITE = [bool]$caps.skillWrite
+                    HERMES_GPT_ALLOW_PRIVATE_NETWORK = [bool]$caps.privateNetwork
+                }
+                foreach ($entry in $gateValues.GetEnumerator()) {
+                    [Environment]::SetEnvironmentVariable($entry.Key, $(if ($entry.Value) { "1" } else { $null }), "Process")
+                }
+                $roots = @($caps.allowedRoots)
+                if ([string]$caps.filesystemScope -eq "full") {
+                    $roots = @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })
+                }
+                $rootText = $roots -join ","
+                [Environment]::SetEnvironmentVariable("HERMES_GPT_CODEX_ALLOWED_ROOTS", $rootText, "Process")
+                [Environment]::SetEnvironmentVariable("HERMES_GPT_OPERATOR_ALLOWED_PATHS", $rootText, "Process")
+                $operatorLevel = if ([bool]$caps.ownerMode) { "owner" } elseif ([bool]$caps.workspaceWrite -or [bool]$caps.runner) { "workspace" } elseif ([bool]$caps.skillWrite) { "skills_config" } elseif ([bool]$caps.cronWrite) { "cron" } else { "read_only" }
+                $env:HERMES_GPT_OPERATOR_LEVEL = $operatorLevel
+                $env:HERMES_GPT_OPERATOR_APPLY_MODE = if ([bool]$caps.operatorDirect) { "direct" } else { "dry_run" }
+                [Environment]::SetEnvironmentVariable("HERMES_GPT_OWNER_ACK", $(if ([bool]$caps.ownerMode) { "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE" } else { $null }), "Process")
+            } elseif ($hermesFullAccess) {
                 $env:HERMES_GPT_ENABLE_WRITE = "1"
                 $env:HERMES_GPT_ENABLE_MEMORY_WRITE = "1"
                 $env:HERMES_GPT_ENABLE_SESSION_SEARCH = "1"
@@ -368,15 +414,9 @@ function Start-Hermes {
                 -RedirectStandardOutput $outPath `
                 -RedirectStandardError $errPath | Out-Null
         } finally {
-            $env:HERMES_HOME = $previousHermesHome
-            $env:HERMES_GPT_ENABLE_WRITE = $previousWrite
-            $env:HERMES_GPT_ENABLE_MEMORY_WRITE = $previousMemoryWrite
-            $env:HERMES_GPT_ENABLE_SESSION_SEARCH = $previousSessionSearch
-            $env:HERMES_GPT_ENABLE_TERMINAL = $previousTerminal
-            $env:HERMES_GPT_OPERATOR_ENABLED = $previousOperatorEnabled
-            $env:HERMES_GPT_OPERATOR_LEVEL = $previousOperatorLevel
-            $env:HERMES_GPT_OPERATOR_APPLY_MODE = $previousOperatorApplyMode
-            $env:HERMES_GPT_OWNER_ACK = $previousOwnerAck
+            foreach ($name in $hermesEnvNames) {
+                [Environment]::SetEnvironmentVariable($name, $previousHermesEnv[$name], "Process")
+            }
         }
         return
     }
