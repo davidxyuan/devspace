@@ -160,7 +160,7 @@ if ($Action -ne "Auto" -and $Action -ne $detectedAction) {
     Fail "Requested $Action conflicts with detected safe action $detectedAction."
 }
 $Action = $detectedAction
-if ($Action -eq "CapabilitiesOnly" -and -not $CapabilitySelection -and -not $VerifyOnly) {
+if ($Action -eq "CapabilitiesOnly" -and -not $CapabilitySelection -and -not $VerifyOnly -and -not $DryRun) {
     Fail "Tested versions are already installed; provide an explicit capability selection or use -VerifyOnly."
 }
 
