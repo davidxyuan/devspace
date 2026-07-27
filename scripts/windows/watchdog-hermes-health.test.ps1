@@ -57,6 +57,10 @@ function Test-HttpOk([string]$url) {
     return $script:testHealthy
 }
 
+function Test-FixedPortOwnership([int]$listenPort, [string]$serviceName) {
+    return $true
+}
+
 function Stop-ProcessTree([int]$processId, [string]$reason) {
     $script:stoppedPids += $processId
 }

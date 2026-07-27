@@ -20,7 +20,7 @@ $HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
 $HermesRef = "codex/upgrade-v0.5.0"
 $HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"
 $HermesVersion = [version]"0.5.0"
-$RawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection"
+$RawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts"
 $MigrationUrl = "$RawBase/scripts/migrate-oauth-json-to-sqlite.mjs"
 $CapabilityHelperUrl = "$RawBase/scripts/windows/capability-config.ps1"
 $WatchdogUrl = "$RawBase/scripts/windows/devspace-watchdog.ps1"
@@ -29,6 +29,25 @@ function Fail([string]$message) { throw "SAFE EXISTING-MACHINE ACTION REFUSED: $
 function Read-Json([string]$path) {
     if (-not (Test-Path -LiteralPath $path)) { Fail "Required file is missing: $path" }
     try { return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { Fail "Invalid JSON: $path" }
+}
+function Get-PortOwners([int]$port) {
+    @(
+        Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId=$_" -ErrorAction SilentlyContinue }
+    )
+}
+function Find-NgrokInspectorPort($watchdog) {
+    $preferred = if ($watchdog.ngrokInspectorPort) { [int]$watchdog.ngrokInspectorPort } else { 4040 }
+    for ($candidate = $preferred; $candidate -lt ($preferred + 100); $candidate++) {
+        $owners = @(Get-PortOwners $candidate)
+        if (-not $owners.Count) { return $candidate }
+        $agentUrl = [string]$watchdog.ngrokAgentBaseUrl
+        if ($candidate -eq $preferred -and $agentUrl -and @($owners | Where-Object {
+            ([string]$_.CommandLine).IndexOf($agentUrl, [System.StringComparison]::OrdinalIgnoreCase) -lt 0
+        }).Count -eq 0) { return $candidate }
+    }
+    Fail "No available ngrok inspection UI port in $preferred-$($preferred + 99)."
 }
 function Run([scriptblock]$command, [string]$failure) {
     & $command
@@ -54,14 +73,18 @@ function Get-TaskSnapshot {
     }
 }
 function Stop-ManagedListeners($watchdog) {
-    $ports = @($watchdog.port, $watchdog.hermesPort, $watchdog.routerPort, 4040) |
+    $inspectorPort = if ($watchdog.ngrokInspectorPort) { [int]$watchdog.ngrokInspectorPort } else { 4040 }
+    $ports = @($watchdog.port, $watchdog.hermesPort, $watchdog.routerPort, $inspectorPort) |
         Where-Object { $_ -and [int]$_ -gt 0 } | Select-Object -Unique
     $managedPaths = @($watchdog.cliPath, $watchdog.hermesServer, $watchdog.routerPath, $watchdog.ngrokPath) | Where-Object { $_ }
     foreach ($port in $ports) {
         foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {
             $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)"
             $isManaged = $managedPaths | Where-Object { $process.CommandLine -like "*$_*" -or $process.ExecutablePath -eq $_ }
-            if (-not $isManaged) { Fail "Port $port is owned by an unrecognized process; refusing to stop it." }
+            if (-not $isManaged) {
+                if ([int]$port -eq $inspectorPort) { continue }
+                Fail "FIXED PORT CONFLICT: 127.0.0.1:$port is owned by PID $($process.ProcessId) ($($process.Name)), command=$($process.CommandLine). Stop or reconfigure that process and rerun; no service port will be moved or owner stopped."
+            }
             Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
         }
     }
@@ -180,7 +203,9 @@ $newCapabilities = [ordered]@{
 $oldCapsJson = if ($watchdog.capabilities) { $watchdog.capabilities | ConvertTo-Json -Depth 8 -Compress } else { "<legacy>" }
 $newCapsJson = $newCapabilities | ConvertTo-Json -Depth 8 -Compress
 $applyCapabilities = [bool]$CapabilitySelection -or $HermesAllowedRoots.Count -gt 0
+$ngrokInspectorPort = Find-NgrokInspectorPort $watchdog
 Write-Host "Detected action: $Action (DevSpace $devVersion, Hermes-GPT $hermesVersion)"
+Write-Host "Port policy: DevSpace $($watchdog.port), Hermes-GPT $($watchdog.hermesPort), and router $($watchdog.routerPort) stay fixed; ngrok inspection URL will be http://127.0.0.1:$ngrokInspectorPort"
 Write-Host "Capability delta:"
 if ($applyCapabilities) {
     Write-Host "  before: $oldCapsJson"
@@ -234,25 +259,25 @@ try {
         }
     }
 
+    $updated = Read-Json $watchdogPath
+    $updated | Add-Member -NotePropertyName ngrokInspectorPort -NotePropertyValue $ngrokInspectorPort -Force
     if ($applyCapabilities) {
-        $updated = Read-Json $watchdogPath
         $updated | Add-Member -NotePropertyName capabilities -NotePropertyValue $newCapabilities -Force
-        $tmpConfig = "$watchdogPath.tmp-$PID"
-        ($updated | ConvertTo-Json -Depth 12) + [Environment]::NewLine |
-            Set-Content -LiteralPath $tmpConfig -Encoding UTF8
-        Move-Item -LiteralPath $tmpConfig -Destination $watchdogPath -Force
-        Invoke-WebRequest $WatchdogUrl -OutFile "$InstallDir\devspace-watchdog.ps1.tmp-$PID" -UseBasicParsing
-        Move-Item "$InstallDir\devspace-watchdog.ps1.tmp-$PID" "$InstallDir\devspace-watchdog.ps1" -Force
     }
+    $tmpConfig = "$watchdogPath.tmp-$PID"
+    ($updated | ConvertTo-Json -Depth 12) + [Environment]::NewLine |
+        Set-Content -LiteralPath $tmpConfig -Encoding UTF8
+    Move-Item -LiteralPath $tmpConfig -Destination $watchdogPath -Force
+    Invoke-WebRequest $WatchdogUrl -OutFile "$InstallDir\devspace-watchdog.ps1.tmp-$PID" -UseBasicParsing
+    Move-Item "$InstallDir\devspace-watchdog.ps1.tmp-$PID" "$InstallDir\devspace-watchdog.ps1" -Force
 
     if ((Get-Content "$InstallDir\auth.json" -Raw) -ne (Get-Content "$backup\state\auth.json" -Raw)) { Fail "Owner auth changed unexpectedly." }
     if ((Export-ScheduledTask -TaskName $taskSnapshot.Name -TaskPath $taskSnapshot.Path) -ne $taskSnapshot.Xml) { Fail "Task privilege/definition changed unexpectedly." }
     if ($applyCapabilities) {
         $verifiedCaps = (Read-Json $watchdogPath).capabilities | ConvertTo-Json -Depth 8 -Compress
         if ($verifiedCaps -ne $newCapsJson) { Fail "Applied capability values did not verify." }
-    } elseif ((Get-Content $watchdogPath -Raw) -ne (Get-Content "$backup\state\devspace-watchdog.config.json" -Raw)) {
-        Fail "Preserved watchdog config changed unexpectedly."
     }
+    if ([int](Read-Json $watchdogPath).ngrokInspectorPort -ne $ngrokInspectorPort) { Fail "ngrok inspection port did not verify." }
     Start-ScheduledTask -TaskName $taskSnapshot.Name -TaskPath $taskSnapshot.Path
     Start-Sleep -Seconds 8
     Verify-Live

@@ -24,7 +24,7 @@
   <h1>全新電腦安裝<br>devspace_chatgpt + hermes_chatgpt</h1>
   <p class="lead">填入電腦代號、ngrok URL 與權限後，本頁會即時產生下載、安裝、驗證及 ChatGPT MCP 設定指令。新版安裝器不再使用可能過舊的 winget ngrok，而是直接取得官方 latest stable 版本。</p>
   <div class="summary">
-    <div class="mini"><h3>完成後會得到</h3><p><b>devspace_chatgpt_電腦代號</b>：遠端讀取、搜尋、修改及執行專案。</p><p><b>hermes_chatgpt_電腦代號</b>：呼叫 Hermes Owner／工作區工具。</p><div class="chips"><span class="chip">DevSpace 7676</span><span class="chip">Hermes 4750</span><span class="chip">Router 8765</span><span class="chip">ngrok 4040</span><span class="chip">官方 latest stable ngrok</span></div></div>
+    <div class="mini"><h3>完成後會得到</h3><p><b>devspace_chatgpt_電腦代號</b>：遠端讀取、搜尋、修改及執行專案。</p><p><b>hermes_chatgpt_電腦代號</b>：呼叫 Hermes Owner／工作區工具。</p><div class="chips"><span class="chip">DevSpace 7676 fixed</span><span class="chip">Hermes 4750 fixed</span><span class="chip">Router 8765 fixed</span><span class="chip">ngrok inspection 4040+ auto</span><span class="chip">官方 latest stable ngrok</span></div></div>
     <div class="mini"><h3>先準備</h3><ol><li>不重複的電腦代號</li><li>ngrok 公開 Base URL</li><li>新的 ngrok Authtoken</li></ol><p class="hint">Token 只在本機瀏覽器產生指令，不會由此 HTML 上傳。</p></div>
   </div>
 </div></header>
@@ -67,12 +67,12 @@
   <div class="notice bad">這條路徑只適用於已由 DevSpace Watchdog 管理、且 repo origin 可辨識的舊版 DevSpace/Hermes-GPT。它不會猜測遺失的狀態，也不會重建密鑰。無法完整備份、辨識唯一排程或保存 OAuth 時會拒絕執行。</div>
   <p>先關閉會修改 DevSpace/Hermes repo 的工具，確認磁碟空間足以完整備份兩個 checkout、<code>%USERPROFILE%\.devspace</code> 與 Hermes 的未追蹤檔案。舊 repo 不可有尚未提交的 tracked 變更；未追蹤的 launcher/config 會包含在 rollback backup。</p>
   <h3>1. 唯讀預檢</h3>
-  <div class="code"><button class="copy" data-copy="upgradeDryCode">複製</button><pre id="upgradeDryCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1"))) -DryRun</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeDryCode">複製</button><pre id="upgradeDryCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts/scripts/windows/upgrade-existing-tested-stack.ps1"))) -DryRun</pre></div>
   <h3>2. 一行升級</h3>
-  <div class="code"><button class="copy" data-copy="upgradeCode">複製</button><pre id="upgradeCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1")))</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeCode">複製</button><pre id="upgradeCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts/scripts/windows/upgrade-existing-tested-stack.ps1")))</pre></div>
   <p>升級器會先短暫停止原排程以固定狀態，建立 timestamp rollback backup；若備份失敗會重啟原排程並拒絕升級。備份保留原始 task XML、ngrok 設定、owner/auth、allowed roots、完整 watchdog JSON、<code>.local\share\devspace</code> OAuth/SQLite、<code>%LOCALAPPDATA%\hermes</code>、Hermes 使用者/未追蹤檔案及兩個 repo，再固定升級至 DevSpace 1.0.4 與 Hermes-GPT 0.5.0。舊 <code>oauth-state.json</code> 不會被覆寫；匯入 SQLite 會在單一 transaction 內完成並核對 clients/access/refresh counts。</p>
   <h3>3. 只驗證目前服務</h3>
-  <div class="code"><button class="copy" data-copy="upgradeVerifyCode">複製</button><pre id="upgradeVerifyCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/upgrade-existing-tested-stack.ps1"))) -VerifyOnly</pre></div>
+  <div class="code"><button class="copy" data-copy="upgradeVerifyCode">複製</button><pre id="upgradeVerifyCode">&amp; ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts/scripts/windows/upgrade-existing-tested-stack.ps1"))) -VerifyOnly</pre></div>
 </section>
 <section id="config" class="card"><div class="head"><span class="n">1</span><h2>填寫設定</h2></div>
   <div class="grid">
@@ -117,7 +117,7 @@ hermes -z "請只回答：Hermes OK"</pre></div>
 <section id="verify" class="card"><div class="head"><span class="n">6</span><h2>啟動與完整驗證</h2></div>
   <div class="code"><button class="copy" data-copy="verifyCode">複製</button><pre id="verifyCode"></pre></div>
   <table><thead><tr><th>項目</th><th>正常結果</th></tr></thead><tbody>
-    <tr><td>DevSpace 7676</td><td>HTTP 200</td></tr><tr><td>Hermes 4750</td><td>無 MCP headers 時可能回 406，代表已到達服務</td></tr><tr><td>Router 8765</td><td>回傳 JSON 狀態</td></tr><tr><td>ngrok 版本</td><td>顯示 ngrok 3.x，help 可找到 --url 與 --binding</td></tr><tr><td>ngrok 4040</td><td>回傳 tunnel 資料</td></tr>
+    <tr><td>DevSpace 7676</td><td>HTTP 200；若被占用會顯示 PID 並拒絕自動換埠</td></tr><tr><td>Hermes 4750</td><td>無 MCP headers 時可能回 406；若被占用不會自動換埠</td></tr><tr><td>Router 8765</td><td>回傳 JSON 狀態；若被占用不會自動換埠</td></tr><tr><td>ngrok 版本</td><td>顯示 ngrok 3.x，help 可找到 --url、--binding 與 --web-addr</td></tr><tr><td>ngrok inspection URL</td><td>安裝結果顯示並保存實際的 127.0.0.1 URL；4040 被占用時自動選下一個可用埠</td></tr>
   </tbody></table>
 </section>
 
@@ -147,7 +147,7 @@ function cfg(){return{m:slug($('machine').value),d:$('dir').value.trim()||'D:\\d
 function render(){const c=cfg();$('machine').value=c.m;let parent=c.d.replace(/[\\\/][^\\\/]+$/,'')||'C:\\';if(/^[A-Za-z]:$/.test(parent))parent+='\\';
 const on=id=>$(id).checked?'On':'Off';
 const caps=[`DevSpaceToolMode=${$('devTool').value}`,`DevSpaceWidgets=${$('devWidgets').value}`,`DevSpaceSkills=${on('devSkills')}`,`DevSpaceSubagents=${on('devSubagents')}`,`HermesBridge=${on('hBridge')}`,`HermesReadOnlyTools=${on('hRead')}`,`HermesVision=${on('hVision')}`,`HermesWeb=${on('hWeb')}`,`HermesDiagnostics=${on('hDiag')}`,`HermesRunner=${on('hRunner')}`,`HermesRunnerWrite=${on('hRunnerWrite')}`,`HermesWorkspaceWrite=${on('hWorkspaceWrite')}`,`HermesMemoryWrite=${on('hMemoryWrite')}`,`HermesTerminal=${on('hTerminal')}`,`HermesOperator=${on('hOperator')}`,`HermesOperatorDirect=${on('hDirect')}`,`HermesOwnerMode=${on('hOwner')}`,`HermesCron=${on('hCron')}`,`HermesCronWrite=${on('hCronWrite')}`,`HermesSkillWrite=${on('hSkillWrite')}`,`HermesPrivateNetwork=${on('hPrivate')}`,`HermesFilesystemScope=${$('hFs').value}`].join(';');
-const raw='https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection/scripts/windows/';
+const raw='https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts/scripts/windows/';
 const common=` -CapabilitySelection "${caps}" -HermesAllowedRoots "${ps(c.roots)}"`;
 let detect;
 if($('workflow').value==='upgrade')detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}upgrade-existing-tested-stack.ps1"))) -Action Upgrade${common}`;

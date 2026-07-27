@@ -29,6 +29,8 @@ $publicHost = ([Uri]$publicBaseUrl).Host
 $ngrokAgentBaseUrl = if ($config.ngrokAgentBaseUrl) { [string]$config.ngrokAgentBaseUrl } else { $publicBaseUrl }
 $ngrokAgentHost = ([Uri]$ngrokAgentBaseUrl).Host
 $ngrokBinding = [string]$config.ngrokBinding
+$ngrokInspectorPort = if ($config.ngrokInspectorPort) { [int]$config.ngrokInspectorPort } else { 4040 }
+$ngrokInspectorUrl = "http://127.0.0.1:$ngrokInspectorPort"
 $ngrokManagedHosts = @($publicHost, $ngrokAgentHost) | Where-Object { $_ } | Select-Object -Unique
 $manageNgrok = if ($null -eq $config.manageNgrok) { [bool]$ngrokPath } else { [bool]$config.manageNgrok }
 $publicUpstreamPort = if ($config.publicUpstreamPort) { [int]$config.publicUpstreamPort } else { $port }
@@ -151,6 +153,41 @@ function Is-DevSpaceServe($process) {
     return $cmd -like "*$cliPath*" -and $cmd -match "serve"
 }
 
+function Is-HermesServe($process) {
+    if (-not $process) {
+        return $false
+    }
+    $cmd = [string]$process.CommandLine
+    return ($hermesServer -and $cmd -like "*$hermesServer*") -or
+        ($hermesCommand -and $cmd -like "*$hermesCommand*")
+}
+
+function Is-RouterServe($process) {
+    if (-not $process -or $process.Name -ne "node.exe") {
+        return $false
+    }
+    return $routerPath -and ([string]$process.CommandLine) -like "*$routerPath*"
+}
+
+function Test-FixedPortOwnership([int]$listenPort, [string]$serviceName) {
+    foreach ($ownerPid in Get-ListenOwners $listenPort) {
+        $owner = Get-ProcessInfo $ownerPid
+        $isExpected = switch ($serviceName) {
+            "DevSpace" { Is-DevSpaceServe $owner }
+            "Hermes-GPT" { Is-HermesServe $owner }
+            "MCP router" { Is-RouterServe $owner }
+            default { $false }
+        }
+        if (-not $isExpected) {
+            $name = if ($owner) { [string]$owner.Name } else { "unknown" }
+            $command = if ($owner) { [string]$owner.CommandLine } else { "unavailable" }
+            Write-WatchdogLog "FIXED PORT CONFLICT: $serviceName requires 127.0.0.1:$listenPort, owned by PID $ownerPid ($name), command=$command. Stop or reconfigure that process, then rerun the watchdog; the service port will not move and the watchdog will not stop the owner."
+            return $false
+        }
+    }
+    return $true
+}
+
 function Stop-RetiredPortListeners {
     foreach ($retiredPort in $retiredPorts) {
         foreach ($ownerPid in Get-ListenOwners ([int]$retiredPort)) {
@@ -170,20 +207,6 @@ function Invoke-RestartIfRequested {
     }
 
     Write-WatchdogLog "restart request detected; stopping managed DevSpace stack"
-    foreach ($ownerPid in Get-ListenOwners $port) {
-        Stop-ProcessTree $ownerPid "restart request for DevSpace port $port"
-    }
-    if ($hermesPort) {
-        foreach ($ownerPid in Get-ListenOwners $hermesPort) {
-            Stop-ProcessTree $ownerPid "restart request for Hermes port $hermesPort"
-        }
-    }
-    if ($routerPort) {
-        foreach ($ownerPid in Get-ListenOwners $routerPort) {
-            Stop-ProcessTree $ownerPid "restart request for MCP router port $routerPort"
-        }
-    }
-
     $managedProcesses = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
@@ -277,6 +300,9 @@ function Ensure-DevSpace {
     }
 
     Stop-RetiredPortListeners
+    if (-not (Test-FixedPortOwnership $port "DevSpace")) {
+        return
+    }
 
     $listeners = @(Get-ListenOwners $port)
     if ($listeners.Count -gt 1) {
@@ -440,6 +466,9 @@ function Ensure-Hermes {
         return
     }
 
+    if (-not (Test-FixedPortOwnership $hermesPort "Hermes-GPT")) {
+        return
+    }
     $listeners = @(Get-ListenOwners $hermesPort)
     if ($listeners.Count -eq 0) {
         Start-Hermes
@@ -480,6 +509,9 @@ function Ensure-Router {
         return
     }
 
+    if (-not (Test-FixedPortOwnership $routerPort "MCP router")) {
+        return
+    }
     $listeners = @(Get-ListenOwners $routerPort)
     if ($listeners.Count -eq 0) {
         Start-Router
@@ -516,12 +548,13 @@ function Is-GoodNgrok($process) {
         return $false
     }
     $cmd = [string]$process.CommandLine
-    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*"
+    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and
+        $cmd -like "*--web-addr*" -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*"
 }
 
 function Test-NgrokTunnel {
     try {
-        $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
+        $response = Invoke-RestMethod -Uri "$ngrokInspectorUrl/api/tunnels" -TimeoutSec 5
         foreach ($tunnel in @($response.tunnels)) {
             if ([string]$tunnel.public_url -eq $ngrokAgentBaseUrl -and [string]$tunnel.config.addr -eq $upstream) {
                 return $true
@@ -541,12 +574,13 @@ function Start-Ngrok {
 
     $ngrokArgs = @("http", $upstream)
     $ngrokArgs += @("--url", $ngrokAgentBaseUrl)
+    $ngrokArgs += @("--web-addr", "127.0.0.1:$ngrokInspectorPort")
     if ($ngrokBinding) {
         $ngrokArgs += @("--binding", $ngrokBinding)
     }
     $ngrokArgs += @("--log", "stdout")
 
-    Write-WatchdogLog "starting ngrok agent endpoint $ngrokAgentBaseUrl for public $publicBaseUrl -> $upstream"
+    Write-WatchdogLog "starting ngrok agent endpoint $ngrokAgentBaseUrl for public $publicBaseUrl -> $upstream; inspector=$ngrokInspectorUrl"
     Start-Process `
         -FilePath $ngrokPath `
         -ArgumentList $ngrokArgs `

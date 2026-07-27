@@ -30,6 +30,7 @@ if "%1"=="http" (
   echo Usage: ngrok http [address:port ^| port]
   echo   --url string
   echo   --binding string
+  echo   --web-addr string
   exit /b 0
 )
 if "%1"=="version" echo ngrok version 3.39.2

@@ -15,6 +15,8 @@ $source = Get-Content $path -Raw
     "Owner auth changed unexpectedly",
     "Task privilege/definition changed unexpectedly",
     "Detected action:",
-    'if ($Action -eq "Upgrade")'
+    'if ($Action -eq "Upgrade")',
+    'if ([int]$port -eq $inspectorPort) { continue }',
+    "FIXED PORT CONFLICT:"
 ) | ForEach-Object { if (-not $source.Contains($_)) { throw "Missing safety behavior: $_" } }
 Write-Host "existing stack upgrade installer tests passed."

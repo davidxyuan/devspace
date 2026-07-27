@@ -179,6 +179,15 @@ const server = http.createServer((req, res) => {
   req.pipe(upstream);
 });
 
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`FIXED PORT CONFLICT: MCP router requires http://${listenHost}:${listenPort}. Stop the owning process or explicitly reconfigure the router and every dependent route/client; the router will not move automatically.`);
+  } else {
+    console.error(`mcp-router failed: ${error.message}`);
+  }
+  process.exitCode = 1;
+});
+
 server.listen(listenPort, listenHost, () => {
   console.log(`mcp-router listening on http://${listenHost}:${listenPort}`);
 });

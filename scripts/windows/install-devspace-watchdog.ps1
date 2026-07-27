@@ -84,6 +84,46 @@ function Fail([string]$message, [string]$fix = "") {
     throw $message
 }
 
+function Get-ListenOwnerDetails([int]$listenPort) {
+    @(
+        Get-NetTCPConnection -LocalPort $listenPort -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            Where-Object { $_ -and $_ -ne 0 } |
+            ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId=$_" -ErrorAction SilentlyContinue }
+    )
+}
+
+function Assert-FixedPortOwnership([int]$listenPort, [string]$serviceName, [string[]]$expectedPaths) {
+    foreach ($owner in Get-ListenOwnerDetails $listenPort) {
+        $command = [string]$owner.CommandLine
+        $isExpected = @($expectedPaths | Where-Object {
+            $_ -and $command.IndexOf([string]$_, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        }).Count -gt 0
+        if (-not $isExpected) {
+            Fail "FIXED PORT CONFLICT: $serviceName requires 127.0.0.1:$listenPort, owned by PID $($owner.ProcessId) ($($owner.Name)), command=$command." "Stop or reconfigure that process, then rerun. This installer will not move the service port, stop the owner, or rewrite dependent public routes and clients."
+        }
+    }
+}
+
+function Find-AvailableLoopbackPort([int]$preferredPort, [string[]]$expectedCommandFragments = @()) {
+    for ($candidate = $preferredPort; $candidate -lt ($preferredPort + 100); $candidate++) {
+        $owners = @(Get-ListenOwnerDetails $candidate)
+        if ($owners.Count -eq 0) {
+            return $candidate
+        }
+        if ($candidate -eq $preferredPort -and $expectedCommandFragments.Count -and
+            @($owners | Where-Object {
+                $command = [string]$_.CommandLine
+                @($expectedCommandFragments | Where-Object {
+                    $_ -and $command.IndexOf([string]$_, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+                }).Count -eq 0
+            }).Count -eq 0) {
+            return $candidate
+        }
+    }
+    Fail "No available loopback port was found for the ngrok inspection UI in the range $preferredPort-$($preferredPort + 99)." "Free one port in that range and rerun."
+}
+
 function Test-IsElevated {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
@@ -393,6 +433,19 @@ $watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
 $existingConfig = Read-JsonFile $configPath
 $existingAuth = Read-JsonFile $authPath
 $existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
+if (($installDevSpace -and $Port -eq $RouterPort) -or ($installHermes -and $HermesPort -eq $RouterPort) -or
+    ($installDevSpace -and $installHermes -and $Port -eq $HermesPort)) {
+    Fail "DevSpace, Hermes-GPT, and router ports must be distinct." "Choose three fixed, non-overlapping ports and update their dependent routes and clients explicitly."
+}
+if ($installDevSpace) {
+    Assert-FixedPortOwnership $Port "DevSpace" @([string]$existingWatchdogConfig.cliPath)
+}
+if ($installHermes) {
+    Assert-FixedPortOwnership $HermesPort "Hermes-GPT" @([string]$existingWatchdogConfig.hermesServer, [string]$existingWatchdogConfig.hermesCommand)
+}
+if ($useRouter) {
+    Assert-FixedPortOwnership $RouterPort "MCP router" @([string]$existingWatchdogConfig.routerPath)
+}
 foreach ($entry in (ConvertFrom-CapabilitySelection $CapabilitySelection).GetEnumerator()) {
     Set-Variable -Name $entry.Key -Value $entry.Value
 }
@@ -693,6 +746,11 @@ $watchdogConfig = [ordered]@{
     ngrokEndpointMode = $NgrokEndpointMode
     ngrokAgentBaseUrl = $NgrokAgentBaseUrl
     ngrokBinding = $NgrokBinding
+    ngrokInspectorPort = if ($SkipNgrok) { 0 } else {
+        Find-AvailableLoopbackPort `
+            $(if ($existingWatchdogConfig.ngrokInspectorPort) { [int]$existingWatchdogConfig.ngrokInspectorPort } else { 4040 }) `
+            @([string]$existingWatchdogConfig.ngrokAgentBaseUrl, [string]$existingWatchdogConfig.publicBaseUrl)
+    }
     mcpNameSuffix = if ($McpNameSuffix) { ConvertTo-Slug $McpNameSuffix } else { "" }
     routeAliasMachineNames = @($routeMachineSlugs | Where-Object { $_ -ne $machineSlug })
     capabilities = [ordered]@{ devspace = $devspaceCapabilities; hermes = $hermesCapabilities }
@@ -804,6 +862,9 @@ if ($installHermes) {
 }
 if ($NgrokAgentBaseUrl) {
     Write-Host "ngrok Agent Endpoint URL: $NgrokAgentBaseUrl"
+}
+if (-not $SkipNgrok) {
+    Write-Host "ngrok local inspection URL: http://127.0.0.1:$($watchdogConfig.ngrokInspectorPort)"
 }
 if ($NgrokEndpointMode -eq "CloudEndpoint" -and $CloudEndpointPolicyPath) {
     Write-Host "Cloud Endpoint policy file: $CloudEndpointPolicyPath"

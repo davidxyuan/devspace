@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-capability-selection"
+$RawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts"
 $configExists = Test-Path (Join-Path $InstallDir "config.json")
 $watchdogExists = Test-Path (Join-Path $InstallDir "devspace-watchdog.config.json")
 $repoArtifacts = (Test-Path (Join-Path $InstallRoot "devspace")) -or (Test-Path (Join-Path $InstallRoot "hermes-gpt"))
