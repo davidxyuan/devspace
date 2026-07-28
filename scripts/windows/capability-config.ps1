@@ -47,7 +47,7 @@ function New-HermesCapabilityConfig(
         skillWrite = Convert-CapabilitySwitch $SkillWrite
         privateNetwork = Convert-CapabilitySwitch $PrivateNetwork
         filesystemScope = $FilesystemScope
-        allowedRoots = @($AllowedRoots | Where-Object { $_ })
+        allowedRoots = @($AllowedRoots | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_) } | Select-Object -Unique)
     }
     if ($values.runnerWrite -and -not $values.runner) { throw "Runner write requires Runner." }
     if (($values.runner -or $values.workspaceWrite -or $values.cronWrite -or $values.skillWrite -or $values.operatorDirect) -and -not $values.operator) {
@@ -87,15 +87,65 @@ function ConvertFrom-CapabilitySelection([string]$Selection) {
     foreach ($item in @($Selection -split ";")) {
         if (-not $item.Trim()) { continue }
         $parts = $item.Split("=", 2)
-        if ($parts.Count -ne 2 -or -not $allowed.ContainsKey($parts[0])) {
+        $key = $parts[0].Trim()
+        $value = if ($parts.Count -eq 2) { $parts[1].Trim() } else { "" }
+        if ($parts.Count -ne 2 -or -not $allowed.ContainsKey($key)) {
             throw "Unknown capability selection: $item"
         }
-        if ($parts[1] -notin $allowed[$parts[0]]) {
-            throw "Invalid value '$($parts[1])' for capability '$($parts[0])'."
+        if ($value -notin $allowed[$key]) {
+            throw "Invalid value '$value' for capability '$key'."
         }
-        $result[$parts[0]] = $parts[1]
+        $result[$key] = $value
     }
     return $result
+}
+
+function Get-TestedComponentState(
+    [string]$Name,
+    [version]$CurrentVersion,
+    [version]$PinnedVersion,
+    [string]$CurrentCommit = "",
+    [string]$PinnedCommit = ""
+) {
+    if ($null -eq $CurrentVersion) { throw "$Name version is unknown." }
+    if ($CurrentVersion -gt $PinnedVersion) {
+        throw "$Name $CurrentVersion is newer than tested version $PinnedVersion; downgrade is refused."
+    }
+    if ($CurrentVersion -lt $PinnedVersion) {
+        return [pscustomobject]@{ name=$Name; state="Upgrade"; currentVersion=$CurrentVersion; pinnedVersion=$PinnedVersion }
+    }
+    if ($PinnedCommit -and $CurrentCommit -ne $PinnedCommit) {
+        throw "$Name version matches $PinnedVersion but commit '$CurrentCommit' does not match tested commit '$PinnedCommit'."
+    }
+    return [pscustomobject]@{ name=$Name; state="Keep"; currentVersion=$CurrentVersion; pinnedVersion=$PinnedVersion }
+}
+
+function Get-TestedStackPlan(
+    [bool]$Recognized,
+    [version]$DevSpaceVersion,
+    [version]$HermesVersion,
+    [version]$PinnedDevSpace = [version]"1.0.4",
+    [version]$PinnedHermes = [version]"0.5.0",
+    [string]$DevSpaceCommit = "",
+    [string]$HermesCommit = "",
+    [string]$PinnedDevSpaceCommit = "",
+    [string]$PinnedHermesCommit = ""
+) {
+    if (-not $Recognized) {
+        return [pscustomobject]@{ action="Fresh"; devspaceState="Fresh"; hermesState="Fresh" }
+    }
+    $dev = Get-TestedComponentState "DevSpace" $DevSpaceVersion $PinnedDevSpace $DevSpaceCommit $PinnedDevSpaceCommit
+    $hermes = Get-TestedComponentState "Hermes-GPT" $HermesVersion $PinnedHermes $HermesCommit $PinnedHermesCommit
+    $action = if ($dev.state -eq "Upgrade" -and $hermes.state -eq "Upgrade") {
+        "Upgrade"
+    } elseif ($dev.state -eq "Upgrade") {
+        "UpgradeDevSpace"
+    } elseif ($hermes.state -eq "Upgrade") {
+        "UpgradeHermes"
+    } else {
+        "CapabilitiesOnly"
+    }
+    return [pscustomobject]@{ action=$action; devspaceState=$dev.state; hermesState=$hermes.state }
 }
 
 function Get-TestedStackAction(
@@ -109,23 +159,5 @@ function Get-TestedStackAction(
     [string]$PinnedDevSpaceCommit = "",
     [string]$PinnedHermesCommit = ""
 ) {
-    if (-not $Recognized) { return "Fresh" }
-    if ($DevSpaceVersion -gt $PinnedDevSpace -or $HermesVersion -gt $PinnedHermes) {
-        throw "Newer or unknown tested-stack versions are not safe to change."
-    }
-
-    $upgradeDevSpace = $DevSpaceVersion -lt $PinnedDevSpace
-    $upgradeHermes = $HermesVersion -lt $PinnedHermes
-
-    if (-not $upgradeDevSpace -and $PinnedDevSpaceCommit -and $DevSpaceCommit -ne $PinnedDevSpaceCommit) {
-        throw "DevSpace version matches but the pinned tested commit does not."
-    }
-    if (-not $upgradeHermes -and $PinnedHermesCommit -and $HermesCommit -ne $PinnedHermesCommit) {
-        throw "Hermes-GPT version matches but the pinned tested commit does not."
-    }
-
-    if ($upgradeDevSpace -and $upgradeHermes) { return "Upgrade" }
-    if ($upgradeDevSpace) { return "UpgradeDevSpace" }
-    if ($upgradeHermes) { return "UpgradeHermes" }
-    return "CapabilitiesOnly"
+    return (Get-TestedStackPlan $Recognized $DevSpaceVersion $HermesVersion $PinnedDevSpace $PinnedHermes $DevSpaceCommit $HermesCommit $PinnedDevSpaceCommit $PinnedHermesCommit).action
 }

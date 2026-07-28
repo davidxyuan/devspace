@@ -17,7 +17,8 @@ $entry = Get-Content (Join-Path $PSScriptRoot "detect-and-apply-tested-stack.ps1
 if ($installer -match 'if \(\$FullAccess\)\s*\{\s*\$env:HERMES') {
     throw "DevSpace FullAccess must not enable Hermes capabilities."
 }
-if (-not $upgrader.Contains('if ($Action -eq "Upgrade")')) { throw "Upgrade mutations are not action-gated." }
+if (-not $upgrader.Contains('$upgradeDevSpace = $Action -in @("Upgrade", "UpgradeDevSpace")')) { throw "DevSpace mutation is not component-gated." }
+if (-not $upgrader.Contains('$upgradeHermes = $Action -in @("Upgrade", "UpgradeHermes")')) { throw "Hermes mutation is not component-gated." }
 if (-not $upgrader.Contains("Preserve current effective settings")) { throw "Upgrade lacks Preserve default." }
 if (-not $entry.Contains("partial/unknown existing installation")) { throw "Unified entry lacks partial-install refusal." }
 if (-not $entry.Contains("repository artifacts exist without a recognized live configuration")) { throw "Unified entry may overwrite unknown repos." }

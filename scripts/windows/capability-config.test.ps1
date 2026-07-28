@@ -5,7 +5,10 @@ if ((Get-TestedStackAction $false $null $null) -ne "Fresh") { throw "Missing ins
 if ((Get-TestedStackAction $true ([version]"1.0.3") ([version]"0.4.0")) -ne "Upgrade") { throw "Older pair must select Upgrade." }
 if ((Get-TestedStackAction $true ([version]"1.0.3") ([version]"0.5.0")) -ne "UpgradeDevSpace") { throw "Older DevSpace must select UpgradeDevSpace." }
 if ((Get-TestedStackAction $true ([version]"1.0.4") ([version]"0.4.0")) -ne "UpgradeHermes") { throw "Older Hermes must select UpgradeHermes." }
-if ((Get-TestedStackAction $true ([version]"1.0.4") ([version]"0.5.0")) -ne "CapabilitiesOnly") { throw "Equal pair must select CapabilitiesOnly." }
+$plan = Get-TestedStackPlan $true ([version]"1.0.4") ([version]"0.5.0") ([version]"1.0.4") ([version]"0.5.0") "d" "h" "d" "h"
+if ($plan.action -ne "CapabilitiesOnly" -or $plan.devspaceState -ne "Keep" -or $plan.hermesState -ne "Keep") {
+    throw "Current tested pair must return a structured CapabilitiesOnly plan."
+}
 try {
     Get-TestedStackAction $true ([version]"1.0.4") ([version]"0.5.0") ([version]"1.0.4") ([version]"0.5.0") "wrong" "h" "d" "h" | Out-Null
     throw "Equal labels with a non-pinned commit were accepted."
@@ -26,10 +29,14 @@ try {
 } catch {
     if ($_.Exception.Message -eq "Invalid capability was accepted.") { throw }
 }
+$selection = ConvertFrom-CapabilitySelection " HermesTerminal = On ; DevSpaceToolMode = full "
+if ($selection.HermesTerminal -ne "On" -or $selection.DevSpaceToolMode -ne "full") { throw "Capability whitespace normalization failed." }
 try {
     New-HermesCapabilityConfig On On Off Off On Off On Off Off Off Off Off Off Off Off Off Off restricted @() | Out-Null
     throw "Unapproved runner broadening was accepted."
 } catch {
     if ($_.Exception.Message -eq "Unapproved runner broadening was accepted.") { throw }
 }
+$full = New-HermesCapabilityConfig On On On On On On On On On On On On On On On On On full @("C:\", "C:\")
+if ($full.allowedRoots.Count -ne 1 -or -not $full.ownerMode -or -not $full.runnerWrite) { throw "Full capability profile normalization failed." }
 Write-Host "capability config tests passed."
