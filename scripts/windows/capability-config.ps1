@@ -110,13 +110,22 @@ function Get-TestedStackAction(
     [string]$PinnedHermesCommit = ""
 ) {
     if (-not $Recognized) { return "Fresh" }
-    if ($DevSpaceVersion -eq $PinnedDevSpace -and $HermesVersion -eq $PinnedHermes) {
-        if (($PinnedDevSpaceCommit -and $DevSpaceCommit -ne $PinnedDevSpaceCommit) -or
-            ($PinnedHermesCommit -and $HermesCommit -ne $PinnedHermesCommit)) {
-            throw "Version labels match but pinned tested commits do not."
-        }
-        return "CapabilitiesOnly"
+    if ($DevSpaceVersion -gt $PinnedDevSpace -or $HermesVersion -gt $PinnedHermes) {
+        throw "Newer or unknown tested-stack versions are not safe to change."
     }
-    if ($DevSpaceVersion -lt $PinnedDevSpace -and $HermesVersion -lt $PinnedHermes) { return "Upgrade" }
-    throw "Mixed, newer, or unknown tested-stack versions are not safe to change."
+
+    $upgradeDevSpace = $DevSpaceVersion -lt $PinnedDevSpace
+    $upgradeHermes = $HermesVersion -lt $PinnedHermes
+
+    if (-not $upgradeDevSpace -and $PinnedDevSpaceCommit -and $DevSpaceCommit -ne $PinnedDevSpaceCommit) {
+        throw "DevSpace version matches but the pinned tested commit does not."
+    }
+    if (-not $upgradeHermes -and $PinnedHermesCommit -and $HermesCommit -ne $PinnedHermesCommit) {
+        throw "Hermes-GPT version matches but the pinned tested commit does not."
+    }
+
+    if ($upgradeDevSpace -and $upgradeHermes) { return "Upgrade" }
+    if ($upgradeDevSpace) { return "UpgradeDevSpace" }
+    if ($upgradeHermes) { return "UpgradeHermes" }
+    return "CapabilitiesOnly"
 }

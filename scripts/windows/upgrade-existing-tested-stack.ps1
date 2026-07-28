@@ -13,8 +13,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/upgrade-devspace-v1.0.4"
-$DevSpaceCommit = "9c4462ba1ea43a846fd511b8b10e4bb6ac49493d"
+$DevSpaceRef = "codex/windows-fixed-port-conflicts"
+$DevSpaceCommit = "ca7c10a39b5c099455db662c3aba9007b5eb34e3"
 $DevSpaceVersion = [version]"1.0.4"
 $HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
 $HermesRef = "codex/upgrade-v0.5.0"
@@ -53,13 +53,16 @@ function Run([scriptblock]$command, [string]$failure) {
     & $command
     if ($LASTEXITCODE -ne 0) { Fail $failure }
 }
-function Assert-Repo([string]$path, [string]$expectedRemote) {
+function Resolve-RepoRemote([string]$path, [string]$expectedRemote) {
     if (-not (Test-Path -LiteralPath (Join-Path $path ".git"))) { Fail "Not a Git checkout: $path" }
-    $remote = (& git -C $path remote get-url origin).Trim()
-    if ($remote -ne $expectedRemote) { Fail "Unexpected origin for ${path}: $remote" }
     if (& git -C $path status --porcelain --untracked-files=no) {
         Fail "Tracked changes exist in $path; no upgrade or capability change was attempted."
     }
+    foreach ($name in @(& git -C $path remote)) {
+        $url = (& git -C $path remote get-url $name).Trim()
+        if ($url -eq $expectedRemote) { return [string]$name }
+    }
+    Fail "No Git remote in $path points to expected repository: $expectedRemote"
 }
 function Get-TaskSnapshot {
     $names = @("DevSpaceNgrokWatchdog", "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")
@@ -159,36 +162,36 @@ if (-not $HermesDir) { $HermesDir = [string]$watchdog.hermesWorkingDirectory }
 if (-not $DevSpaceDir -or -not $HermesDir) { Fail "DevSpace or Hermes checkout cannot be identified." }
 $DevSpaceDir = [IO.Path]::GetFullPath($DevSpaceDir)
 $HermesDir = [IO.Path]::GetFullPath($HermesDir)
-Assert-Repo $DevSpaceDir $DevSpaceRepo
-Assert-Repo $HermesDir $HermesRepo
+$devRemote = Resolve-RepoRemote $DevSpaceDir $DevSpaceRepo
+$hermesRemote = Resolve-RepoRemote $HermesDir $HermesRepo
 $taskSnapshot = Get-TaskSnapshot
 
+. (Join-Path $PSScriptRoot "capability-config.ps1")
 $devVersion = [version]((Get-Content (Join-Path $DevSpaceDir "package.json") -Raw | ConvertFrom-Json).version)
 $devHead = (& git -C $DevSpaceDir rev-parse HEAD).Trim()
 $hermesPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
 if (-not (Test-Path $hermesPython)) { Fail "Existing Hermes virtual environment is missing." }
-$hermesVersion = [version]((& $hermesPython -c "from importlib.metadata import version; print(version('hermes-gpt'))").Trim())
+$hermesProjectText = Get-Content (Join-Path $HermesDir "pyproject.toml") -Raw
+if ($hermesProjectText -notmatch '(?m)^version\s*=\s*"([^"]+)"') { Fail "Hermes-GPT project version cannot be read." }
+$hermesVersion = [version]$Matches[1]
 $hermesHead = (& git -C $HermesDir rev-parse HEAD).Trim()
-$detectedAction = if ($devVersion -eq $DevSpaceVersion -and $hermesVersion -eq $HermesVersion) {
-    if ($devHead -ne $DevSpaceCommit -or $hermesHead -ne $HermesCommit) {
-        Fail "Version labels match, but commits are not the pinned tested pair. No overwrite was attempted."
-    }
-    "CapabilitiesOnly"
-} elseif ($devVersion -lt $DevSpaceVersion -and $hermesVersion -lt $HermesVersion) {
-    "Upgrade"
-} else {
-    Fail "Unsupported mixed/newer state: DevSpace $devVersion, Hermes-GPT $hermesVersion. No downgrade or overwrite is allowed."
+try {
+    $detectedAction = Get-TestedStackAction $true $devVersion $hermesVersion $DevSpaceVersion $HermesVersion $devHead $hermesHead $DevSpaceCommit $HermesCommit
+} catch {
+    Fail "$($_.Exception.Message) Current state: DevSpace $devVersion ($devHead), Hermes-GPT $hermesVersion ($hermesHead)."
 }
-if ($Action -ne "Auto" -and $Action -ne $detectedAction) {
-    Fail "Requested $Action conflicts with detected safe action $detectedAction."
+if ($Action -eq "CapabilitiesOnly" -and $detectedAction -ne "CapabilitiesOnly") {
+    Fail "Requested CapabilitiesOnly but component upgrades are required: $detectedAction."
+}
+if ($Action -eq "Upgrade" -and $detectedAction -eq "CapabilitiesOnly") {
+    Fail "Requested Upgrade but both tested components are already current."
 }
 $Action = $detectedAction
+$upgradeDevSpace = $Action -in @("Upgrade", "UpgradeDevSpace")
+$upgradeHermes = $Action -in @("Upgrade", "UpgradeHermes")
 if ($Action -eq "CapabilitiesOnly" -and -not $CapabilitySelection -and -not $VerifyOnly -and -not $DryRun) {
     Fail "Tested versions are already installed; provide an explicit capability selection or use -VerifyOnly."
 }
-
-$helperText = Invoke-RestMethod $CapabilityHelperUrl
-. ([scriptblock]::Create($helperText))
 $capArgs = Get-CurrentCapabilityArguments $watchdog
 foreach ($entry in (ConvertFrom-CapabilitySelection $CapabilitySelection).GetEnumerator()) { $capArgs[$entry.Key] = $entry.Value }
 if ($HermesAllowedRoots.Count) { $capArgs.HermesAllowedRoots = $HermesAllowedRoots }
@@ -226,10 +229,14 @@ try {
     Stop-ManagedListeners $watchdog
     $taskSnapshot.Xml | Set-Content (Join-Path $backup "watchdog-task.xml") -Encoding Unicode
     Copy-Item $InstallDir (Join-Path $backup "state") -Recurse
-    if ($Action -eq "Upgrade") {
-        Invoke-WebRequest $MigrationUrl -OutFile (Join-Path $backup "migrate-oauth-json-to-sqlite.mjs") -UseBasicParsing
+    if ($upgradeDevSpace -or $upgradeHermes) {
         if ($stateDir -ne $InstallDir -and (Test-Path $stateDir)) { Copy-Item $stateDir (Join-Path $backup "devspace-data") -Recurse }
+    }
+    if ($upgradeDevSpace) {
+        Invoke-WebRequest $MigrationUrl -OutFile (Join-Path $backup "migrate-oauth-json-to-sqlite.mjs") -UseBasicParsing
         Copy-Item $DevSpaceDir (Join-Path $backup "devspace") -Recurse
+    }
+    if ($upgradeHermes) {
         Copy-Item $HermesDir (Join-Path $backup "hermes-gpt") -Recurse
         if (Test-Path "$env:LOCALAPPDATA\hermes") { Copy-Item "$env:LOCALAPPDATA\hermes" (Join-Path $backup "hermes-home") -Recurse }
     }
@@ -245,18 +252,20 @@ try {
 }
 
 try {
-    if ($Action -eq "Upgrade") {
-        Run { git -C $DevSpaceDir fetch --depth 1 origin $DevSpaceRef } "Failed to fetch pinned DevSpace."
+    if ($upgradeDevSpace) {
+        Run { git -C $DevSpaceDir fetch --depth 1 $devRemote $DevSpaceRef } "Failed to fetch pinned DevSpace."
         Run { git -C $DevSpaceDir checkout --detach $DevSpaceCommit } "Failed to select pinned DevSpace."
         Push-Location $DevSpaceDir
         try { Run { npm ci --include=dev } "npm ci failed."; Run { npm run build } "DevSpace build failed."; Run { npm link } "npm link failed." } finally { Pop-Location }
-        Run { git -C $HermesDir fetch --depth 1 origin $HermesRef } "Failed to fetch pinned Hermes-GPT."
-        Run { git -C $HermesDir checkout --detach $HermesCommit } "Failed to select pinned Hermes-GPT."
-        Run { & $hermesPython -m pip install $HermesDir } "Hermes-GPT install failed."
         if (Test-Path $legacyOauth) {
             Push-Location $DevSpaceDir
             try { Run { node (Join-Path $backup "migrate-oauth-json-to-sqlite.mjs") $legacyOauth $sqlite } "OAuth migration failed." } finally { Pop-Location }
         }
+    }
+    if ($upgradeHermes) {
+        Run { git -C $HermesDir fetch --depth 1 $hermesRemote $HermesRef } "Failed to fetch pinned Hermes-GPT."
+        Run { git -C $HermesDir checkout --detach $HermesCommit } "Failed to select pinned Hermes-GPT."
+        Run { & $hermesPython -m pip install $HermesDir } "Hermes-GPT install failed."
     }
 
     $updated = Read-Json $watchdogPath
