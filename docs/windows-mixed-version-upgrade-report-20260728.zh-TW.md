@@ -231,3 +231,63 @@ TYO 的 Hermes provider 實測與修正：
 - Memory：Hermes-GPT wrapper 原本未建立／傳入 `MemoryStore`；已改為依 profile 懶載入檔案式 `MEMORY.md`／`USER.md` backend，並支援 search 與 mutation 共用同一 store。
 
 ChatGPT MCP App 的工具 schema 仍需由 ChatGPT 端重新掃描。Installer 或本機 MCP server 無法主動清除 ChatGPT 保存的舊工具清單。
+
+## 10. Cloud Endpoint domain 更換工具
+
+### 10.1 TYO 實際設定確認
+
+新增工具前先讀取 TYO 的正式 `.devspace` state，確認：
+
+- Watchdog `publicBaseUrl` 儲存的是 `https://<domain>/tyo/devspace_chatgpt`，不是完整 `/mcp` URL。
+- Router route 分別為 `/tyo/devspace_chatgpt` 與 `/tyo/hermes_chatgpt`。
+- Cloud Endpoint policy/rule 以 `/tyo/`、OAuth well-known path 導向 `https://tyo-devspace.internal`，公開 domain 不應被誤寫成內部 Agent Endpoint。
+- OAuth issuer、resource URL 與 redirect endpoint 由 DevSpace／Router 根據 `publicBaseUrl` 動態產生；若 state 中另有實際 metadata 檔，才進行舊 domain 替換。
+- 內部固定服務維持 DevSpace `7676`、Hermes `4750`、Router `8766`。
+
+### 10.2 新增功能
+
+新增：
+
+```text
+scripts/windows/update-cloud-endpoint-domain.ps1
+scripts/windows/update-cloud-endpoint-domain.test.ps1
+```
+
+Domain updater 支援：
+
+1. 純 host 或完整 HTTPS origin 正規化，並拒絕 HTTP、user-info、path、query、fragment 與自訂 Port。
+2. 自動保留 `/<machine>/devspace_chatgpt/mcp` 與 `/<machine>/hermes_chatgpt/mcp`，避免 `/mcp/mcp`。
+3. 更新 Watchdog 與 DevSpace config 的 `publicBaseUrl`，並維護新 allowed host。
+4. 檢查並保留 Cloud Endpoint policy/rule 的兩個服務 route 與 `forward-internal`。
+5. 僅替換 active OAuth／MCP metadata 中實際引用舊 public domain 的欄位，不修改歷史 log 或舊備份。
+6. 執行前建立 timestamp backup 與 manifest；寫入或驗證失敗時自動 rollback。
+7. `-DryRun` 只顯示舊／新 domain、修改檔案與兩個最終 URL，不修改檔案或重啟服務。
+8. 正式執行只停止符合預期 command line 的 DevSpace／Router listener；Cloud Endpoint 模式不任意停止 Hermes，也不使用 `taskkill /T`。
+9. 驗證 Router status、DevSpace `/healthz`，以及兩個公開 `/mcp` initialize response headers，不等待串流 body 完整結束。
+10. 可用 SecureString 更新 ngrok authtoken；輸出只顯示 redacted，不將 token 寫入 Git、report、備份 manifest 或 status。
+
+### 10.3 測試覆蓋
+
+新測試已加入 `npm run test:windows-watchdog`，涵蓋：
+
+- domain／HTTPS origin 正規化。
+- HTTP 與 path/query/fragment/user-info 拒絕。
+- Dry Run 零修改。
+- 新舊 domain 正確替換。
+- `/mcp` 不重複。
+- DevSpace／Hermes route 都保留。
+- policy/rule 與 OAuth/MCP metadata 更新。
+- timestamp backup 與失敗 rollback。
+- ngrok authtoken 不出現在輸出或 Git 檔案。
+
+完成後的輸出固定為：
+
+```text
+DevSpace MCP URL:
+https://<new-domain>/<machine>/devspace_chatgpt/mcp
+
+Hermes MCP URL:
+https://<new-domain>/<machine>/hermes_chatgpt/mcp
+```
+
+使用者仍需在 ChatGPT Apps 移除舊 URL，以新 `/mcp` URL 重新加入，刷新 connector session 與 tool schema。

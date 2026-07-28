@@ -17,6 +17,8 @@ $required = @(
     "devspace-watchdog.ps1",
     "watchdog-task-action.ps1",
     "ngrok-install.ps1",
+    "update-cloud-endpoint-domain.ps1",
+    "update-cloud-endpoint-domain.test.ps1",
     "mcp-router.cjs",
     "run-devspace-watchdog-hidden.vbs"
 )
@@ -41,6 +43,14 @@ foreach ($marker in @(
     'Invoke-Rollback', 'ResponseHeadersRead', 'rollback-manifest.json'
 )) {
     if (-not $upgrade.Contains($marker)) { throw "Upgrade installer is missing required marker: $marker" }
+}
+
+$domainUpdater = Get-Content (Join-Path $root "update-cloud-endpoint-domain.ps1") -Raw
+foreach ($marker in @(
+    'ConvertTo-HttpsOrigin', 'cloud-endpoint-domain-backups', 'Restore-Backup',
+    'ResponseHeadersRead', '/devspace_chatgpt', '/hermes_chatgpt', '$devspaceMcpUrl', '$hermesMcpUrl'
+)) {
+    if (-not $domainUpdater.Contains($marker)) { throw "Cloud Endpoint domain updater is missing required marker: $marker" }
 }
 Write-Host "Tested-stack installer package validation passed."
 Write-Host "Package directory: $root"

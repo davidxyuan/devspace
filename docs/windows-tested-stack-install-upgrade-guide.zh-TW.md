@@ -204,7 +204,74 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 先以 `-DryRun` 檢查參數，再移除 `-DryRun` 正式執行。
 
-## 9. ChatGPT App 重新掃描
+## 9. 更換 ngrok 帳號／Cloud Endpoint domain
+
+ngrok Free 額度用完、切換帳號，或改用付費／自訂 domain 時，不需要重裝 DevSpace 或 Hermes。使用 domain updater 更新既有 `.devspace` state，並保留固定 MCP route：
+
+```text
+/<machine>/devspace_chatgpt/mcp
+/<machine>/hermes_chatgpt/mcp
+```
+
+`-NewDomain` 可填純 host 或完整 HTTPS origin，但不要自行加 `/mcp`、route、query 或 fragment。
+
+先執行 Dry Run：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\windows\update-cloud-endpoint-domain.ps1 `
+  -NewDomain 'new-domain.ngrok-free.app' `
+  -MachineName 'tyo' `
+  -DryRun
+```
+
+確認顯示的舊 domain、新 domain、修改檔案與兩個完整 MCP URL 正確後，正式執行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\windows\update-cloud-endpoint-domain.ps1 `
+  -NewDomain 'https://new-domain.ngrok-free.app' `
+  -MachineName 'tyo'
+```
+
+工具會：
+
+- 驗證輸入必須是無 user-info、path、query、fragment 與自訂 Port 的 HTTPS host／origin。
+- 備份 Watchdog、DevSpace config、Cloud Endpoint policy/rule，以及實際引用舊 domain 的 OAuth／MCP metadata。
+- 更新 `publicBaseUrl` 與 allowed host，但不重複加入 `/mcp`。
+- 保留 DevSpace 與 Hermes 兩條 Router route，以及內部固定 Port `7676`、`4750`、`8766`。
+- Cloud Endpoint 模式只重啟需要重新讀取 public domain 的 DevSpace／Router；不任意重裝或停止 Hermes。
+- 驗證 Router、DevSpace health 與兩個公開 MCP initialize response headers；驗證失敗會自動 rollback。
+
+若同時更換 ngrok 帳號，可在可信的本機 PowerShell 先執行：
+
+```powershell
+ngrok config add-authtoken <NEW_TOKEN>
+```
+
+也可用 SecureString 傳入 updater；token 不會寫入 Git、備份 manifest、一般輸出或狀態檔：
+
+```powershell
+$token = Read-Host 'New ngrok authtoken' -AsSecureString
+& .\scripts\windows\update-cloud-endpoint-domain.ps1 `
+  -NewDomain 'new-domain.ngrok-free.app' `
+  -MachineName 'tyo' `
+  -UpdateNgrokAuthToken $token
+```
+
+完成後應得到：
+
+```text
+DevSpace MCP URL:
+https://<new-domain>/<machine>/devspace_chatgpt/mcp
+
+Hermes MCP URL:
+https://<new-domain>/<machine>/hermes_chatgpt/mcp
+```
+
+最後在 ChatGPT Apps 移除舊 URL，使用新 `/mcp` URL 重新加入，讓 connector session 與 tool schema 一併刷新。
+
+## 10. ChatGPT App 重新掃描
 
 DevSpace／Hermes Runtime 新增工具後，ChatGPT 已建立的 App 不一定自動更新 schema。
 
@@ -215,7 +282,7 @@ DevSpace／Hermes Runtime 新增工具後，ChatGPT 已建立的 App 不一定�
 3. DevSpace 應看到 full-mode 工具，例如 `grep`、`glob`、`ls`。
 4. Hermes 應看到新增工具，例如 Vision、Web、Codex Runner、Cron、Skills、Workspace 與 Operator tools。
 
-## 10. 功能開關不等於 provider 可用
+## 11. 功能開關不等於 provider 可用
 
 升級完成後還要分別驗證：
 
