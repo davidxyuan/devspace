@@ -201,3 +201,33 @@ Hermes Runtime 實際註冊的工具多於 ChatGPT 目前顯示的工具。ChatG
 8. 另外配置 Web、Vision、Memory 與各 Sub-agent provider，不把「開關已開」等同「provider 已可用」。
 
 詳細操作見：`docs/windows-tested-stack-install-upgrade-guide.zh-TW.md`。
+
+## 9. Sub-agent 與 Hermes provider 後續修正（2026-07-28）
+
+### 9.1 Codex Sub-agent
+
+TYO 的全域 Codex CLI 已是最新 `0.145.0`，但 DevSpace 內嵌的 `@openai/codex-sdk` 原為 `0.142.5`，因此仍收到「模型需要新版 Codex」錯誤。修正方式：
+
+- 將 `@openai/codex-sdk` 固定更新至 `0.145.0`。
+- 實際建立 DevSpace Codex Sub-agent session。
+- 最終回覆：`DEVSPACE_CODEX_SDK_OK`。
+
+### 9.2 OpenCode Sub-agent
+
+OpenCode 全域 CLI 已由 `1.18.4` 更新至 `1.18.8`；DevSpace 內嵌 SDK同步更新至 `1.18.8`。另外完成：
+
+- `DEVSPACE_OPENCODE_START_TIMEOUT_MS`，預設 30 秒，可設 5–120 秒。
+- OpenCode 1.18.8 Session API 相容修正。
+- 免費模型 `opencode/mimo-v2.5-free` 與 `opencode/deepseek-v4-flash-free` 直接測試成功，cost 為 0。
+- DevSpace OpenCode Sub-agent 使用 `deepseek-v4-flash-free` 實測成功，最終回覆：`DEVSPACE_OPENCODE_SESSION_OK`。
+
+### 9.3 Hermes provider
+
+TYO 的 Hermes provider 實測與修正：
+
+- Web Search：安裝 `ddgs`，設定 `web.backend=ddgs`、`web.search_backend=ddgs`，實際搜尋成功，不需要 Firecrawl Key。
+- Windows SSL：以 `truststore` 使用 Windows 系統憑證庫，保留 SSL 驗證並信任 Kaspersky Endpoint Security CA；原 `CERTIFICATE_VERIFY_FAILED` 已消失。
+- Vision：改用內網 Ollama `http://10.3.0.147:11434/v1` 與 `qwen3.6:35b`。Ollama 回報模型具 `vision` capability，實際圖片分析成功。
+- Memory：Hermes-GPT wrapper 原本未建立／傳入 `MemoryStore`；已改為依 profile 懶載入檔案式 `MEMORY.md`／`USER.md` backend，並支援 search 與 mutation 共用同一 store。
+
+ChatGPT MCP App 的工具 schema 仍需由 ChatGPT 端重新掃描。Installer 或本機 MCP server 無法主動清除 ChatGPT 保存的舊工具清單。

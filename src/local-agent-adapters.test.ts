@@ -7,6 +7,9 @@ import {
   extractPiFinalResponse,
   extractPiProviderError,
   extractPiStreamingText,
+  opencodeStartupTimeoutMs,
+  parseOpencodeModel,
+  parseOpencodePromptModel,
   piCommandEnvironment,
   resolveAcpModelConfigUpdate,
   resolveAcpThinkingConfigUpdate,
@@ -388,3 +391,28 @@ assert.equal(
 
   assert.equal(env.PATH, [devspaceBin, "/home/user/.local/bin"].join(delimiter));
 }
+
+assert.equal(opencodeStartupTimeoutMs({}), 30_000);
+assert.equal(opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "45000" }), 45_000);
+assert.throws(
+  () => opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "4999" }),
+  /between 5000 and 120000/,
+);
+assert.throws(
+  () => opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "not-a-number" }),
+  /must be an integer/,
+);
+
+assert.deepEqual(parseOpencodeModel("deepseek-v4-flash-free"), {
+  providerID: "opencode",
+  id: "deepseek-v4-flash-free",
+});
+assert.deepEqual(parseOpencodeModel("opencode/mimo-v2.5-free", "high"), {
+  providerID: "opencode",
+  id: "mimo-v2.5-free",
+  variant: "high",
+});
+assert.deepEqual(parseOpencodePromptModel("opencode/deepseek-v4-flash-free"), {
+  providerID: "opencode",
+  modelID: "deepseek-v4-flash-free",
+});

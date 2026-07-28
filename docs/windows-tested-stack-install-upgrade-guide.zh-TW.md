@@ -227,3 +227,13 @@ DevSpace／Hermes Runtime 新增工具後，ChatGPT 已建立的 App 不一定�
 - Hermes memory backend
 
 Installer 負責版本、設定、安全重啟與回復；外部 provider 的帳號、API key、網路與公司 CA 仍需各機器自行配置。
+
+### TYO 已驗證的 provider 設定
+
+- Codex：CLI 與 `@openai/codex-sdk` 應同步使用受測版本，避免只更新全域 CLI、內嵌 SDK 仍過舊。
+- OpenCode：可設定 `DEVSPACE_OPENCODE_START_TIMEOUT_MS=30000`；允許範圍為 5000–120000 ms。
+- OpenCode 免費模型：`deepseek-v4-flash-free`、`mimo-v2.5-free` 已驗證可回覆。
+- Hermes Web：無付費 Key 時可安裝 `ddgs` 並設定 `web.backend=ddgs`、`web.search_backend=ddgs`。
+- Windows 公司 SSL：使用 `truststore` 讀取 Windows 系統憑證庫，不要關閉 SSL 驗證。
+- Hermes Vision：有內網 Ollama 時，可使用 OpenAI-compatible `/v1` endpoint 與具 `vision` capability 的模型；TYO 已驗證 `qwen3.6:35b`。
+- Hermes Memory：確認 Hermes-GPT 版本包含 `MemoryStore` 初始化修正，並以暫存 entry 執行 add/search/remove smoke test。

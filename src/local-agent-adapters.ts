@@ -20,6 +20,21 @@ const ACP_COMMANDS: Record<"cursor" | "copilot", [string, ...string[]]> = {
   copilot: ["copilot", "--acp"],
 };
 const PI_AGENT_TIMEOUT_MS = 120_000;
+const DEFAULT_OPENCODE_START_TIMEOUT_MS = 30_000;
+const MIN_OPENCODE_START_TIMEOUT_MS = 5_000;
+const MAX_OPENCODE_START_TIMEOUT_MS = 120_000;
+
+export function opencodeStartupTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.DEVSPACE_OPENCODE_START_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_OPENCODE_START_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < MIN_OPENCODE_START_TIMEOUT_MS || parsed > MAX_OPENCODE_START_TIMEOUT_MS) {
+    throw new Error(
+      `DEVSPACE_OPENCODE_START_TIMEOUT_MS must be an integer between ${MIN_OPENCODE_START_TIMEOUT_MS} and ${MAX_OPENCODE_START_TIMEOUT_MS}.`,
+    );
+  }
+  return parsed;
+}
 
 export async function runLocalAgentProvider(
   provider: LocalAgentProvider,
@@ -143,7 +158,9 @@ class OpencodeLocalAgentAdapter implements LocalAgentAdapter {
 
   async run(input: LocalAgentRunInput): Promise<LocalAgentRunResult> {
     const { createOpencode } = await import("@opencode-ai/sdk/v2");
-    const { client, server } = await createOpencode();
+    const { client, server } = await createOpencode({
+      timeout: opencodeStartupTimeoutMs(),
+    });
     try {
       const sessionId = input.providerSessionId ?? await createOpencodeSession(client, input);
       const promptResult = await promptOpencodeSession(client, sessionId, input);
@@ -494,8 +511,7 @@ async function createOpencodeSession(client: unknown, input: LocalAgentRunInput)
   };
   const result = await sessionClient.session.create({
     directory: input.workspace,
-    location: { directory: input.workspace },
-    ...(input.model ? { model: parseOpencodeModel(input.model) } : {}),
+    ...(input.model ? { model: parseOpencodeModel(input.model, input.thinking) } : {}),
   }, { throwOnError: true });
   const id =
     readNestedString(result, ["id"]) ??
@@ -518,15 +534,13 @@ async function promptOpencodeSession(
       prompt(parameters?: unknown, options?: unknown): Promise<unknown>;
     };
   }).session;
-  const promptInput = {
+  return session.prompt({
     sessionID: sessionId,
     directory: input.workspace,
-    prompt: { parts: [{ type: "text", text: input.prompt }] },
     parts: [{ type: "text", text: input.prompt }],
-    ...(input.model ? { model: parseOpencodeModel(input.model) } : {}),
+    ...(input.model ? { model: parseOpencodePromptModel(input.model) } : {}),
     ...(input.thinking ? { variant: input.thinking } : {}),
-  };
-  return session.prompt(promptInput, { throwOnError: true });
+  }, { throwOnError: true });
 }
 
 async function waitForOpencodeSession(client: unknown, sessionId: string): Promise<void> {
@@ -547,13 +561,23 @@ async function readOpencodeMessages(client: unknown, sessionId: string): Promise
   return session.messages({ sessionID: sessionId, order: "asc", limit: 100 }, { throwOnError: true });
 }
 
-function parseOpencodeModel(model: string): { providerID: string; modelID: string } {
+export function parseOpencodeModel(
+  model: string,
+  variant?: string,
+): { providerID: string; id: string; variant?: string } {
   const separator = model.indexOf("/");
-  if (separator === -1) return { providerID: "opencode", modelID: model };
+  const providerID = separator === -1 ? "opencode" : model.slice(0, separator);
+  const id = separator === -1 ? model : model.slice(separator + 1);
   return {
-    providerID: model.slice(0, separator),
-    modelID: model.slice(separator + 1),
+    providerID,
+    id,
+    ...(variant ? { variant } : {}),
   };
+}
+
+export function parseOpencodePromptModel(model: string): { providerID: string; modelID: string } {
+  const parsed = parseOpencodeModel(model);
+  return { providerID: parsed.providerID, modelID: parsed.id };
 }
 
 export function extractLocalAgentResponseText(value: unknown): string {
