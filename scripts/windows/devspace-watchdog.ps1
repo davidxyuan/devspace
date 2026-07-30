@@ -252,12 +252,9 @@ function Invoke-StopPidRequests {
 
 function Test-LocalDevSpace {
     try {
-        Invoke-WebRequest -Uri "http://127.0.0.1:$port/mcp" -UseBasicParsing -TimeoutSec 5 | Out-Null
+        Invoke-WebRequest -Uri "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 5 | Out-Null
         return $true
     } catch {
-        if ($_.Exception.Response -and $_.Exception.Response.StatusCode.value__ -eq 401) {
-            return $true
-        }
         Write-WatchdogLog "local DevSpace health check failed: $($_.Exception.Message)"
         return $false
     }
@@ -334,11 +331,7 @@ function Ensure-DevSpace {
     }
 
     if (-not (Test-LocalDevSpace)) {
-        foreach ($ownerPid in $listeners) {
-            Stop-ProcessTree $ownerPid "unhealthy DevSpace listener on port $port"
-        }
-        Start-Sleep -Seconds 2
-        Start-DevSpace
+        Write-WatchdogLog "DevSpace health probe failed while listener PID(s) $($listeners -join ',') remain present; treating the service as busy or indeterminate and leaving it running"
     }
 }
 
@@ -478,11 +471,7 @@ function Ensure-Hermes {
 
     $healthUrl = "http://127.0.0.1:$hermesPort/mcp"
     if (-not (Test-HttpOk $healthUrl)) {
-        foreach ($ownerPid in $listeners) {
-            Stop-ProcessTree $ownerPid "unhealthy Hermes listener on port $hermesPort"
-        }
-        Start-Sleep -Seconds 2
-        Start-Hermes
+        Write-WatchdogLog "Hermes health probe failed while listener PID(s) $($listeners -join ',') remain present; treating the service as busy or indeterminate and leaving it running"
     }
 }
 
@@ -516,14 +505,11 @@ function Ensure-Router {
     if ($listeners.Count -eq 0) {
         Start-Router
         Start-Sleep -Seconds 2
+        return
     }
 
     if (-not (Test-HttpOk "http://127.0.0.1:$routerPort/__router/status")) {
-        foreach ($ownerPid in Get-ListenOwners $routerPort) {
-            Stop-ProcessTree $ownerPid "unhealthy MCP router on port $routerPort"
-        }
-        Start-Sleep -Seconds 1
-        Start-Router
+        Write-WatchdogLog "MCP router health probe failed while listener PID(s) $($listeners -join ',') remain present; treating the router as busy or indeterminate and leaving it running"
     }
 }
 

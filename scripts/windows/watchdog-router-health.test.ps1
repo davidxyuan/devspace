@@ -24,23 +24,19 @@ if ($parseErrors.Count -gt 0) {
     throw "Unable to parse devspace-watchdog.ps1: $($parseErrors[0].Message)"
 }
 
-$ensureHermesAst = $ast.Find(
+$ensureRouterAst = $ast.Find(
     {
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq "Ensure-Hermes"
+            $node.Name -eq "Ensure-Router"
     },
     $true
 )
 
-if (-not $ensureHermesAst) {
-    throw "Ensure-Hermes function was not found."
-}
+if (-not $ensureRouterAst) { throw "Ensure-Router function was not found." }
+Invoke-Expression $ensureRouterAst.Extent.Text
 
-Invoke-Expression $ensureHermesAst.Extent.Text
-
-$script:hermesEnabled = $true
-$script:hermesPort = 4750
+$script:routerPort = 8766
 $script:testListeners = @()
 $script:testHealthy = $true
 $script:startCount = 0
@@ -48,35 +44,19 @@ $script:stoppedPids = @()
 $script:healthUrls = @()
 $script:logMessages = @()
 
+function Test-FixedPortOwnership([int]$listenPort, [string]$serviceName) { return $true }
 function Get-ListenOwners([int]$listenPort) {
-    Assert-Equal "Hermes listener port" $listenPort $script:hermesPort
+    Assert-Equal "Router listener port" $listenPort $script:routerPort
     return @($script:testListeners)
 }
-
 function Test-HttpOk([string]$url) {
     $script:healthUrls += $url
     return $script:testHealthy
 }
-
-function Test-FixedPortOwnership([int]$listenPort, [string]$serviceName) {
-    return $true
-}
-
-function Stop-ProcessTree([int]$processId, [string]$reason) {
-    $script:stoppedPids += $processId
-}
-
-function Start-Hermes {
-    $script:startCount++
-}
-
-function Start-Sleep {
-    param([int]$Seconds)
-}
-
-function Write-WatchdogLog([string]$message) {
-    $script:logMessages += $message
-}
+function Stop-ProcessTree([int]$processId, [string]$reason) { $script:stoppedPids += $processId }
+function Start-Router { $script:startCount++ }
+function Start-Sleep { param([int]$Seconds) }
+function Write-WatchdogLog([string]$message) { $script:logMessages += $message }
 
 function Reset-TestState {
     $script:testListeners = @()
@@ -88,25 +68,27 @@ function Reset-TestState {
 }
 
 Reset-TestState
-Ensure-Hermes
-Assert-Equal "Missing listener starts Hermes" $script:startCount 1
+Ensure-Router
+Assert-Equal "Missing listener starts router" $script:startCount 1
 Assert-Equal "Missing listener does not stop a process" $script:stoppedPids.Count 0
+Assert-Equal "Missing listener does not probe before next cycle" $script:healthUrls.Count 0
 
 Reset-TestState
 $script:testListeners = @(101)
 $script:testHealthy = $true
-Ensure-Hermes
-Assert-Equal "Healthy Hermes is not restarted" $script:startCount 0
-Assert-Equal "Healthy Hermes is not stopped" $script:stoppedPids.Count 0
-Assert-Equal "Healthy Hermes is probed once" $script:healthUrls.Count 1
-Assert-Equal "Hermes health endpoint" $script:healthUrls[0] "http://127.0.0.1:4750/mcp"
+Ensure-Router
+Assert-Equal "Healthy router is not restarted" $script:startCount 0
+Assert-Equal "Healthy router is not stopped" $script:stoppedPids.Count 0
+Assert-Equal "Healthy router is probed once" $script:healthUrls.Count 1
+Assert-Equal "Router health endpoint" $script:healthUrls[0] "http://127.0.0.1:8766/__router/status"
 
 Reset-TestState
 $script:testListeners = @(202)
 $script:testHealthy = $false
-Ensure-Hermes
-Assert-Equal "Busy Hermes is not restarted" $script:startCount 0
-Assert-Equal "Busy Hermes listener is not stopped" $script:stoppedPids.Count 0
-Assert-Equal "Busy Hermes is probed once" $script:healthUrls.Count 1
+Ensure-Router
+Assert-Equal "Busy router is not restarted" $script:startCount 0
+Assert-Equal "Busy router listener is not stopped" $script:stoppedPids.Count 0
+Assert-Equal "Busy router is probed once" $script:healthUrls.Count 1
+Assert-Equal "Busy router failure is logged" $script:logMessages.Count 1
 
-Write-Host "watchdog Hermes health tests passed."
+Write-Host "watchdog router health tests passed."

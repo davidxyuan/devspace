@@ -3,6 +3,8 @@ $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $installerPath = Join-Path $PSScriptRoot "install-tested-stack.ps1"
 $installer = Get-Content -LiteralPath $installerPath -Raw
 $html = Get-Content -LiteralPath (Join-Path $root "docs\windows-new-pc-install.zh-TW.html") -Raw
+$tyoAgent = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-chatgpt-tyo-agent.ps1") -Raw
+$tyoCloud = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-chatgpt-tyo-cloud.ps1") -Raw
 $tokens = $null
 $errors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$tokens, [ref]$errors) | Out-Null
@@ -20,5 +22,10 @@ if ($errors.Count) { throw ($errors | Out-String) }
 }
 if (-not $html.Contains("install-tested-stack.ps1")) { throw "HTML does not use the tested-stack installer." }
 if ($html.Contains('$branch = "codex/chatgpt-mcp-router-fix"')) { throw "HTML still emits the old unpinned install flow." }
+foreach ($helper in @($tyoAgent, $tyoCloud)) {
+    if (-not $helper.Contains('HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"')) {
+        throw "TYO helper does not explicitly select the tested Hermes fork."
+    }
+}
 
 Write-Host "tested stack installer tests passed."

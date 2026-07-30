@@ -22,6 +22,7 @@ $installer = Join-Path $PSScriptRoot "install-devspace-watchdog.ps1"
 $params = @{
     UserMode = $true
     Components = $Components
+    HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
     PublicBaseUrl = $PublicBaseUrl
     NgrokEndpointMode = "CloudEndpoint"
     MachineName = $MachineName
