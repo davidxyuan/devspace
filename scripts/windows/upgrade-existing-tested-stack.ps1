@@ -15,8 +15,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/windows-fixed-port-conflicts"
-$PinnedDevSpaceCommit = "ca7c10a39b5c099455db662c3aba9007b5eb34e3"
+$DevSpaceRef = "codex/devspace-v1.0.4-watchdog-fix"
+$PinnedDevSpaceCommit = "15fcf9068608e51a56f97609aba32535a0359407"
 $PinnedDevSpaceVersion = [version]"1.0.4"
 $HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
 $HermesRef = "codex/upgrade-v0.5.0"

@@ -154,7 +154,7 @@ if($('workflow').value==='upgrade')detect=`& ([scriptblock]::Create((Invoke-Rest
 else if($('workflow').value==='caps')detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}upgrade-existing-tested-stack.ps1"))) -Action CapabilitiesOnly${common}`;
 else detect=`& ([scriptblock]::Create((Invoke-RestMethod "${raw}detect-and-apply-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}" -PublicBaseUrl "${ps(c.u)}" -NgrokAuthtoken "${ps(c.t)}" -NgrokEndpointMode ${c.mode} -MachineName "${c.m}" -AllowedRoots "${ps(c.roots)}"${c.full?' -FullAccess':''}${common}`;
 $('detectCode').textContent=detect;
-const clone=`& ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/install-tested-windows-stack/scripts/windows/install-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}"`;
+const clone=`& ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts/scripts/windows/install-tested-stack.ps1"))) -InstallRoot "${ps(c.d)}"`;
 let a=[];if(c.user)a.push('  -UserMode `');a.push(`  -TaskLauncher ${c.launch} \``);a.push('  -Components DevSpace,Hermes `');a.push(`  -PublicBaseUrl "${ps(c.u)}" \``);a.push(`  -NgrokEndpointMode ${c.mode} \``);if(c.mode==='CloudEndpoint')a.push(`  -NgrokAgentBaseUrl "https://${c.m}-devspace.internal" \``);a.push(`  -MachineName "${c.m}" \``);a.push(`  -McpNameSuffix "${c.m}" \``);a.push(c.full?'  -FullAccess `':`  -AllowedRoots "${ps(c.roots)}" \``);a.push(`  -CapabilitySelection "${caps}" \``);a.push(`  -HermesAllowedRoots "${ps(c.roots)}" \``);a.push('  -InstallTools');
 const install=`$stack = "${ps(c.d)}"
 $env:NGROK_AUTHTOKEN = "${ps(c.t)}"

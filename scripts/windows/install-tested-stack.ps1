@@ -8,8 +8,8 @@ $ErrorActionPreference = "Stop"
 
 # Tested stack manifest: update these values together only after validating a new pair.
 $DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/upgrade-devspace-v1.0.4"
-$DevSpaceCommit = "9c4462ba1ea43a846fd511b8b10e4bb6ac49493d"
+$DevSpaceRef = "codex/devspace-v1.0.4-watchdog-fix"
+$DevSpaceCommit = "15fcf9068608e51a56f97609aba32535a0359407"
 $DevSpaceVersion = "1.0.4"
 $HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
 $HermesRef = "codex/upgrade-v0.5.0"

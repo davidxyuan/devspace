@@ -2,7 +2,7 @@
 
 適用目標：
 
-- DevSpace `1.0.4` / `ca7c10a39b5c099455db662c3aba9007b5eb34e3`
+- DevSpace `1.0.4` / `15fcf9068608e51a56f97609aba32535a0359407`
 - Hermes-GPT `0.5.0` / `db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3`
 - Windows 10／11 PowerShell 5.1 以上
 
@@ -12,7 +12,7 @@
 
 ```powershell
 Set-Location C:\Temp
-git clone --branch codex/windows-mixed-version-upgrade-support `
+git clone --branch codex/windows-fixed-port-conflicts `
   https://github.com/davidxyuan/devspace.git devspace-installer
 Set-Location C:\Temp\devspace-installer
 ```
