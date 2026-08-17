@@ -61,7 +61,7 @@ function Try-InstallWingetPackage([string]$wingetId, [string]$displayName) {
     Refresh-Path
     if ($code -eq 0) { return $true }
     if ($code -eq -1978335189) {
-        Write-Warning "winget reports no applicable update for $displayName (0x8A15002B). A Python install may already exist but be undiscoverable; using the managed official runtime fallback."
+        Write-Warning "winget reports no applicable update for $displayName (0x8A15002B). A Python install may already exist but be undiscoverable; using registry discovery and the managed official runtime fallback."
     } else {
         Write-Warning "winget could not install $displayName (exit code $code). Falling back to the official installer."
     }
@@ -94,6 +94,26 @@ function Get-CompatiblePython {
             try {
                 $resolved = (& $py.Source "-$selector" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
                 if ($LASTEXITCODE -eq 0 -and $resolved) { $candidates.Add(([string]$resolved).Trim()) }
+            } catch {}
+        }
+    }
+
+    # PEP 514 registry discovery. Official Python installers register here even when PATH is stale or disabled.
+    foreach ($registryRoot in @(
+        "HKCU:\Software\Python",
+        "HKLM:\Software\Python",
+        "HKLM:\Software\Wow6432Node\Python"
+    )) {
+        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
+        foreach ($installKey in @(Get-Item -Path "$registryRoot\*\*\InstallPath" -ErrorAction SilentlyContinue)) {
+            try {
+                $executablePath = [string]$installKey.GetValue("ExecutablePath")
+                $installPath = [string]$installKey.GetValue("")
+                if ($executablePath) {
+                    $candidates.Add($executablePath)
+                } elseif ($installPath) {
+                    $candidates.Add((Join-Path $installPath "python.exe"))
+                }
             } catch {}
         }
     }
@@ -139,7 +159,7 @@ function Install-OfficialPython312 {
         try {
             $existingVersionText = (& $managedPython312Exe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -eq 0 -and [version](([string]$existingVersionText).Trim()) -ge [version]"3.10") {
-                Write-Host "Using existing managed Python $existingVersionText`: $managedPython312Exe" -ForegroundColor Green
+                Write-Host "Using existing managed Python $($existingVersionText): $managedPython312Exe" -ForegroundColor Green
                 return $managedPython312Exe
             }
         } catch {}
@@ -193,7 +213,7 @@ function Install-OfficialPython312 {
     if ($LASTEXITCODE -ne 0 -or -not $versionText -or [version](([string]$versionText).Trim()) -lt [version]"3.10") {
         throw "Managed Python runtime failed version verification at $managedPython312Exe. Log: $logPath"
     }
-    Write-Host "Verified managed Python $versionText`: $managedPython312Exe" -ForegroundColor Green
+    Write-Host "Verified managed Python $($versionText): $managedPython312Exe" -ForegroundColor Green
     return $managedPython312Exe
 }
 
@@ -207,6 +227,7 @@ function Require-CompatiblePython {
     Write-Host "No Python >=3.10 was found. Preparing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
     [void](Try-InstallWingetPackage "Python.Python.3.12" "Python 3.12")
 
+    # Re-scan PATH, py launcher, PEP 514 registry and common install directories after winget.
     $python = Get-CompatiblePython
     if ($python) {
         Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
