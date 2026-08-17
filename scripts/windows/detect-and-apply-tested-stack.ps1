@@ -35,19 +35,33 @@ if (-not $configExists -and $repoArtifacts) {
 $detected = if ($configExists -and $watchdogExists) { "Existing" } else { "Fresh" }
 Write-Host "Detected installation state: $detected"
 
+function Assert-PowerShellSyntax([string]$path) {
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors.Count) {
+        $details = ($errors | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        throw "Installer syntax validation failed before execution: $path`n$details"
+    }
+}
 function Require-LocalScript([string]$name) {
     $path = Join-Path $PSScriptRoot $name
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Installer package is incomplete: $name is missing beside detect-and-apply-tested-stack.ps1. Clone or copy the complete scripts/windows package before upgrading an existing machine."
     }
+    if ([IO.Path]::GetExtension($path) -eq ".ps1") { Assert-PowerShellSyntax $path }
     return $path
 }
 function Resolve-FreshScript([string]$name, [string]$tempDir) {
     $local = Join-Path $PSScriptRoot $name
-    if (Test-Path -LiteralPath $local) { return $local }
+    if (Test-Path -LiteralPath $local) {
+        if ([IO.Path]::GetExtension($local) -eq ".ps1") { Assert-PowerShellSyntax $local }
+        return $local
+    }
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $destination = Join-Path $tempDir $name
     Invoke-WebRequest "$FallbackRawBase/scripts/windows/$name" -OutFile $destination -UseBasicParsing
+    if ([IO.Path]::GetExtension($destination) -eq ".ps1") { Assert-PowerShellSyntax $destination }
     return $destination
 }
 
@@ -85,6 +99,7 @@ if (-not $PublicBaseUrl -or (-not $AllowedRoots -and -not $FullAccess)) {
 
 $temp = Join-Path $env:TEMP "devspace-tested-stack-installer-$PID"
 $installStack = Resolve-FreshScript "install-tested-stack.ps1" $temp
+Write-Host "Installer syntax validation passed: $installStack" -ForegroundColor Green
 & $installStack -InstallRoot $InstallRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
