@@ -18,6 +18,13 @@ if ($errors.Count) { throw ($errors | Out-String) }
     '[switch]$VerifyOnly',
     'Require-CompatiblePython',
     'Python.Python.3.12',
+    'Try-InstallWingetPackage',
+    'Install-OfficialPython312',
+    'https://www.python.org/ftp/python/$version/$fileName',
+    'Get-AuthenticodeSignature',
+    'Python Software Foundation',
+    'InstallAllUsers=0',
+    'PrependPath=1',
     'No Python >=3.10 was found. Installing Python 3.12 side-by-side',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
