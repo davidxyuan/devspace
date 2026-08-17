@@ -20,17 +20,95 @@ $devSpaceDir = Join-Path $InstallRoot "devspace"
 $hermesDir = Join-Path $InstallRoot "hermes-gpt"
 $hermesPython = Join-Path $hermesDir ".venv\Scripts\python.exe"
 
+function Refresh-Path {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+function Get-Winget {
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $winget) { throw "winget.exe is required but unavailable. Install Microsoft App Installer first." }
+    return $winget.Source
+}
+
+function Install-WingetPackage([string]$wingetId, [string]$displayName) {
+    $winget = Get-Winget
+    Write-Host "Installing $displayName ($wingetId)..." -ForegroundColor Cyan
+    & $winget install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "winget failed to install $displayName ($wingetId)."
+    }
+    Refresh-Path
+}
+
 function Require-Command([string]$name, [string]$wingetId) {
     $command = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) { return $command.Source }
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if (-not $winget) { throw "$name is required and winget is unavailable." }
-    & $winget.Source install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) { throw "winget failed to install $wingetId." }
-    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+    Install-WingetPackage $wingetId $name
     $command = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $command) { throw "$name was installed but is not on PATH. Open a new PowerShell window and rerun." }
     return $command.Source
+}
+
+function Get-CompatiblePython {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+        if ($command.Source) { $candidates.Add([string]$command.Source) }
+    }
+
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($py) {
+        foreach ($selector in @("3.13", "3.12", "3.11", "3.10")) {
+            try {
+                $resolved = (& $py.Source "-$selector" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+                if ($LASTEXITCODE -eq 0 -and $resolved) { $candidates.Add(([string]$resolved).Trim()) }
+            } catch {}
+        }
+    }
+
+    foreach ($pattern in @(
+        "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+        "$env:ProgramFiles\Python3*\python.exe",
+        "${env:ProgramFiles(x86)}\Python3*\python.exe"
+    )) {
+        if (-not $pattern) { continue }
+        foreach ($item in @(Get-Item $pattern -ErrorAction SilentlyContinue)) {
+            if ($item.FullName) { $candidates.Add([string]$item.FullName) }
+        }
+    }
+
+    $compatible = @()
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            $versionText = (& $candidate -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -ne 0 -or -not $versionText) { continue }
+            $version = [version](([string]$versionText).Trim())
+            if ($version -ge [version]"3.10") {
+                $compatible += [pscustomobject]@{ Path=$candidate; Version=$version }
+            }
+        } catch {}
+    }
+
+    return $compatible | Sort-Object Version -Descending | Select-Object -First 1
+}
+
+function Require-CompatiblePython {
+    $python = Get-CompatiblePython
+    if ($python) {
+        Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
+        return [string]$python.Path
+    }
+
+    Write-Host "No Python >=3.10 was found. Installing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
+    Install-WingetPackage "Python.Python.3.12" "Python 3.12"
+
+    $python = Get-CompatiblePython
+    if (-not $python) {
+        throw "Python 3.12 installation completed, but no compatible Python >=3.10 could be resolved. Open a new PowerShell window and rerun. Existing older Python versions do not need to be removed."
+    }
+    Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
+    return [string]$python.Path
 }
 
 function Invoke-Checked([scriptblock]$command, [string]$message) {
@@ -71,12 +149,9 @@ if ($VerifyOnly) {
 $git = Require-Command "git.exe" "Git.Git"
 $npm = Require-Command "npm.cmd" "OpenJS.NodeJS.LTS"
 $node = Require-Command "node.exe" "OpenJS.NodeJS.LTS"
-$python = Require-Command "python.exe" "Python.Python.3.12"
+$python = Require-CompatiblePython
 if ([version](& $node -p "process.versions.node") -lt [version]"22.19" -or [version](& $node -p "process.versions.node") -ge [version]"27.0") {
-    throw "DevSpace $DevSpaceVersion requires Node >=22.19 and <27."
-}
-if ([version](& $python -c "import platform; print(platform.python_version())") -lt [version]"3.10") {
-    throw "Hermes-GPT $HermesVersion requires Python >=3.10."
+    throw "DevSpace $DevSpaceVersion requires Node >=22.19 and <27. Current Node: $(& $node -p 'process.versions.node'). Install/update Node.js LTS and rerun."
 }
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 
