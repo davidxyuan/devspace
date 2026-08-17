@@ -15,25 +15,25 @@
 <div><label>安裝目錄</label><input id="dir" value="D:\devspace"></div>
 <div><label>ngrok 公開 Base URL</label><input id="url" placeholder="https://你的名稱.ngrok-free.dev"></div>
 <div><label>ngrok Authtoken</label><input id="token" type="password" placeholder="只在本機輸入，不要貼到聊天"></div>
-<div><label>ngrok 模式</label><select id="mode"><option value="AgentEndpoint" selected>Agent Endpoint：本機獨占公開網址</option><option value="CloudEndpoint">Cloud Endpoint：多台電腦共用公開網址</option></select></div>
+<div><label>ngrok 模式</label><select id="mode"><option value="CloudEndpoint" selected>Cloud Endpoint：多台電腦共用公開網址</option><option value="AgentEndpoint">Agent Endpoint：本機獨占公開網址</option></select></div>
 <div><label>Watchdog 啟動器</label><select id="launcher"><option value="PowerShell" selected>PowerShell</option><option value="Vbs">VBS</option></select></div>
-<div><label>排程權限</label><select id="access"><option value="admin" selected>Administrator</option><option value="user">UserMode</option></select></div>
+<div><label>排程權限</label><select id="access"><option value="user" selected>UserMode</option><option value="admin">Administrator</option></select></div>
 <div><label>Allowed roots</label><input id="roots" value="D:\"></div>
 </div><p class="check"><input id="full" type="checkbox"><span><b>DevSpace FullAccess</b>：開放目前 Windows 帳號可見磁碟；Hermes 權限仍由下方能力設定獨立控制。</span></p>
 <div class="notice bad">Authtoken 屬於密鑰。若曾貼到聊天、附件或截圖，請先到 ngrok rotate / revoke，再使用新 Token。</div></section>
 
 <section class="card"><h2>2. 能力權限</h2><div class="grid caps">
-<div><label>DevSpace tools</label><select id="devTool"><option value="minimal">minimal</option><option value="codex">codex</option><option value="full" selected>full</option></select></div>
-<div><label>DevSpace widgets</label><select id="devWidgets"><option value="off">off</option><option value="changes">changes</option><option value="full" selected>full</option></select></div>
-<div><label>Hermes filesystem</label><select id="hFs"><option value="restricted">restricted</option><option value="full" selected>full</option></select></div>
-<label class="check"><input id="devSkills" type="checkbox" checked>DevSpace skills</label><label class="check"><input id="devSubagents" type="checkbox" checked>DevSpace subagents</label><label class="check"><input id="hBridge" type="checkbox" checked>Hermes bridge</label>
-<label class="check"><input id="hRead" type="checkbox" checked>Hermes read-only tools</label><label class="check"><input id="hVision" type="checkbox" checked>Vision</label><label class="check"><input id="hWeb" type="checkbox" checked>Web</label>
-<label class="check"><input id="hDiag" type="checkbox" checked>Diagnostics</label><label class="check"><input id="hRunner" type="checkbox" checked>Runner</label><label class="check"><input id="hRunnerWrite" type="checkbox" checked>Runner write</label>
-<label class="check"><input id="hWorkspaceWrite" type="checkbox" checked>Workspace write</label><label class="check"><input id="hMemoryWrite" type="checkbox" checked>Memory write</label><label class="check"><input id="hTerminal" type="checkbox" checked>Terminal</label>
-<label class="check"><input id="hOperator" type="checkbox" checked>Operator</label><label class="check"><input id="hDirect" type="checkbox" checked>Operator direct</label><label class="check"><input id="hOwner" type="checkbox" checked>Owner mode</label>
-<label class="check"><input id="hCron" type="checkbox" checked>Cron</label><label class="check"><input id="hCronWrite" type="checkbox" checked>Cron write</label><label class="check"><input id="hSkillWrite" type="checkbox" checked>Skill write</label>
-<label class="check"><input id="hPrivate" type="checkbox" checked>Private network</label>
-</div><div class="notice">這些預設值是高權限設定。若不需要遠端寫入／Terminal／Operator，請取消對應項目。</div></section>
+<div><label>DevSpace tools</label><select id="devTool"><option value="minimal" selected>minimal</option><option value="codex">codex</option><option value="full">full</option></select></div>
+<div><label>DevSpace widgets</label><select id="devWidgets"><option value="off" selected>off</option><option value="changes">changes</option><option value="full">full</option></select></div>
+<div><label>Hermes filesystem</label><select id="hFs"><option value="restricted" selected>restricted</option><option value="full">full</option></select></div>
+<label class="check"><input id="devSkills" type="checkbox">DevSpace skills</label><label class="check"><input id="devSubagents" type="checkbox">DevSpace subagents</label><label class="check"><input id="hBridge" type="checkbox" checked>Hermes bridge</label>
+<label class="check"><input id="hRead" type="checkbox" checked>Hermes read-only tools</label><label class="check"><input id="hVision" type="checkbox">Vision</label><label class="check"><input id="hWeb" type="checkbox">Web</label>
+<label class="check"><input id="hDiag" type="checkbox" checked>Diagnostics</label><label class="check"><input id="hRunner" type="checkbox">Runner</label><label class="check"><input id="hRunnerWrite" type="checkbox">Runner write</label>
+<label class="check"><input id="hWorkspaceWrite" type="checkbox">Workspace write</label><label class="check"><input id="hMemoryWrite" type="checkbox">Memory write</label><label class="check"><input id="hTerminal" type="checkbox">Terminal</label>
+<label class="check"><input id="hOperator" type="checkbox">Operator</label><label class="check"><input id="hDirect" type="checkbox">Operator direct</label><label class="check"><input id="hOwner" type="checkbox">Owner mode</label>
+<label class="check"><input id="hCron" type="checkbox">Cron</label><label class="check"><input id="hCronWrite" type="checkbox">Cron write</label><label class="check"><input id="hSkillWrite" type="checkbox">Skill write</label>
+<label class="check"><input id="hPrivate" type="checkbox">Private network</label>
+</div><div class="notice">預設採最小權限：Hermes bridge、read-only tools、Diagnostics 開啟，其餘高風險能力預設關閉；需要時再明確勾選。</div></section>
 
 <section class="card"><h2>3. 唯一正式安裝指令</h2>
 <label>流程</label><select id="workflow"><option value="auto" selected>Auto：全新電腦建議</option><option value="fresh">Fresh only：確認完全未安裝</option><option value="upgrade">Existing upgrade：既有機升級</option><option value="caps">Permission change only：既有機只改權限</option></select>
