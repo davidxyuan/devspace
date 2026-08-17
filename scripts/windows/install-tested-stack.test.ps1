@@ -16,12 +16,26 @@ if ($errors.Count) { throw ($errors | Out-String) }
     '$HermesVersion = "0.5.0"',
     '$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"',
     '[switch]$VerifyOnly',
+    'Require-CompatiblePython',
+    'Python.Python.3.12',
+    'No Python >=3.10 was found. Installing Python 3.12 side-by-side',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
-    if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety text: $_" }
+    if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety/bootstrap text: $_" }
 }
-if (-not $html.Contains("install-tested-stack.ps1")) { throw "HTML does not use the tested-stack installer." }
-if ($html.Contains('$branch = "codex/chatgpt-mcp-router-fix"')) { throw "HTML still emits the old unpinned install flow." }
+
+if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdog-fix"')) {
+    throw "HTML does not clone the complete tested installer branch before execution."
+}
+if (-not $html.Contains('powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer')) {
+    throw "HTML does not execute the installer from a real .ps1 file."
+}
+if ($html.Contains('([scriptblock]::Create((Invoke-RestMethod')) {
+    throw "HTML still contains the old ScriptBlock/Invoke-RestMethod installer flow."
+}
+if ($html.Contains('$branch = "codex/chatgpt-mcp-router-fix"')) {
+    throw "HTML still emits the old unpinned install flow."
+}
 foreach ($helper in @($tyoAgent, $tyoCloud)) {
     if (-not $helper.Contains('HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"')) {
         throw "TYO helper does not explicitly select the tested Hermes fork."
