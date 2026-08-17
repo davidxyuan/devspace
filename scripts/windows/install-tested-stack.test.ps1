@@ -44,6 +44,12 @@ if ($installer.Contains('$managedPython312Dir')) {
 if ($installer.Contains('TargetDir=`"$managedPython312Dir`"')) {
     throw "Installer still contains the broken Python 3.12 relocation flow."
 }
+if ($installer.Contains('$existingVersionText:')) {
+    throw "Installer contains invalid PowerShell interpolation: `$existingVersionText:"
+}
+if ($installer.Contains('$versionText:')) {
+    throw "Installer contains invalid PowerShell interpolation: `$versionText:"
+}
 
 if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdog-fix"')) {
     throw "HTML does not clone the complete tested installer branch before execution."
