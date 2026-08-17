@@ -19,6 +19,8 @@ $HermesVersion = "0.5.0"
 $devSpaceDir = Join-Path $InstallRoot "devspace"
 $hermesDir = Join-Path $InstallRoot "hermes-gpt"
 $hermesPython = Join-Path $hermesDir ".venv\Scripts\python.exe"
+$managedPython312Dir = Join-Path $env:USERPROFILE ".devspace\tools\python\3.12.10"
+$managedPython312Exe = Join-Path $managedPython312Dir "python.exe"
 
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -58,7 +60,11 @@ function Try-InstallWingetPackage([string]$wingetId, [string]$displayName) {
     }
     Refresh-Path
     if ($code -eq 0) { return $true }
-    Write-Warning "winget could not install $displayName (exit code $code). Falling back to the official installer."
+    if ($code -eq -1978335189) {
+        Write-Warning "winget reports no applicable update for $displayName (0x8A15002B). A Python install may already exist but be undiscoverable; using the managed official runtime fallback."
+    } else {
+        Write-Warning "winget could not install $displayName (exit code $code). Falling back to the official installer."
+    }
     return $false
 }
 
@@ -73,6 +79,10 @@ function Require-Command([string]$name, [string]$wingetId) {
 
 function Get-CompatiblePython {
     $candidates = New-Object System.Collections.Generic.List[string]
+
+    if (Test-Path -LiteralPath $managedPython312Exe) {
+        $candidates.Add($managedPython312Exe)
+    }
 
     foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
         if ($command.Source) { $candidates.Add([string]$command.Source) }
@@ -125,6 +135,21 @@ function Install-OfficialPython312 {
         default { throw "Unsupported Windows architecture for automatic Python install: $arch" }
     }
 
+    if (Test-Path -LiteralPath $managedPython312Exe) {
+        try {
+            $existingVersionText = (& $managedPython312Exe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -eq 0 -and [version](([string]$existingVersionText).Trim()) -ge [version]"3.10") {
+                Write-Host "Using existing managed Python $existingVersionText`: $managedPython312Exe" -ForegroundColor Green
+                return $managedPython312Exe
+            }
+        } catch {}
+    }
+
+    if (Test-Path -LiteralPath $managedPython312Dir) {
+        Remove-Item -LiteralPath $managedPython312Dir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path $managedPython312Dir -Parent) | Out-Null
+
     $url = "https://www.python.org/ftp/python/$version/$fileName"
     $installerPath = Join-Path $env:TEMP $fileName
     $logPath = "$installerPath.log"
@@ -140,13 +165,18 @@ function Install-OfficialPython312 {
         throw "Downloaded Python installer failed Authenticode validation. Status=$($signature.Status); Signer=$($signature.SignerCertificate.Subject)"
     }
 
-    Write-Host "Installing official Python $version for the current user..." -ForegroundColor Cyan
+    Write-Host "Installing official Python $version into managed DevSpace runtime: $managedPython312Dir" -ForegroundColor Cyan
     $arguments = @(
         "/quiet",
         "InstallAllUsers=0",
-        "PrependPath=1",
+        "TargetDir=`"$managedPython312Dir`"",
+        "PrependPath=0",
+        "AppendPath=0",
         "Include_pip=1",
-        "Include_launcher=1",
+        "Include_launcher=0",
+        "InstallLauncherAllUsers=0",
+        "AssociateFiles=0",
+        "Shortcuts=0",
         "Include_test=0",
         "/log",
         "`"$logPath`""
@@ -155,7 +185,16 @@ function Install-OfficialPython312 {
     if ($process.ExitCode -notin @(0, 3010)) {
         throw "Official Python $version installer failed with exit code $($process.ExitCode). Log: $logPath"
     }
-    Refresh-Path
+    if (-not (Test-Path -LiteralPath $managedPython312Exe)) {
+        throw "Official Python $version installer returned success, but the expected managed runtime was not created at $managedPython312Exe. Log: $logPath"
+    }
+
+    $versionText = (& $managedPython312Exe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $versionText -or [version](([string]$versionText).Trim()) -lt [version]"3.10") {
+        throw "Managed Python runtime failed version verification at $managedPython312Exe. Log: $logPath"
+    }
+    Write-Host "Verified managed Python $versionText`: $managedPython312Exe" -ForegroundColor Green
+    return $managedPython312Exe
 }
 
 function Require-CompatiblePython {
@@ -165,20 +204,18 @@ function Require-CompatiblePython {
         return [string]$python.Path
     }
 
-    Write-Host "No Python >=3.10 was found. Installing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
-    $wingetOk = Try-InstallWingetPackage "Python.Python.3.12" "Python 3.12"
-    if ($wingetOk) {
-        $python = Get-CompatiblePython
+    Write-Host "No Python >=3.10 was found. Preparing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
+    [void](Try-InstallWingetPackage "Python.Python.3.12" "Python 3.12")
+
+    $python = Get-CompatiblePython
+    if ($python) {
+        Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
+        return [string]$python.Path
     }
-    if (-not $python) {
-        Install-OfficialPython312
-        $python = Get-CompatiblePython
-    }
-    if (-not $python) {
-        throw "Python installation completed, but no compatible Python >=3.10 could be resolved. Open a new PowerShell window and rerun. Existing older Python versions do not need to be removed."
-    }
-    Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
-    return [string]$python.Path
+
+    $managedPython = Install-OfficialPython312
+    Write-Host "Using managed Python: $managedPython" -ForegroundColor Green
+    return [string]$managedPython
 }
 
 function Invoke-Checked([scriptblock]$command, [string]$message) {
