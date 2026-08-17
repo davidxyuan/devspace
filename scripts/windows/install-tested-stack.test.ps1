@@ -19,30 +19,30 @@ if ($errors.Count) { throw ($errors | Out-String) }
     'Require-CompatiblePython',
     'Python.Python.3.12',
     'Try-InstallWingetPackage',
-    'Install-OfficialPython312',
+    '$managedPythonFallbackVersion = "3.11.9"',
+    '$managedPythonFallbackDir = Join-Path $InstallRoot "tools\python\3.11.9"',
+    'Install-ManagedPythonFallback',
     'https://www.python.org/ftp/python/$version/$fileName',
     'Get-AuthenticodeSignature',
     'Python Software Foundation',
-    '$managedPython312Dir = Join-Path $InstallRoot "tools\python\3.12.10"',
-    'HKCU:\Software\Python',
-    'HKLM:\Software\Python',
-    'HKLM:\Software\Wow6432Node\Python',
-    'ExecutablePath',
-    'TargetDir=`"$managedPython312Dir`"',
+    'Registry::HKEY_CURRENT_USER\Software\Python\PythonCore',
+    'Registry::HKEY_LOCAL_MACHINE\Software\Python\PythonCore',
+    'Programs\Python\Python312\python.exe',
+    'TargetDir=`"$managedPythonFallbackDir`"',
     'InstallAllUsers=0',
-    'PrependPath=0',
     'Include_pip=1',
-    'Include_launcher=0',
     '0x8A15002B',
-    'No Python >=3.10 was found. Preparing Python 3.12 side-by-side',
-    'expected managed runtime was not created',
+    'cannot relocate an already-registered 3.12 during Modify mode',
     'Install-PinnedRepo $HermesRepo $HermesRef $HermesCommit $hermesDir',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
     if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety/bootstrap text: $_" }
 }
-if ($installer.Contains('$managedPython312Dir = Join-Path $env:USERPROFILE')) {
-    throw "Managed Python must follow InstallRoot rather than defaulting to the C: user profile."
+if ($installer.Contains('$managedPython312Dir')) {
+    throw "Installer must not try to relocate an already-installed Python 3.12 into InstallRoot."
+}
+if ($installer.Contains('TargetDir=`"$managedPython312Dir`"')) {
+    throw "Installer still contains the broken Python 3.12 relocation flow."
 }
 
 if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdog-fix"')) {
