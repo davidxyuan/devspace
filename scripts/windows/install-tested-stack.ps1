@@ -19,8 +19,13 @@ $HermesVersion = "0.5.0"
 $devSpaceDir = Join-Path $InstallRoot "devspace"
 $hermesDir = Join-Path $InstallRoot "hermes-gpt"
 $hermesPython = Join-Path $hermesDir ".venv\Scripts\python.exe"
-$managedPython312Dir = Join-Path $InstallRoot "tools\python\3.12.10"
-$managedPython312Exe = Join-Path $managedPython312Dir "python.exe"
+
+# Python 3.12's legacy Windows installer cannot relocate an already-installed 3.12
+# during Modify mode. If an existing 3.12 registration is unusable, use a different
+# minor version that Hermes supports and install it as an isolated fallback under InstallRoot.
+$managedPythonFallbackVersion = "3.11.9"
+$managedPythonFallbackDir = Join-Path $InstallRoot "tools\python\3.11.9"
+$managedPythonFallbackExe = Join-Path $managedPythonFallbackDir "python.exe"
 
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -35,7 +40,7 @@ function Get-Winget {
 function Install-WingetPackage([string]$wingetId, [string]$displayName) {
     $winget = Get-Winget
     Write-Host "Installing $displayName ($wingetId)..." -ForegroundColor Cyan
-    & $winget install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
+    & $winget install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "winget failed to install $displayName ($wingetId). Exit code: $LASTEXITCODE"
     }
@@ -53,7 +58,7 @@ function Try-InstallWingetPackage([string]$wingetId, [string]$displayName) {
     $oldPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $winget.Source install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
+        & $winget.Source install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Host
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
@@ -61,9 +66,9 @@ function Try-InstallWingetPackage([string]$wingetId, [string]$displayName) {
     Refresh-Path
     if ($code -eq 0) { return $true }
     if ($code -eq -1978335189) {
-        Write-Warning "winget reports no applicable update for $displayName (0x8A15002B). A Python install may already exist but be undiscoverable; using registry discovery and the managed official runtime fallback."
+        Write-Warning "winget reports no applicable update for $displayName (0x8A15002B). An installation may already be registered; discovery will be retried before using the isolated fallback."
     } else {
-        Write-Warning "winget could not install $displayName (exit code $code). Falling back to the official installer."
+        Write-Warning "winget could not install $displayName (exit code $code). Discovery will be retried before using the isolated fallback."
     }
     return $false
 }
@@ -77,56 +82,66 @@ function Require-Command([string]$name, [string]$wingetId) {
     return $command.Source
 }
 
+function Add-PythonCandidate([System.Collections.Generic.List[string]]$List, [string]$Path) {
+    if ($Path -and -not [string]::IsNullOrWhiteSpace($Path)) {
+        $List.Add($Path.Trim())
+    }
+}
+
 function Get-CompatiblePython {
     $candidates = New-Object System.Collections.Generic.List[string]
 
-    if (Test-Path -LiteralPath $managedPython312Exe) {
-        $candidates.Add($managedPython312Exe)
-    }
+    Add-PythonCandidate $candidates $managedPythonFallbackExe
 
     foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
-        if ($command.Source) { $candidates.Add([string]$command.Source) }
+        if ($command.Source) { Add-PythonCandidate $candidates ([string]$command.Source) }
     }
 
     $py = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($py) {
-        foreach ($selector in @("3.13", "3.12", "3.11", "3.10")) {
+        foreach ($selector in @("3.12", "3.11", "3.10")) {
             try {
                 $resolved = (& $py.Source "-$selector" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-                if ($LASTEXITCODE -eq 0 -and $resolved) { $candidates.Add(([string]$resolved).Trim()) }
+                if ($LASTEXITCODE -eq 0 -and $resolved) { Add-PythonCandidate $candidates ([string]$resolved) }
             } catch {}
         }
     }
 
-    # PEP 514 registry discovery. Official Python installers register here even when PATH is stale or disabled.
-    foreach ($registryRoot in @(
-        "HKCU:\Software\Python",
-        "HKLM:\Software\Python",
-        "HKLM:\Software\Wow6432Node\Python"
+    # Read the exact PEP 514 keys used by the traditional CPython Windows installer.
+    foreach ($hive in @(
+        "Registry::HKEY_CURRENT_USER\Software\Python\PythonCore",
+        "Registry::HKEY_LOCAL_MACHINE\Software\Python\PythonCore",
+        "Registry::HKEY_LOCAL_MACHINE\Software\Wow6432Node\Python\PythonCore"
     )) {
-        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
-        foreach ($installKey in @(Get-Item -Path "$registryRoot\*\*\InstallPath" -ErrorAction SilentlyContinue)) {
+        foreach ($versionName in @("3.12", "3.11", "3.10")) {
+            $installKeyPath = "$hive\$versionName\InstallPath"
+            $installKey = Get-Item -LiteralPath $installKeyPath -ErrorAction SilentlyContinue
+            if (-not $installKey) { continue }
             try {
                 $executablePath = [string]$installKey.GetValue("ExecutablePath")
                 $installPath = [string]$installKey.GetValue("")
                 if ($executablePath) {
-                    $candidates.Add($executablePath)
+                    Add-PythonCandidate $candidates $executablePath
                 } elseif ($installPath) {
-                    $candidates.Add((Join-Path $installPath "python.exe"))
+                    Add-PythonCandidate $candidates (Join-Path $installPath "python.exe")
                 }
             } catch {}
         }
     }
 
-    foreach ($pattern in @(
-        "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
-        "$env:ProgramFiles\Python3*\python.exe",
-        "${env:ProgramFiles(x86)}\Python3*\python.exe"
+    # Explicit default locations avoid relying on PATH or wildcard registry-provider behavior.
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe"),
+        (Join-Path $env:ProgramFiles "Python311\python.exe"),
+        (Join-Path $env:ProgramFiles "Python310\python.exe"),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Python312\python.exe" }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Python311\python.exe" }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Python310\python.exe" })
     )) {
-        if (-not $pattern) { continue }
-        foreach ($item in @(Get-Item $pattern -ErrorAction SilentlyContinue)) {
-            if ($item.FullName) { $candidates.Add([string]$item.FullName) }
-        }
+        Add-PythonCandidate $candidates $candidate
     }
 
     $compatible = @()
@@ -136,17 +151,18 @@ function Get-CompatiblePython {
             $versionText = (& $candidate -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -ne 0 -or -not $versionText) { continue }
             $version = [version](([string]$versionText).Trim())
-            if ($version -ge [version]"3.10") {
+            if ($version -ge [version]"3.10" -and $version -lt [version]"3.13") {
                 $compatible += [pscustomobject]@{ Path=$candidate; Version=$version }
             }
         } catch {}
     }
 
+    # Prefer the newest tested-compatible interpreter (3.12, then 3.11, then 3.10).
     return $compatible | Sort-Object Version -Descending | Select-Object -First 1
 }
 
-function Install-OfficialPython312 {
-    $version = "3.12.10"
+function Install-ManagedPythonFallback {
+    $version = $managedPythonFallbackVersion
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     switch -Regex ($arch) {
         "ARM64" { $fileName = "python-$version-arm64.exe"; break }
@@ -155,41 +171,37 @@ function Install-OfficialPython312 {
         default { throw "Unsupported Windows architecture for automatic Python install: $arch" }
     }
 
-    if (Test-Path -LiteralPath $managedPython312Exe) {
+    if (Test-Path -LiteralPath $managedPythonFallbackExe) {
         try {
-            $existingVersionText = (& $managedPython312Exe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+            $existingVersionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -eq 0 -and [version](([string]$existingVersionText).Trim()) -ge [version]"3.10") {
-                Write-Host "Using existing managed Python $($existingVersionText): $managedPython312Exe" -ForegroundColor Green
-                return $managedPython312Exe
+                Write-Host "Using existing managed Python $existingVersionText: $managedPythonFallbackExe" -ForegroundColor Green
+                return $managedPythonFallbackExe
             }
         } catch {}
     }
 
-    if (Test-Path -LiteralPath $managedPython312Dir) {
-        Remove-Item -LiteralPath $managedPython312Dir -Recurse -Force
+    if (Test-Path -LiteralPath $managedPythonFallbackDir) {
+        Remove-Item -LiteralPath $managedPythonFallbackDir -Recurse -Force
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path $managedPython312Dir -Parent) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path $managedPythonFallbackDir -Parent) | Out-Null
 
     $url = "https://www.python.org/ftp/python/$version/$fileName"
     $installerPath = Join-Path $env:TEMP $fileName
     $logPath = "$installerPath.log"
-    Write-Host "Downloading official Python $version installer from python.org..." -ForegroundColor Cyan
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
-    } catch {
-        throw "Failed to download the official Python $version installer from $url. $($_.Exception.Message)"
-    }
+    Write-Host "Downloading isolated Python $version fallback from python.org..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
 
     $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
     if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Python Software Foundation") {
         throw "Downloaded Python installer failed Authenticode validation. Status=$($signature.Status); Signer=$($signature.SignerCertificate.Subject)"
     }
 
-    Write-Host "Installing official Python $version into managed DevSpace runtime: $managedPython312Dir" -ForegroundColor Cyan
+    Write-Host "Installing isolated Python $version fallback into: $managedPythonFallbackDir" -ForegroundColor Cyan
     $arguments = @(
         "/quiet",
         "InstallAllUsers=0",
-        "TargetDir=`"$managedPython312Dir`"",
+        "TargetDir=`"$managedPythonFallbackDir`"",
         "PrependPath=0",
         "AppendPath=0",
         "Include_pip=1",
@@ -203,18 +215,26 @@ function Install-OfficialPython312 {
     )
     $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -notin @(0, 3010)) {
-        throw "Official Python $version installer failed with exit code $($process.ExitCode). Log: $logPath"
-    }
-    if (-not (Test-Path -LiteralPath $managedPython312Exe)) {
-        throw "Official Python $version installer returned success, but the expected managed runtime was not created at $managedPython312Exe. Log: $logPath"
+        throw "Official Python $version fallback installer failed with exit code $($process.ExitCode). Log: $logPath"
     }
 
-    $versionText = (& $managedPython312Exe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0 -or -not $versionText -or [version](([string]$versionText).Trim()) -lt [version]"3.10") {
-        throw "Managed Python runtime failed version verification at $managedPython312Exe. Log: $logPath"
+    if (Test-Path -LiteralPath $managedPythonFallbackExe) {
+        $versionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $versionText -and [version](([string]$versionText).Trim()) -ge [version]"3.10") {
+            Write-Host "Verified isolated Python $versionText: $managedPythonFallbackExe" -ForegroundColor Green
+            return $managedPythonFallbackExe
+        }
     }
-    Write-Host "Verified managed Python $($versionText): $managedPython312Exe" -ForegroundColor Green
-    return $managedPython312Exe
+
+    # If the same minor version was already registered elsewhere, the traditional installer may enter Modify mode.
+    # In that case, accept a now-discoverable compatible interpreter rather than pretending TargetDir moved it.
+    $python = Get-CompatiblePython
+    if ($python) {
+        Write-Host "Using compatible Python $($python.Version) discovered after fallback install: $($python.Path)" -ForegroundColor Green
+        return [string]$python.Path
+    }
+
+    throw "Python fallback installation returned success but no usable Python >=3.10,<3.13 was found. Log: $logPath"
 }
 
 function Require-CompatiblePython {
@@ -224,19 +244,17 @@ function Require-CompatiblePython {
         return [string]$python.Path
     }
 
-    Write-Host "No Python >=3.10 was found. Preparing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
+    Write-Host "No usable Python 3.10-3.12 was found. Trying the normal Python 3.12 package first..." -ForegroundColor Yellow
     [void](Try-InstallWingetPackage "Python.Python.3.12" "Python 3.12")
 
-    # Re-scan PATH, py launcher, PEP 514 registry and common install directories after winget.
     $python = Get-CompatiblePython
     if ($python) {
         Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
         return [string]$python.Path
     }
 
-    $managedPython = Install-OfficialPython312
-    Write-Host "Using managed Python: $managedPython" -ForegroundColor Green
-    return [string]$managedPython
+    Write-Warning "Python 3.12 is still unavailable. The traditional 3.12 installer cannot relocate an already-registered 3.12 during Modify mode. Using isolated Python 3.11.9 under InstallRoot instead."
+    return [string](Install-ManagedPythonFallback)
 }
 
 function Invoke-Checked([scriptblock]$command, [string]$message) {
@@ -302,6 +320,6 @@ Verify-Stack
 
 Write-Host ""
 Write-Host "Code and dependencies are installed. No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created." -ForegroundColor Yellow
-Write-Host "For a complete fresh/existing auto-detected setup with validated capability choices, use scripts\windows\detect-and-apply-tested-stack.ps1 from codex/windows-fixed-port-conflicts."
+Write-Host "For a complete fresh/existing auto-detected setup with validated capability choices, use scripts\windows\detect-and-apply-tested-stack.ps1 from codex/devspace-v1.0.4-watchdog-fix."
 Write-Host "Configure this machine next (choose its own URL, roots, token, and task settings):"
 Write-Host "  powershell.exe -ExecutionPolicy Bypass -File `"$devSpaceDir\scripts\windows\install-devspace-watchdog.ps1`" -Components DevSpace,Hermes -HermesDir `"$hermesDir`" -CliPath `"$devSpaceDir\dist\cli.js`" -SkipNpmInstall -SkipHermesInstall -PublicBaseUrl `"https://THIS-MACHINE.example.com`" -AllowedRoots `"C:\path\to\approved\workspaces`" -InstallTools"
