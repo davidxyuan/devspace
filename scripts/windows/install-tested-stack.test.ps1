@@ -23,7 +23,7 @@ if ($errors.Count) { throw ($errors | Out-String) }
     'https://www.python.org/ftp/python/$version/$fileName',
     'Get-AuthenticodeSignature',
     'Python Software Foundation',
-    '$managedPython312Dir = Join-Path $env:USERPROFILE ".devspace\tools\python\3.12.10"',
+    '$managedPython312Dir = Join-Path $InstallRoot "tools\python\3.12.10"',
     'HKCU:\Software\Python',
     'HKLM:\Software\Python',
     'HKLM:\Software\Wow6432Node\Python',
@@ -36,9 +36,13 @@ if ($errors.Count) { throw ($errors | Out-String) }
     '0x8A15002B',
     'No Python >=3.10 was found. Preparing Python 3.12 side-by-side',
     'expected managed runtime was not created',
+    'Install-PinnedRepo $HermesRepo $HermesRef $HermesCommit $hermesDir',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
     if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety/bootstrap text: $_" }
+}
+if ($installer.Contains('$managedPython312Dir = Join-Path $env:USERPROFILE')) {
+    throw "Managed Python must follow InstallRoot rather than defaulting to the C: user profile."
 }
 
 if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdog-fix"')) {
