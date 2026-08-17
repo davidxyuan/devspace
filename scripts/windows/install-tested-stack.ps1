@@ -19,7 +19,7 @@ $HermesVersion = "0.5.0"
 $devSpaceDir = Join-Path $InstallRoot "devspace"
 $hermesDir = Join-Path $InstallRoot "hermes-gpt"
 $hermesPython = Join-Path $hermesDir ".venv\Scripts\python.exe"
-$managedPython312Dir = Join-Path $env:USERPROFILE ".devspace\tools\python\3.12.10"
+$managedPython312Dir = Join-Path $InstallRoot "tools\python\3.12.10"
 $managedPython312Exe = Join-Path $managedPython312Dir "python.exe"
 
 function Refresh-Path {
@@ -293,7 +293,7 @@ try {
     Pop-Location
 }
 
-Install-PinnedRepo $HermesRepo $HermesRef $HermesCommit $hermesDir
+Install-PinnedRepo $HermesRepo $HermesRepo $HermesCommit $hermesDir
 if (-not (Test-Path -LiteralPath $hermesPython)) {
     Invoke-Checked { & $python -m venv (Join-Path $hermesDir ".venv") } "Hermes-GPT virtual environment creation failed."
 }
