@@ -23,9 +23,15 @@ if ($errors.Count) { throw ($errors | Out-String) }
     'https://www.python.org/ftp/python/$version/$fileName',
     'Get-AuthenticodeSignature',
     'Python Software Foundation',
+    '$managedPython312Dir = Join-Path $env:USERPROFILE ".devspace\tools\python\3.12.10"',
+    'TargetDir=`"$managedPython312Dir`"',
     'InstallAllUsers=0',
-    'PrependPath=1',
-    'No Python >=3.10 was found. Installing Python 3.12 side-by-side',
+    'PrependPath=0',
+    'Include_pip=1',
+    'Include_launcher=0',
+    '0x8A15002B',
+    'No Python >=3.10 was found. Preparing Python 3.12 side-by-side',
+    'expected managed runtime was not created',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
     if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety/bootstrap text: $_" }
