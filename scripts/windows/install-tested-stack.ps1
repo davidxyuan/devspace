@@ -35,9 +35,31 @@ function Install-WingetPackage([string]$wingetId, [string]$displayName) {
     Write-Host "Installing $displayName ($wingetId)..." -ForegroundColor Cyan
     & $winget install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
-        throw "winget failed to install $displayName ($wingetId)."
+        throw "winget failed to install $displayName ($wingetId). Exit code: $LASTEXITCODE"
     }
     Refresh-Path
+}
+
+function Try-InstallWingetPackage([string]$wingetId, [string]$displayName) {
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $winget) {
+        Write-Warning "winget.exe is unavailable; skipping winget for $displayName."
+        return $false
+    }
+
+    Write-Host "Trying winget for $displayName ($wingetId)..." -ForegroundColor Cyan
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $winget.Source install --id $wingetId --exact --source winget --accept-package-agreements --accept-source-agreements
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+    Refresh-Path
+    if ($code -eq 0) { return $true }
+    Write-Warning "winget could not install $displayName (exit code $code). Falling back to the official installer."
+    return $false
 }
 
 function Require-Command([string]$name, [string]$wingetId) {
@@ -93,6 +115,49 @@ function Get-CompatiblePython {
     return $compatible | Sort-Object Version -Descending | Select-Object -First 1
 }
 
+function Install-OfficialPython312 {
+    $version = "3.12.10"
+    $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    switch -Regex ($arch) {
+        "ARM64" { $fileName = "python-$version-arm64.exe"; break }
+        "AMD64" { $fileName = "python-$version-amd64.exe"; break }
+        "x86" { $fileName = "python-$version.exe"; break }
+        default { throw "Unsupported Windows architecture for automatic Python install: $arch" }
+    }
+
+    $url = "https://www.python.org/ftp/python/$version/$fileName"
+    $installerPath = Join-Path $env:TEMP $fileName
+    $logPath = "$installerPath.log"
+    Write-Host "Downloading official Python $version installer from python.org..." -ForegroundColor Cyan
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
+    } catch {
+        throw "Failed to download the official Python $version installer from $url. $($_.Exception.Message)"
+    }
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+    if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Python Software Foundation") {
+        throw "Downloaded Python installer failed Authenticode validation. Status=$($signature.Status); Signer=$($signature.SignerCertificate.Subject)"
+    }
+
+    Write-Host "Installing official Python $version for the current user..." -ForegroundColor Cyan
+    $arguments = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=1",
+        "Include_pip=1",
+        "Include_launcher=1",
+        "Include_test=0",
+        "/log",
+        "`"$logPath`""
+    )
+    $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -notin @(0, 3010)) {
+        throw "Official Python $version installer failed with exit code $($process.ExitCode). Log: $logPath"
+    }
+    Refresh-Path
+}
+
 function Require-CompatiblePython {
     $python = Get-CompatiblePython
     if ($python) {
@@ -101,11 +166,16 @@ function Require-CompatiblePython {
     }
 
     Write-Host "No Python >=3.10 was found. Installing Python 3.12 side-by-side with any existing Python..." -ForegroundColor Yellow
-    Install-WingetPackage "Python.Python.3.12" "Python 3.12"
-
-    $python = Get-CompatiblePython
+    $wingetOk = Try-InstallWingetPackage "Python.Python.3.12" "Python 3.12"
+    if ($wingetOk) {
+        $python = Get-CompatiblePython
+    }
     if (-not $python) {
-        throw "Python 3.12 installation completed, but no compatible Python >=3.10 could be resolved. Open a new PowerShell window and rerun. Existing older Python versions do not need to be removed."
+        Install-OfficialPython312
+        $python = Get-CompatiblePython
+    }
+    if (-not $python) {
+        throw "Python installation completed, but no compatible Python >=3.10 could be resolved. Open a new PowerShell window and rerun. Existing older Python versions do not need to be removed."
     }
     Write-Host "Using Python $($python.Version): $($python.Path)" -ForegroundColor Green
     return [string]$python.Path
