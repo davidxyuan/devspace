@@ -175,7 +175,7 @@ function Install-ManagedPythonFallback {
         try {
             $existingVersionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -eq 0 -and [version](([string]$existingVersionText).Trim()) -ge [version]"3.10") {
-                Write-Host "Using existing managed Python $existingVersionText: $managedPythonFallbackExe" -ForegroundColor Green
+                Write-Host "Using existing managed Python $($existingVersionText): $managedPythonFallbackExe" -ForegroundColor Green
                 return $managedPythonFallbackExe
             }
         } catch {}
@@ -221,7 +221,7 @@ function Install-ManagedPythonFallback {
     if (Test-Path -LiteralPath $managedPythonFallbackExe) {
         $versionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
         if ($LASTEXITCODE -eq 0 -and $versionText -and [version](([string]$versionText).Trim()) -ge [version]"3.10") {
-            Write-Host "Verified isolated Python $versionText: $managedPythonFallbackExe" -ForegroundColor Green
+            Write-Host "Verified isolated Python $($versionText): $managedPythonFallbackExe" -ForegroundColor Green
             return $managedPythonFallbackExe
         }
     }
