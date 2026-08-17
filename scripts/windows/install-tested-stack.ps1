@@ -293,7 +293,7 @@ try {
     Pop-Location
 }
 
-Install-PinnedRepo $HermesRepo $HermesRepo $HermesCommit $hermesDir
+Install-PinnedRepo $HermesRepo $HermesRef $HermesCommit $hermesDir
 if (-not (Test-Path -LiteralPath $hermesPython)) {
     Invoke-Checked { & $python -m venv (Join-Path $hermesDir ".venv") } "Hermes-GPT virtual environment creation failed."
 }
