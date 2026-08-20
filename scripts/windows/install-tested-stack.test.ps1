@@ -19,9 +19,11 @@ if ($candidateList.Count -ne 1 -or $candidateList[0] -ne "C:\Python311\python.ex
 
 @(
     '$DevSpaceVersion = "1.0.4"',
-    '$DevSpaceCommit = "9c4462ba1ea43a846fd511b8b10e4bb6ac49493d"',
+    '$DevSpaceRef = "fix/windows-new-pc-installer-hardening-20260820"',
+    '$DevSpaceCommit = "057de105c25c922e1ec3324e1b48509818fd2472"',
     '$HermesVersion = "0.5.0"',
-    '$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"',
+    '$HermesRef = "fix/windows-new-pc-installer-hardening-20260820"',
+    '$HermesCommit = "0db9e25d2c0896481cb9521eedae7096523be808"',
     '[string]$PythonPath',
     '[switch]$VerifyOnly',
     '[void]$List.Add($Path.Trim())',
@@ -72,7 +74,7 @@ if ($installer.Contains('$versionText:')) {
     throw "Installer contains invalid PowerShell interpolation: `$versionText:"
 }
 
-if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdog-fix"')) {
+if (-not $html.Contains('clone --depth 1 --branch "fix/windows-new-pc-installer-hardening-20260820"')) {
     throw "HTML does not clone the complete tested installer branch before execution."
 }
 if (-not $html.Contains('powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer')) {

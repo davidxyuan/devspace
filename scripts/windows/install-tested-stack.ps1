@@ -9,12 +9,12 @@ $ErrorActionPreference = "Stop"
 
 # Tested stack manifest: update these values together only after validating a new pair.
 $DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/upgrade-devspace-v1.0.4"
-$DevSpaceCommit = "9c4462ba1ea43a846fd511b8b10e4bb6ac49493d"
+$DevSpaceRef = "fix/windows-new-pc-installer-hardening-20260820"
+$DevSpaceCommit = "057de105c25c922e1ec3324e1b48509818fd2472"
 $DevSpaceVersion = "1.0.4"
 $HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
-$HermesRef = "codex/upgrade-v0.5.0"
-$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"
+$HermesRef = "fix/windows-new-pc-installer-hardening-20260820"
+$HermesCommit = "0db9e25d2c0896481cb9521eedae7096523be808"
 $HermesVersion = "0.5.0"
 
 $devSpaceDir = Join-Path $InstallRoot "devspace"
@@ -374,6 +374,6 @@ Verify-Stack
 
 Write-Host ""
 Write-Host "Code and dependencies are installed. No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created." -ForegroundColor Yellow
-Write-Host "For a complete fresh/existing auto-detected setup with validated capability choices, use scripts\windows\detect-and-apply-tested-stack.ps1 from codex/devspace-v1.0.4-watchdog-fix."
+Write-Host "For a complete fresh/existing auto-detected setup with validated capability choices, use scripts\windows\detect-and-apply-tested-stack.ps1 from fix/windows-new-pc-installer-hardening-20260820."
 Write-Host "Configure this machine next (choose its own URL, roots, token, and task settings):"
 Write-Host "  powershell.exe -ExecutionPolicy Bypass -File `"$devSpaceDir\scripts\windows\install-devspace-watchdog.ps1`" -Components DevSpace,Hermes -HermesDir `"$hermesDir`" -CliPath `"$devSpaceDir\dist\cli.js`" -SkipNpmInstall -SkipHermesInstall -PublicBaseUrl `"https://THIS-MACHINE.example.com`" -AllowedRoots `"C:\path\to\approved\workspaces`" -InstallTools"

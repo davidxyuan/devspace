@@ -2,8 +2,8 @@
 
 適用目標：
 
-- DevSpace `1.0.4` / `ca7c10a39b5c099455db662c3aba9007b5eb34e3`
-- Hermes-GPT `0.5.0` / `db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3`
+- DevSpace `1.0.4` / `057de105c25c922e1ec3324e1b48509818fd2472`
+- Hermes-GPT `0.5.0` / `0db9e25d2c0896481cb9521eedae7096523be808`
 - Windows 10／11 PowerShell 5.1 以上
 
 > 既有機器升級前，建議使用「以系統管理員身分執行」的 PowerShell。Installer 會先檢查是否有權安全停止受管理程序；權限不足時會在停止任何服務前拒絕。
@@ -12,7 +12,7 @@
 
 ```powershell
 Set-Location C:\Temp
-git clone --branch codex/windows-mixed-version-upgrade-support `
+git clone --branch fix/windows-new-pc-installer-hardening-20260820 `
   https://github.com/davidxyuan/devspace.git devspace-installer
 Set-Location C:\Temp\devspace-installer
 ```

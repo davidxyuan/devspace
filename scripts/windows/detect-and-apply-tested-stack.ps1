@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$FallbackRawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/codex/windows-fixed-port-conflicts"
+$FallbackRawBase = "https://raw.githubusercontent.com/davidxyuan/devspace/fix/windows-new-pc-installer-hardening-20260820"
 $configExists = Test-Path (Join-Path $InstallDir "config.json")
 $watchdogExists = Test-Path (Join-Path $InstallDir "devspace-watchdog.config.json")
 $repoArtifacts = (Test-Path (Join-Path $InstallRoot "devspace")) -or (Test-Path (Join-Path $InstallRoot "hermes-gpt"))
