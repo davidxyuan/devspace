@@ -181,7 +181,7 @@ function New-FilePlan(
     if ([string]$updatedWatchdog.ngrokEndpointMode -eq "AgentEndpoint") {
         Set-ObjectProperty $updatedWatchdog "ngrokAgentBaseUrl" $NewOrigin
     }
-    $plan.Add([pscustomobject]@{
+    [void]$plan.Add([pscustomobject]@{
         Path = $WatchdogConfigPath
         Content = ConvertTo-JsonText $updatedWatchdog 30
         Kind = "watchdog/router config"
@@ -192,7 +192,7 @@ function New-FilePlan(
     if ($devspaceConfig.PSObject.Properties["allowedHosts"]) {
         Set-ObjectProperty $devspaceConfig "allowedHosts" (Get-UpdatedAllowedHosts $devspaceConfig.allowedHosts $OldHost $NewHost)
     }
-    $plan.Add([pscustomobject]@{
+    [void]$plan.Add([pscustomobject]@{
         Path = $DevSpaceConfigPath
         Content = ConvertTo-JsonText $devspaceConfig 20
         Kind = "DevSpace config"
@@ -203,7 +203,7 @@ function New-FilePlan(
         if ($path) {
             $content = Get-Content -LiteralPath $path -Raw
             $content = $content.Replace($OldOrigin, $NewOrigin).Replace($OldHost, $NewHost)
-            $plan.Add([pscustomobject]@{
+            [void]$plan.Add([pscustomobject]@{
                 Path = $path
                 Content = $content
                 Kind = "ngrok Cloud Endpoint policy/rule"
@@ -216,7 +216,7 @@ function New-FilePlan(
         $content = Get-Content -LiteralPath $path -Raw
         if ($content.Contains($OldOrigin) -or $content.Contains($OldHost)) {
             $content = $content.Replace($OldOrigin, $NewOrigin).Replace($OldHost, $NewHost)
-            $plan.Add([pscustomobject]@{
+            [void]$plan.Add([pscustomobject]@{
                 Path = $path
                 Content = $content
                 Kind = "OAuth/MCP metadata"
@@ -238,7 +238,7 @@ function New-Backup([object[]]$Plan, [string]$Root) {
         $leaf = [System.IO.Path]::GetFileName([string]$item.Path)
         $backupPath = Join-Path $backupDir ("{0:D2}-{1}" -f $index, $leaf)
         Copy-Item -LiteralPath $item.Path -Destination $backupPath -Force
-        $records.Add([pscustomobject]@{ Original = [string]$item.Path; Backup = $backupPath })
+        [void]$records.Add([pscustomobject]@{ Original = [string]$item.Path; Backup = $backupPath })
     }
     $recordArray = $records.ToArray()
     $manifestPath = Join-Path $backupDir "manifest.json"

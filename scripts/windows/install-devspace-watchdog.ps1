@@ -12,6 +12,7 @@ param(
     [string]$CloudEndpointPolicyPath,
     [int]$Port = 7676,
     [string]$NgrokPath,
+    [string]$NgrokConfigPath,
     [string]$NgrokAuthtoken,
     [string]$NodePath,
     [string]$CliPath,
@@ -486,13 +487,21 @@ if (-not $SkipNgrok) {
         Fail "ngrok.exe was not found." "Rerun with -InstallTools to download the official latest stable ngrok agent, or pass -NgrokPath with the full path to a current ngrok v3 binary."
     }
     if (-not (Test-NgrokEndpointFlagSupport $NgrokPath)) {
-        Fail "The selected ngrok agent does not support the required --url and --binding flags: $NgrokPath" "Rerun with -InstallTools to install the official latest stable ngrok agent, or pass -NgrokPath pointing to a current ngrok v3 binary."
+        Fail "The selected ngrok agent does not support the required --url flag: $NgrokPath" "Rerun with -InstallTools to install the official latest stable ngrok agent, or pass -NgrokPath pointing to a current ngrok v3 binary."
     }
+    if (-not $NgrokConfigPath) { $NgrokConfigPath = [string]$existingWatchdogConfig.ngrokConfigPath }
+    if (-not $NgrokConfigPath) { $NgrokConfigPath = Join-Path $env:LOCALAPPDATA "ngrok\ngrok.yml" }
+    $NgrokConfigPath = [System.IO.Path]::GetFullPath($NgrokConfigPath)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $NgrokConfigPath) | Out-Null
     $effectiveNgrokAuthtoken = if ($NgrokAuthtoken) { $NgrokAuthtoken } elseif ($env:NGROK_AUTHTOKEN) { $env:NGROK_AUTHTOKEN } else { "" }
     if ($effectiveNgrokAuthtoken) {
-        Write-Host "Configuring ngrok authtoken..."
-        Invoke-Checked { & $NgrokPath config add-authtoken $effectiveNgrokAuthtoken } "ngrok authtoken setup failed."
+        Write-Host "Configuring ngrok authentication in the explicit local config..."
+        Invoke-Checked { & $NgrokPath config add-authtoken $effectiveNgrokAuthtoken --config $NgrokConfigPath | Out-Null } "ngrok authtoken setup failed."
     }
+    if (-not (Test-Path -LiteralPath $NgrokConfigPath)) {
+        Fail "ngrok config file is missing: $NgrokConfigPath" "Pass -NgrokAuthtoken (or NGROK_AUTHTOKEN) so the installer can initialize the explicit config, or provide -NgrokConfigPath pointing to an existing authenticated ngrok config."
+    }
+    Invoke-Checked { & $NgrokPath config check --config $NgrokConfigPath | Out-Null } "ngrok config validation failed."
 }
 
 if ($installDevSpace) {
@@ -575,6 +584,9 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
     $NgrokBinding = ""
 }
 $NgrokAgentBaseUrl = $NgrokAgentBaseUrl.TrimEnd("/")
+if (-not $SkipNgrok -and $NgrokBinding -and -not (Test-NgrokEndpointFlagSupport $NgrokPath -RequireBinding)) {
+    Fail "The selected ngrok agent does not support --binding required by this endpoint mode: $NgrokPath" "Use a current ngrok v3 build that supports --binding, or choose an endpoint mode that does not require a binding."
+}
 
 $routeMachineSlugs = @($machineSlug)
 foreach ($alias in @($RouteAliasMachineNames)) {
@@ -741,16 +753,14 @@ $watchdogConfig = [ordered]@{
     routerPort = if ($useRouter) { $RouterPort } else { 0 }
     publicUpstreamPort = $RouterPort
     ngrokPath = if ($SkipNgrok) { "" } else { [System.IO.Path]::GetFullPath($NgrokPath) }
+    ngrokConfigPath = if ($SkipNgrok) { "" } else { [System.IO.Path]::GetFullPath($NgrokConfigPath) }
     manageNgrok = -not $SkipNgrok
     publicBaseUrl = $PublicBaseUrl
     ngrokEndpointMode = $NgrokEndpointMode
     ngrokAgentBaseUrl = $NgrokAgentBaseUrl
     ngrokBinding = $NgrokBinding
-    ngrokInspectorPort = if ($SkipNgrok) { 0 } else {
-        Find-AvailableLoopbackPort `
-            $(if ($existingWatchdogConfig.ngrokInspectorPort) { [int]$existingWatchdogConfig.ngrokInspectorPort } else { 4040 }) `
-            @([string]$existingWatchdogConfig.ngrokAgentBaseUrl, [string]$existingWatchdogConfig.publicBaseUrl)
-    }
+    # ngrok v3.39+ removed --web-addr; use the supported default inspector.
+    ngrokInspectorPort = if ($SkipNgrok) { 0 } else { 4040 }
     mcpNameSuffix = if ($McpNameSuffix) { ConvertTo-Slug $McpNameSuffix } else { "" }
     routeAliasMachineNames = @($routeMachineSlugs | Where-Object { $_ -ne $machineSlug })
     capabilities = [ordered]@{ devspace = $devspaceCapabilities; hermes = $hermesCapabilities }
@@ -773,6 +783,70 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
 Write-JsonFile $watchdogConfigPath $watchdogConfig 6
 $restartFlagPath = Join-Path $InstallDir "restart-devspace.flag"
 [System.IO.File]::WriteAllText($restartFlagPath, "installer updated config at $(Get-Date -Format o)" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
+
+function Test-InstallerHttp([string]$Url, [int]$MinimumStatus = 200, [int]$MaximumStatus = 499) {
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+        $status = [int]$response.StatusCode
+        return $status -ge $MinimumStatus -and $status -le $MaximumStatus
+    } catch {
+        if ($_.Exception.Response) {
+            $status = [int]$_.Exception.Response.StatusCode.value__
+            return $status -ge $MinimumStatus -and $status -le $MaximumStatus
+        }
+        return $false
+    }
+}
+
+function Get-InstallerHealthFailures {
+    $failures = New-Object System.Collections.Generic.List[string]
+    $requiredPorts = @()
+    if ($installDevSpace) { $requiredPorts += $Port }
+    if ($installHermes) { $requiredPorts += $HermesPort }
+    if ($useRouter) { $requiredPorts += $RouterPort }
+    if (-not $SkipNgrok) { $requiredPorts += 4040 }
+    foreach ($requiredPort in @($requiredPorts | Select-Object -Unique)) {
+        if (-not (Get-NetTCPConnection -LocalPort $requiredPort -State Listen -ErrorAction SilentlyContinue)) { [void]$failures.Add("listener:$requiredPort") }
+    }
+    if ($installDevSpace -and -not (Test-InstallerHttp "http://127.0.0.1:$Port/healthz" 200 299)) { [void]$failures.Add("DevSpace:http://127.0.0.1:$Port/healthz") }
+    if ($installHermes -and -not (Test-InstallerHttp "http://127.0.0.1:$HermesPort/mcp" 200 499)) { [void]$failures.Add("Hermes:http://127.0.0.1:$HermesPort/mcp") }
+    if ($useRouter) {
+        try {
+            $routerStatus = Invoke-RestMethod -Uri "http://127.0.0.1:$RouterPort/__router/status" -TimeoutSec 5
+            if (-not $routerStatus.ok) { [void]$failures.Add("Router:status-not-ok") }
+            if ($installDevSpace) {
+                $actual = [string]$routerStatus.routes.PSObject.Properties[$devspaceRouteName].Value
+                $expected = "/$machineSlug/devspace_chatgpt/* -> http://127.0.0.1:$Port/*"
+                if ($actual -ne $expected) { [void]$failures.Add("Router:devspace-route") }
+            }
+            if ($installHermes) {
+                $actual = [string]$routerStatus.routes.PSObject.Properties[$hermesRouteName].Value
+                $expected = "/$machineSlug/hermes_chatgpt/* -> http://127.0.0.1:$HermesPort/*"
+                if ($actual -ne $expected) { [void]$failures.Add("Router:hermes-route") }
+            }
+        } catch { [void]$failures.Add("Router:http://127.0.0.1:$RouterPort/__router/status") }
+    }
+    if (-not $SkipNgrok) {
+        try {
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
+            $matchingTunnel = @($tunnels.tunnels | Where-Object { [string]$_.public_url -eq $NgrokAgentBaseUrl -and [string]$_.config.addr -eq "http://127.0.0.1:$RouterPort" }) | Select-Object -First 1
+            if (-not $matchingTunnel) { [void]$failures.Add("ngrok:tunnel") }
+        } catch { [void]$failures.Add("ngrok:http://127.0.0.1:4040/api/tunnels") }
+        if ($NgrokEndpointMode -eq "AgentEndpoint" -and -not (Test-InstallerHttp "$publicOrigin/__router/status" 200 299)) { [void]$failures.Add("public-mcp-route:$publicOrigin") }
+    }
+    return @($failures)
+}
+
+function Assert-InstallationHealth {
+    $deadline = (Get-Date).AddSeconds(30)
+    $failures = @("startup")
+    do {
+        Start-Sleep -Seconds 2
+        $failures = @(Get-InstallerHealthFailures)
+        if ($failures.Count -eq 0) { Write-Host "End-to-end health validation passed." -ForegroundColor Green; return }
+    } while ((Get-Date) -lt $deadline)
+    throw "End-to-end health validation failed. Failing layer(s): $($failures -join ', '). The installer will not report complete success."
+}
 
 $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
@@ -805,40 +879,36 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable
 $settings.Hidden = $true
-$useSchtasks = $UserMode -or $NoElevate
-if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
-    }
-} else {
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-        -LogonType Interactive `
-        -RunLevel ($runLevel)
-    try {
-        Register-ScheduledTask `
-            -TaskName $taskName `
-            -Action $action `
-            -Trigger @($logonTrigger, $pollTrigger) `
-            -Settings $settings `
-            -Principal $principal `
-            -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
-            -Force | Out-Null
-    } catch {
-        Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode to install a current-user task."
-    }
+$principalLogonType = if ($UserMode -or $NoElevate) { "S4U" } else { "Interactive" }
+$principal = New-ScheduledTaskPrincipal `
+    -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+    -LogonType $principalLogonType `
+    -RunLevel ($runLevel)
+try {
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger @($logonTrigger, $pollTrigger) `
+        -Settings $settings `
+        -Principal $principal `
+        -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
+        -Force | Out-Null
+} catch {
+    Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "If this is a stale elevated task, delete it from an Administrator PowerShell and rerun the installer."
 }
 
 if (-not $SkipStart) {
     try {
         Start-ScheduledTask -TaskName $taskName
+        Assert-InstallationHealth
     } catch {
-        Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or run this once: powershell.exe -ExecutionPolicy Bypass -File `"$InstallDir\devspace-watchdog.ps1`" -Once"
+        Fail "Scheduled task or end-to-end health validation failed: $($_.Exception.Message)" "Inspect the watchdog/ngrok logs and the reported failing layer, correct the dependency/configuration issue, then rerun."
     }
+} else {
+    Write-Warning "-SkipStart was requested; runtime end-to-end health validation was intentionally not executed."
 }
 
-Write-Host "DevSpace watchdog installed."
+Write-Host "DevSpace watchdog installed and configuration written."
 Write-Host "Mode: $modeName"
 Write-Host "Machine: $machineSlug"
 Write-Host "Scheduled task: $taskName"

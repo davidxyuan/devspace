@@ -30,15 +30,29 @@ if "%1"=="http" (
   echo Usage: ngrok http [address:port ^| port]
   echo   --url string
   echo   --binding string
-  echo   --web-addr string
+  echo   --log string
   exit /b 0
 )
-if "%1"=="version" echo ngrok version 3.39.2
+if "%1"=="version" echo ngrok version 3.39.11
 "@ | Set-Content -LiteralPath $newNgrok -Encoding ASCII
 
+    $urlOnlyNgrok = Join-Path $tempRoot "url-only-ngrok.cmd"
+    @"
+@echo off
+if "%1"=="http" (
+  echo   --url string
+  echo   --log string
+  exit /b 0
+)
+if "%1"=="version" echo ngrok version 3.39.11
+"@ | Set-Content -LiteralPath $urlOnlyNgrok -Encoding ASCII
+
     Assert-Equal "old ngrok rejected" (Test-NgrokEndpointFlagSupport $oldNgrok) $false
-    Assert-Equal "new ngrok accepted" (Test-NgrokEndpointFlagSupport $newNgrok) $true
-    Assert-Equal "version parsed" (Get-NgrokVersionSlug $newNgrok) "3.39.2"
+    Assert-Equal "ngrok 3.39 accepted without web-addr" (Test-NgrokEndpointFlagSupport $newNgrok) $true
+    Assert-Equal "url-only accepted when binding not required" (Test-NgrokEndpointFlagSupport $urlOnlyNgrok) $true
+    Assert-Equal "url-only rejected when binding required" (Test-NgrokEndpointFlagSupport $urlOnlyNgrok -RequireBinding) $false
+    Assert-Equal "binding-capable ngrok accepted when required" (Test-NgrokEndpointFlagSupport $newNgrok -RequireBinding) $true
+    Assert-Equal "version parsed" (Get-NgrokVersionSlug $newNgrok) "3.39.11"
     Assert-Equal "official stable URL" $script:NgrokStableDownloadUrl "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -66,8 +66,15 @@ function Stop-ProcessTree([int]$processId, [string]$reason) {
     $script:stoppedPids += $processId
 }
 
+function Test-ServiceStartAllowed([string]$serviceName) { return $true }
+function Clear-ServiceBackoff([string]$serviceName) {}
+function Get-DeterministicFailureClass([string]$serviceName, [string]$text) { return "" }
+function Get-RecentErrorText([string]$path) { return "" }
+function Record-DeterministicFailure([string]$serviceName, [string]$failureClass) {}
+
 function Start-Hermes {
     $script:startCount++
+    $script:testListeners = @(999)
 }
 
 function Start-Sleep {

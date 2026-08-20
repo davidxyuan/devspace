@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallRoot = "$env:LOCALAPPDATA\DevSpaceTestedStack",
+    [string]$PythonPath,
     [switch]$VerifyOnly
 )
 
@@ -84,11 +85,46 @@ function Require-Command([string]$name, [string]$wingetId) {
 
 function Add-PythonCandidate([System.Collections.Generic.List[string]]$List, [string]$Path) {
     if ($Path -and -not [string]::IsNullOrWhiteSpace($Path)) {
-        $List.Add($Path.Trim())
+        [void]$List.Add($Path.Trim())
     }
 }
 
+function Get-PythonRuntimeInfo([string]$Path, [switch]$RequireVenv) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $versionText = (& $Path -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or -not $versionText) { return $null }
+        $version = [version](([string]$versionText).Trim())
+        if ($version -lt [version]"3.10" -or $version -ge [version]"3.13") { return $null }
+        $runtimeProbe = (& $Path -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or -not $runtimeProbe) { return $null }
+        $pipProbe = (& $Path -m pip --version 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or -not $pipProbe) { return $null }
+        if ($RequireVenv) {
+            $venvRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("devspace-python-smoke-" + [Guid]::NewGuid().ToString("N"))
+            try {
+                & $Path -m venv $venvRoot 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { return $null }
+                $venvPython = Join-Path $venvRoot "Scripts\python.exe"
+                if (-not (Test-Path -LiteralPath $venvPython)) { return $null }
+                & $venvPython -c "import sys; print(sys.prefix)" 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { return $null }
+                & $venvPython -m pip --version 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { return $null }
+            } finally {
+                Remove-Item -LiteralPath $venvRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        return [pscustomobject]@{ Path=[System.IO.Path]::GetFullPath($Path); Version=$version }
+    } catch { return $null }
+}
+
 function Get-CompatiblePython {
+    if ($PythonPath) {
+        $explicit = Get-PythonRuntimeInfo -Path $PythonPath -RequireVenv
+        if (-not $explicit) { throw "Explicit -PythonPath is not a usable Python >=3.10,<3.13 runtime with pip and venv: $PythonPath" }
+        return $explicit
+    }
     $candidates = New-Object System.Collections.Generic.List[string]
 
     Add-PythonCandidate $candidates $managedPythonFallbackExe
@@ -146,15 +182,8 @@ function Get-CompatiblePython {
 
     $compatible = @()
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
-        if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        try {
-            $versionText = (& $candidate -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
-            if ($LASTEXITCODE -ne 0 -or -not $versionText) { continue }
-            $version = [version](([string]$versionText).Trim())
-            if ($version -ge [version]"3.10" -and $version -lt [version]"3.13") {
-                $compatible += [pscustomobject]@{ Path=$candidate; Version=$version }
-            }
-        } catch {}
+        $runtime = Get-PythonRuntimeInfo -Path $candidate
+        if ($runtime) { $compatible += $runtime }
     }
 
     # Prefer the newest tested-compatible interpreter (3.12, then 3.11, then 3.10).
@@ -172,13 +201,12 @@ function Install-ManagedPythonFallback {
     }
 
     if (Test-Path -LiteralPath $managedPythonFallbackExe) {
-        try {
-            $existingVersionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
-            if ($LASTEXITCODE -eq 0 -and [version](([string]$existingVersionText).Trim()) -ge [version]"3.10") {
-                Write-Host "Using existing managed Python $($existingVersionText): $managedPythonFallbackExe" -ForegroundColor Green
-                return $managedPythonFallbackExe
-            }
-        } catch {}
+        $existingRuntime = Get-PythonRuntimeInfo -Path $managedPythonFallbackExe -RequireVenv
+        if ($existingRuntime) {
+            Write-Host "Using existing managed Python $($existingRuntime.Version): $managedPythonFallbackExe" -ForegroundColor Green
+            return $managedPythonFallbackExe
+        }
+        Write-Warning "Managed Python exists but failed version/runtime/pip/venv validation; only this invalid managed runtime will be replaced: $managedPythonFallbackExe"
     }
 
     if (Test-Path -LiteralPath $managedPythonFallbackDir) {
@@ -219,9 +247,9 @@ function Install-ManagedPythonFallback {
     }
 
     if (Test-Path -LiteralPath $managedPythonFallbackExe) {
-        $versionText = (& $managedPythonFallbackExe -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -eq 0 -and $versionText -and [version](([string]$versionText).Trim()) -ge [version]"3.10") {
-            Write-Host "Verified isolated Python $($versionText): $managedPythonFallbackExe" -ForegroundColor Green
+        $installedRuntime = Get-PythonRuntimeInfo -Path $managedPythonFallbackExe -RequireVenv
+        if ($installedRuntime) {
+            Write-Host "Verified isolated Python $($installedRuntime.Version): $managedPythonFallbackExe" -ForegroundColor Green
             return $managedPythonFallbackExe
         }
     }
@@ -262,6 +290,31 @@ function Invoke-Checked([scriptblock]$command, [string]$message) {
     if ($LASTEXITCODE -ne 0) { throw $message }
 }
 
+function Test-NodeNpmPreflight([string]$NodePath, [string]$NpmPath) {
+    $nodeVersionText = (& $NodePath -p "process.versions.node" 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $nodeVersionText) { throw "Node preflight failed: node --version could not run." }
+    $nodeVersion = [version](([string]$nodeVersionText).Trim())
+    $npmVersion = (& $NpmPath --version 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or -not $npmVersion) { throw "Node/npm preflight failed: npm --version could not run." }
+    if (($IsWindows -or $env:OS -eq "Windows_NT") -and $nodeVersion -ge [version]"24.0") {
+        $env:NODE_USE_SYSTEM_CA = "1"
+        Write-Host "Node/npm preflight: NODE_USE_SYSTEM_CA=1 enabled for this installer process." -ForegroundColor Cyan
+    }
+    $strictSsl = (& $NpmPath config get strict-ssl 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0) { throw "Node/npm preflight failed: npm config could not be read." }
+    if (([string]$strictSsl).Trim().ToLowerInvariant() -eq "false") {
+        Write-Warning "npm strict-ssl is already disabled outside this installer. The installer will not use or persist an insecure TLS bypass; restore strict-ssl=true after correcting the local npm configuration."
+    }
+    $pingOutput = (& $NpmPath ping --registry=https://registry.npmjs.org/ 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        if ($pingOutput -match "SELF_SIGNED_CERT_IN_CHAIN|self signed certificate|certificate") {
+            throw "Node/npm TLS preflight failed against registry.npmjs.org. On corporate Windows networks use a supported Node version with Windows system CA trust (NODE_USE_SYSTEM_CA=1) or install the corporate root CA; strict-ssl=false is not used as a permanent workaround."
+        }
+        throw "Node/npm connectivity preflight failed against registry.npmjs.org: $($pingOutput.Trim())"
+    }
+    Write-Host "Node/npm preflight passed: Node $nodeVersionText, npm $npmVersion." -ForegroundColor Green
+}
+
 function Assert-Equal([string]$name, [string]$actual, [string]$expected) {
     if ($actual.Trim() -ne $expected) { throw "$name mismatch. Expected '$expected', found '$actual'." }
 }
@@ -299,6 +352,7 @@ $python = Require-CompatiblePython
 if ([version](& $node -p "process.versions.node") -lt [version]"22.19" -or [version](& $node -p "process.versions.node") -ge [version]"27.0") {
     throw "DevSpace $DevSpaceVersion requires Node >=22.19 and <27. Current Node: $(& $node -p 'process.versions.node'). Install/update Node.js LTS and rerun."
 }
+Test-NodeNpmPreflight -NodePath $node -NpmPath $npm
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 
 Install-PinnedRepo $DevSpaceRepo $DevSpaceRef $DevSpaceCommit $devSpaceDir

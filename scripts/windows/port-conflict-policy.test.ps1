@@ -41,9 +41,10 @@ if (-not (Test-FixedPortOwnership 7676 "DevSpace")) { throw "Managed DevSpace ow
 
 $watchdog = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Raw
 $installer = Get-Content (Join-Path $PSScriptRoot "install-devspace-watchdog.ps1") -Raw
-if ($watchdog -notmatch '--web-addr') { throw "ngrok inspection port is not explicitly bound." }
-if ($watchdog -match '127\.0\.0\.1:4040/api/tunnels') { throw "ngrok health check still assumes port 4040." }
-if ($installer -notmatch 'ngrokInspectorPort') { throw "Selected ngrok inspection port is not persisted." }
+if ($watchdog -match '--web-addr') { throw "watchdog still emits removed ngrok --web-addr flag." }
+if ($watchdog -notmatch '\$ngrokInspectorUrl/api/tunnels') { throw "ngrok health check is not using the configured/default inspector URL." }
+if ($installer -notmatch 'ngrokInspectorPort = if \(\$SkipNgrok\) \{ 0 \} else \{ 4040 \}') { throw "ngrok inspector is not pinned to the supported default port 4040." }
+if ($installer -notmatch 'ngrokConfigPath') { throw "Explicit ngrok config path is not persisted." }
 if ($installer -notmatch 'Assert-FixedPortOwnership \$RouterPort') { throw "Router fixed-port preflight is missing." }
 
 Write-Host "port conflict policy tests passed."

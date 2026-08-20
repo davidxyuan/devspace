@@ -7,15 +7,31 @@ $tyoAgent = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-
 $tyoCloud = Get-Content -LiteralPath (Join-Path $PSScriptRoot "install-devspace-chatgpt-tyo-cloud.ps1") -Raw
 $tokens = $null
 $errors = $null
-[System.Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$tokens, [ref]$errors) | Out-Null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
+$addCandidateAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "Add-PythonCandidate" }, $true)
+if (-not $addCandidateAst) { throw "Missing Add-PythonCandidate." }
+Invoke-Expression $addCandidateAst.Extent.Text
+$candidateList = New-Object System.Collections.Generic.List[string]
+$leakedOutput = @(Add-PythonCandidate $candidateList " C:\Python311\python.exe ")
+if ($leakedOutput.Count -ne 0) { throw "Add-PythonCandidate leaked List.Add() output into the PowerShell pipeline." }
+if ($candidateList.Count -ne 1 -or $candidateList[0] -ne "C:\Python311\python.exe") { throw "Add-PythonCandidate did not add/trim the candidate correctly." }
 
 @(
     '$DevSpaceVersion = "1.0.4"',
     '$DevSpaceCommit = "9c4462ba1ea43a846fd511b8b10e4bb6ac49493d"',
     '$HermesVersion = "0.5.0"',
     '$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"',
+    '[string]$PythonPath',
     '[switch]$VerifyOnly',
+    '[void]$List.Add($Path.Trim())',
+    'Get-PythonRuntimeInfo',
+    'Get-PythonRuntimeInfo -Path $PythonPath -RequireVenv',
+    'Explicit -PythonPath is not a usable Python',
+    'Get-PythonRuntimeInfo -Path $managedPythonFallbackExe -RequireVenv',
+    'failed version/runtime/pip/venv validation',
+    '-m venv $venvRoot',
+    '-m pip --version',
     'Require-CompatiblePython',
     'Python.Python.3.12',
     'Try-InstallWingetPackage',
@@ -33,6 +49,11 @@ if ($errors.Count) { throw ($errors | Out-String) }
     'Include_pip=1',
     '0x8A15002B',
     'cannot relocate an already-registered 3.12 during Modify mode',
+    'Test-NodeNpmPreflight',
+    'NODE_USE_SYSTEM_CA',
+    'ping --registry=https://registry.npmjs.org/',
+    'strict-ssl is already disabled outside this installer',
+    'strict-ssl=false is not used as a permanent workaround',
     'Install-PinnedRepo $HermesRepo $HermesRef $HermesCommit $hermesDir',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
@@ -57,8 +78,8 @@ if (-not $html.Contains('clone --depth 1 --branch "codex/devspace-v1.0.4-watchdo
 if (-not $html.Contains('powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer')) {
     throw "HTML does not execute the installer from a real .ps1 file."
 }
-if ($html.Contains('([scriptblock]::Create((Invoke-RestMethod')) {
-    throw "HTML still contains the old ScriptBlock/Invoke-RestMethod installer flow."
+if ($html.Contains('([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com')) {
+    throw "HTML still emits the old ScriptBlock/Invoke-RestMethod installer flow."
 }
 if ($html.Contains('$branch = "codex/chatgpt-mcp-router-fix"')) {
     throw "HTML still emits the old unpinned install flow."

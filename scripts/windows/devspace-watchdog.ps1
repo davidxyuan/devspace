@@ -24,6 +24,7 @@ $retiredPorts = @($config.retiredPorts)
 $nodePath = [string]$config.nodePath
 $cliPath = [string]$config.cliPath
 $ngrokPath = [string]$config.ngrokPath
+$ngrokConfigPath = [string]$config.ngrokConfigPath
 $publicBaseUrl = [string]$config.publicBaseUrl
 $publicHost = ([Uri]$publicBaseUrl).Host
 $ngrokAgentBaseUrl = if ($config.ngrokAgentBaseUrl) { [string]$config.ngrokAgentBaseUrl } else { $publicBaseUrl }
@@ -85,6 +86,53 @@ function Write-WatchdogLog([string]$message) {
             Start-Sleep -Milliseconds (100 * ($attempt + 1))
         }
     }
+}
+
+function Get-ServiceBackoffPath([string]$serviceName) {
+    Join-Path $stateDir ("watchdog-backoff-" + $serviceName.ToLowerInvariant() + ".json")
+}
+
+function Test-ServiceStartAllowed([string]$serviceName) {
+    $path = Get-ServiceBackoffPath $serviceName
+    if (-not (Test-Path -LiteralPath $path)) { return $true }
+    try {
+        $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        if (-not $state.retryAfter) { return $true }
+        return ([datetime]$state.retryAfter) -le (Get-Date)
+    } catch { return $true }
+}
+
+function Get-DeterministicFailureClass([string]$serviceName, [string]$text) {
+    if (-not $text) { return "" }
+    if ($serviceName -eq "Hermes" -and $text -match "ModuleNotFoundError|ImportError|No module named|mcp\.server\.fastmcp") { return "dependency" }
+    if ($serviceName -eq "ngrok" -and $text -match "ERR_NGROK_4018|not authenticated|authentication failed|unknown flag|config.*(missing|invalid|failed)|failed to parse") { return "configuration" }
+    return ""
+}
+
+function Get-RecentErrorText([string]$path) {
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return "" }
+    try { return ((Get-Content -LiteralPath $path -Tail 40 -ErrorAction Stop) -join "`n") } catch { return "" }
+}
+
+function Record-DeterministicFailure([string]$serviceName, [string]$failureClass) {
+    if (-not $failureClass) { return }
+    $path = Get-ServiceBackoffPath $serviceName
+    $existingCount = 0
+    try {
+        if (Test-Path -LiteralPath $path) {
+            $existing = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ([string]$existing.failureClass -eq $failureClass) { $existingCount = [int]$existing.count }
+        }
+    } catch {}
+    $count = $existingCount + 1
+    $cooldownSeconds = [Math]::Min(1800, 300 * [Math]::Pow(2, [Math]::Min($count - 1, 3)))
+    $state = [ordered]@{ service=$serviceName; failureClass=$failureClass; count=$count; retryAfter=(Get-Date).AddSeconds($cooldownSeconds).ToString("o") }
+    [System.IO.File]::WriteAllText($path, ($state | ConvertTo-Json -Depth 3), [System.Text.Encoding]::UTF8)
+    Write-WatchdogLog "$serviceName deterministic $failureClass failure detected; restart cooldown ${cooldownSeconds}s (attempt $count)."
+}
+
+function Clear-ServiceBackoff([string]$serviceName) {
+    Remove-Item -LiteralPath (Get-ServiceBackoffPath $serviceName) -Force -ErrorAction SilentlyContinue
 }
 
 function Test-IsElevated {
@@ -464,14 +512,24 @@ function Ensure-Hermes {
     }
     $listeners = @(Get-ListenOwners $hermesPort)
     if ($listeners.Count -eq 0) {
+        if (-not (Test-ServiceStartAllowed "Hermes")) { return }
         Start-Hermes
         Start-Sleep -Seconds 4
-        return
+        $listeners = @(Get-ListenOwners $hermesPort)
+        if ($listeners.Count -eq 0) {
+            $latestHermesErr = Get-ChildItem -LiteralPath $stateDir -Filter "hermes-gpt-*.err.log" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            $failureClass = Get-DeterministicFailureClass "Hermes" $(if ($latestHermesErr) { Get-RecentErrorText $latestHermesErr.FullName } else { "" })
+            if ($failureClass) { Record-DeterministicFailure "Hermes" $failureClass }
+            return
+        }
+        Clear-ServiceBackoff "Hermes"
     }
 
     $healthUrl = "http://127.0.0.1:$hermesPort/mcp"
     if (-not (Test-HttpOk $healthUrl)) {
         Write-WatchdogLog "Hermes health probe failed while listener PID(s) $($listeners -join ',') remain present; treating the service as busy or indeterminate and leaving it running"
+    } else {
+        Clear-ServiceBackoff "Hermes"
     }
 }
 
@@ -530,12 +588,16 @@ function Is-NgrokForDevSpace($process) {
 }
 
 function Is-GoodNgrok($process) {
-    if (-not (Is-NgrokForDevSpace $process)) {
-        return $false
-    }
+    if (-not (Is-NgrokForDevSpace $process)) { return $false }
     $cmd = [string]$process.CommandLine
-    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and
-        $cmd -like "*--web-addr*" -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*"
+    if ($process.ExecutablePath -and $ngrokPath) {
+        try {
+            if ([System.IO.Path]::GetFullPath([string]$process.ExecutablePath) -ne [System.IO.Path]::GetFullPath($ngrokPath)) { return $false }
+        } catch { return $false }
+    }
+    if ($cmd -notlike "*$ngrokAgentHost*" -or $cmd -notlike "*$upstream*") { return $false }
+    if ($ngrokConfigPath -and $cmd -notlike "*$ngrokConfigPath*") { return $false }
+    return $true
 }
 
 function Test-NgrokTunnel {
@@ -560,7 +622,7 @@ function Start-Ngrok {
 
     $ngrokArgs = @("http", $upstream)
     $ngrokArgs += @("--url", $ngrokAgentBaseUrl)
-    $ngrokArgs += @("--web-addr", "127.0.0.1:$ngrokInspectorPort")
+    if ($ngrokConfigPath) { $ngrokArgs += @("--config", $ngrokConfigPath) }
     if ($ngrokBinding) {
         $ngrokArgs += @("--binding", $ngrokBinding)
     }
@@ -585,6 +647,7 @@ function Ensure-Ngrok {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object { Is-NgrokForDevSpace $_ }
     )
+    if ($ngroks.Count -eq 0 -and -not (Test-ServiceStartAllowed "ngrok")) { return }
     $good = @($ngroks | Where-Object { Is-GoodNgrok $_ })
     $keepPid = $null
     if ($good.Count -gt 0) {
@@ -598,6 +661,7 @@ function Ensure-Ngrok {
     }
 
     if (Test-NgrokTunnel) {
+        Clear-ServiceBackoff "ngrok"
         return
     }
 
@@ -609,7 +673,15 @@ function Ensure-Ngrok {
     foreach ($proc in $ngroks) {
         Stop-ProcessTree $proc.ProcessId "ngrok tunnel for $ngrokAgentHost is not healthy"
     }
+    if (-not (Test-ServiceStartAllowed "ngrok")) { return }
     Start-Ngrok
+    Start-Sleep -Seconds 3
+    if (Test-NgrokTunnel) {
+        Clear-ServiceBackoff "ngrok"
+        return
+    }
+    $failureClass = Get-DeterministicFailureClass "ngrok" (Get-RecentErrorText $ngrokErrPath)
+    if ($failureClass) { Record-DeterministicFailure "ngrok" $failureClass }
 }
 
 function Invoke-WatchdogCycle {

@@ -1,15 +1,18 @@
 $script:NgrokStableDownloadUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
 
-function Test-NgrokEndpointFlagSupport([string]$NgrokPath) {
+function Test-NgrokEndpointFlagSupport([string]$NgrokPath, [switch]$RequireBinding) {
     if (-not $NgrokPath -or -not (Test-Path -LiteralPath $NgrokPath)) {
         return $false
     }
 
     try {
         $helpText = (& $NgrokPath http --help 2>&1 | Out-String)
-        return $helpText -match "(?m)^\s*--url(?:\s|$)" -and
-            $helpText -match "(?m)^\s*--binding(?:\s|$)" -and
-            $helpText -match "(?m)^\s*--web-addr(?:\s|$)"
+        if ($helpText -notmatch "(?m)^\s*--url(?:\s|$)") { return $false }
+        if ($RequireBinding -and $helpText -notmatch "(?m)^\s*--binding(?:\s|$)") { return $false }
+        # ngrok v3.39+ removed the legacy --web-addr CLI flag. Inspector configuration
+        # is handled through YAML config (or the default 127.0.0.1:4040), so it must
+        # never be part of compatibility detection.
+        return $true
     } catch {
         return $false
     }
