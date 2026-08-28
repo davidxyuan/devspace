@@ -57,6 +57,15 @@ DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and r
 
 ## Installation
 
+### Optional Windows Watchdog Control Center
+
+Windows installations that already use the DevSpace/Hermes/ngrok watchdog can
+opt in to a persistent notification-area Watchdog, local-only dashboard,
+desired-state persistence, conservative recovery, endpoint impact preview, and
+rollback tooling. It replaces the steady-state every-minute PowerShell spawn
+only after the new Tray proves ready; it is never enabled by a normal build or
+upgrade. See [the Windows Watchdog Tray guide](docs/windows-watchdog-tray.md).
+
 DevSpace requires Node `>=22.19 <27`.
 
 Install the DevSpace CLI:

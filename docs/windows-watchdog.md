@@ -1,5 +1,11 @@
 # Windows Watchdog Setup
 
+> The persistent notification-area Watchdog and local Control Center are an
+> opt-in successor to the every-minute poller. See
+> [DevSpace Watchdog Tray and Control Center](windows-watchdog-tray.md). Existing
+> installers keep the Scheduled Task unless `-InstallWatchdogTray` is supplied,
+> and the Tray installer disables the old task only after readiness is proven.
+
 DevSpace includes Windows scripts that can deploy a hidden Scheduled Task
 watchdog. The watchdog checks every minute that:
 
