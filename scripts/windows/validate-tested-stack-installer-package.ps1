@@ -20,7 +20,14 @@ $required = @(
     "update-cloud-endpoint-domain.ps1",
     "update-cloud-endpoint-domain.test.ps1",
     "mcp-router.cjs",
-    "run-devspace-watchdog-hidden.vbs"
+    "run-devspace-watchdog-hidden.vbs",
+    "watchdog-control-core.ps1",
+    "devspace-watchdog-tray.ps1",
+    "devspace-control-center.html",
+    "run-devspace-watchdog-tray-hidden.vbs",
+    "install-devspace-watchdog-tray.ps1",
+    "uninstall-devspace-watchdog-tray.ps1",
+    "restore-old-watchdog.ps1"
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root $_)) })
 $migrationPath = Join-Path (Split-Path $root -Parent) "migrate-oauth-json-to-sqlite.mjs"

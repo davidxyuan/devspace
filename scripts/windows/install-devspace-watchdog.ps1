@@ -33,6 +33,7 @@ param(
     [switch]$FullAccess,
     [switch]$SkipNgrok,
     [switch]$SkipStart,
+    [switch]$InstallWatchdogTray,
     [switch]$UserMode,
     [switch]$NoElevate,
     [ValidateSet("minimal", "full", "codex")][string]$DevSpaceToolMode = "minimal",
@@ -416,6 +417,9 @@ Restart-ElevatedIfNeeded
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+if ($InstallWatchdogTray -and $SkipStart) {
+    Fail "-InstallWatchdogTray cannot be combined with -SkipStart." "Run the opt-in Tray migration only when it may start the Tray, prove readiness, and then disable the legacy task."
+}
 $HermesDir = [System.IO.Path]::GetFullPath($HermesDir)
 $componentList = Get-ComponentList
 $installDevSpace = Test-Component "DevSpace"
@@ -466,6 +470,7 @@ if ($installDevSpace) {
 }
 $hermesAgentPath = Install-HermesAgentIfNeeded
 
+$ngrokWebAddrSupported = $false
 if (-not $SkipNgrok) {
     if (-not $NgrokPath -and $InstallTools) {
         try {
@@ -488,6 +493,7 @@ if (-not $SkipNgrok) {
     if (-not (Test-NgrokEndpointFlagSupport $NgrokPath)) {
         Fail "The selected ngrok agent does not support the required --url and --binding flags: $NgrokPath" "Rerun with -InstallTools to install the official latest stable ngrok agent, or pass -NgrokPath pointing to a current ngrok v3 binary."
     }
+    $ngrokWebAddrSupported = Test-NgrokWebAddrSupport $NgrokPath
     $effectiveNgrokAuthtoken = if ($NgrokAuthtoken) { $NgrokAuthtoken } elseif ($env:NGROK_AUTHTOKEN) { $env:NGROK_AUTHTOKEN } else { "" }
     if ($effectiveNgrokAuthtoken) {
         Write-Host "Configuring ngrok authtoken..."
@@ -746,7 +752,8 @@ $watchdogConfig = [ordered]@{
     ngrokEndpointMode = $NgrokEndpointMode
     ngrokAgentBaseUrl = $NgrokAgentBaseUrl
     ngrokBinding = $NgrokBinding
-    ngrokInspectorPort = if ($SkipNgrok) { 0 } else {
+    ngrokWebAddrSupported = [bool]$ngrokWebAddrSupported
+    ngrokInspectorPort = if ($SkipNgrok) { 0 } elseif (-not $ngrokWebAddrSupported) { 4040 } else {
         Find-AvailableLoopbackPort `
             $(if ($existingWatchdogConfig.ngrokInspectorPort) { [int]$existingWatchdogConfig.ngrokInspectorPort } else { 4040 }) `
             @([string]$existingWatchdogConfig.ngrokAgentBaseUrl, [string]$existingWatchdogConfig.publicBaseUrl)
@@ -754,6 +761,17 @@ $watchdogConfig = [ordered]@{
     mcpNameSuffix = if ($McpNameSuffix) { ConvertTo-Slug $McpNameSuffix } else { "" }
     routeAliasMachineNames = @($routeMachineSlugs | Where-Object { $_ -ne $machineSlug })
     capabilities = [ordered]@{ devspace = $devspaceCapabilities; hermes = $hermesCapabilities }
+    controlCenter = if ($existingWatchdogConfig.controlCenter) { $existingWatchdogConfig.controlCenter } else { [ordered]@{
+        dashboardPort = 8777
+        localProbeSeconds = 5
+        publicProbeSeconds = 45
+        failureThreshold = 2
+        maxRecoveryAttempts = 5
+        backoffSeconds = @(0, 10, 30, 60, 120)
+        logMaxBytes = 2097152
+        historyLimit = 500
+        displayNames = [ordered]@{ devspace = "$MachineName DevSpace"; hermes = "$MachineName Hermes" }
+    } }
     cloudEndpointPolicyPath = ""
 }
 
@@ -836,6 +854,12 @@ if (-not $SkipStart) {
     } catch {
         Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or run this once: powershell.exe -ExecutionPolicy Bypass -File `"$InstallDir\devspace-watchdog.ps1`" -Once"
     }
+}
+
+if ($InstallWatchdogTray) {
+    & (Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1") `
+        -InstallDir $InstallDir `
+        -SkipStart:$SkipStart
 }
 
 Write-Host "DevSpace watchdog installed."
