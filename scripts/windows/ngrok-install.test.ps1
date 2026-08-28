@@ -36,8 +36,23 @@ if "%1"=="http" (
 if "%1"=="version" echo ngrok version 3.39.2
 "@ | Set-Content -LiteralPath $newNgrok -Encoding ASCII
 
+    $noWebAddrNgrok = Join-Path $tempRoot "no-web-addr-ngrok.cmd"
+    @"
+@echo off
+if "%1"=="http" (
+  echo Usage: ngrok http [address:port ^| port]
+  echo   --url string
+  echo   --binding string
+  exit /b 0
+)
+if "%1"=="version" echo ngrok version 3.39.8
+"@ | Set-Content -LiteralPath $noWebAddrNgrok -Encoding ASCII
+
     Assert-Equal "old ngrok rejected" (Test-NgrokEndpointFlagSupport $oldNgrok) $false
     Assert-Equal "new ngrok accepted" (Test-NgrokEndpointFlagSupport $newNgrok) $true
+    Assert-Equal "endpoint flags do not require web addr" (Test-NgrokEndpointFlagSupport $noWebAddrNgrok) $true
+    Assert-Equal "web addr detected" (Test-NgrokWebAddrSupport $newNgrok) $true
+    Assert-Equal "missing web addr detected" (Test-NgrokWebAddrSupport $noWebAddrNgrok) $false
     Assert-Equal "version parsed" (Get-NgrokVersionSlug $newNgrok) "3.39.2"
     Assert-Equal "official stable URL" $script:NgrokStableDownloadUrl "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
 } finally {

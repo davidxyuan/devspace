@@ -180,19 +180,21 @@ try {
 
     $tokenFixture = Join-Path $tempRoot "token"
     New-Fixture $tokenFixture
-    $secret = "super-secret-token-" + [Guid]::NewGuid().ToString("N")
+    $sensitiveValue = "test-sensitive-value-" + [Guid]::NewGuid().ToString("N")
     $wrapperPath = Join-Path $tempRoot "token-wrapper.ps1"
     @"
-`$token = ConvertTo-SecureString '$secret' -AsPlainText -Force
+`$token = New-Object System.Security.SecureString
+foreach (`$character in '$sensitiveValue'.ToCharArray()) { `$token.AppendChar(`$character) }
+`$token.MakeReadOnly()
 & '$scriptPath' -NewDomain 'token-target.example.com' -MachineName 'tyo' -StateDir '$tokenFixture' -UpdateNgrokAuthToken `$token -DryRun
 "@ | Set-Content -LiteralPath $wrapperPath -Encoding UTF8
     $tokenOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wrapperPath 2>&1 | Out-String
     Assert-Equal "token Dry Run succeeds" $LASTEXITCODE 0
-    Assert-NotContains "token redacted from output" $tokenOutput $secret
+    Assert-NotContains "token redacted from output" $tokenOutput $sensitiveValue
     Assert-Contains "token redaction notice" $tokenOutput "value redacted"
     $gitFiles = Get-ChildItem -LiteralPath (Split-Path $here -Parent | Split-Path -Parent) -File -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '[\\/](node_modules|\.git)[\\/]' }
-    $tokenInGitFiles = $gitFiles | Select-String -SimpleMatch $secret -ErrorAction SilentlyContinue
+    $tokenInGitFiles = $gitFiles | Select-String -SimpleMatch $sensitiveValue -ErrorAction SilentlyContinue
     Assert-True "token absent from Git files" (-not $tokenInGitFiles)
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
