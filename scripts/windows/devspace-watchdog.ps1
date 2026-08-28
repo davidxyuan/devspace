@@ -1,5 +1,6 @@
 param(
     [switch]$Once,
+    [switch]$NgrokOnly,
     [string]$ConfigPath
 )
 
@@ -29,7 +30,8 @@ $publicHost = ([Uri]$publicBaseUrl).Host
 $ngrokAgentBaseUrl = if ($config.ngrokAgentBaseUrl) { [string]$config.ngrokAgentBaseUrl } else { $publicBaseUrl }
 $ngrokAgentHost = ([Uri]$ngrokAgentBaseUrl).Host
 $ngrokBinding = [string]$config.ngrokBinding
-$ngrokInspectorPort = if ($config.ngrokInspectorPort) { [int]$config.ngrokInspectorPort } else { 4040 }
+$ngrokWebAddrSupported = if ($null -eq $config.ngrokWebAddrSupported) { $true } else { [bool]$config.ngrokWebAddrSupported }
+$ngrokInspectorPort = if (-not $ngrokWebAddrSupported) { 4040 } elseif ($config.ngrokInspectorPort) { [int]$config.ngrokInspectorPort } else { 4040 }
 $ngrokInspectorUrl = "http://127.0.0.1:$ngrokInspectorPort"
 $ngrokManagedHosts = @($publicHost, $ngrokAgentHost) | Where-Object { $_ } | Select-Object -Unique
 $manageNgrok = if ($null -eq $config.manageNgrok) { [bool]$ngrokPath } else { [bool]$config.manageNgrok }
@@ -534,8 +536,9 @@ function Is-GoodNgrok($process) {
         return $false
     }
     $cmd = [string]$process.CommandLine
-    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and
-        $cmd -like "*--web-addr*" -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*"
+    $bindingMatches = -not $ngrokBinding -or ($cmd -like "*--binding*" -and $cmd -like "*$ngrokBinding*")
+    $inspectorMatches = -not $ngrokWebAddrSupported -or ($cmd -like "*--web-addr*" -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*")
+    return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and $bindingMatches -and $inspectorMatches
 }
 
 function Test-NgrokTunnel {
@@ -560,7 +563,11 @@ function Start-Ngrok {
 
     $ngrokArgs = @("http", $upstream)
     $ngrokArgs += @("--url", $ngrokAgentBaseUrl)
-    $ngrokArgs += @("--web-addr", "127.0.0.1:$ngrokInspectorPort")
+    if ($ngrokWebAddrSupported) {
+        $ngrokArgs += @("--web-addr", "127.0.0.1:$ngrokInspectorPort")
+    } else {
+        Write-WatchdogLog "ngrok does not support --web-addr; using its default inspector at $ngrokInspectorUrl"
+    }
     if ($ngrokBinding) {
         $ngrokArgs += @("--binding", $ngrokBinding)
     }
@@ -621,14 +628,18 @@ function Invoke-WatchdogCycle {
             return
         }
 
-        Write-WatchdogLog "watchdog started as $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name); elevated=$(Test-IsElevated); mode=$(if ($Once) { "once" } else { "loop" }); port=$port; public=$publicBaseUrl"
+        $mode = if ($NgrokOnly) { "ngrok-only" } elseif ($Once) { "once" } else { "loop" }
+        Write-WatchdogLog "watchdog started as $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name); elevated=$(Test-IsElevated); mode=$mode; port=$port; public=$publicBaseUrl"
         Remove-LegacyScheduledTask
         Invoke-StopPidRequests
         Invoke-RestartIfRequested
+        Ensure-Ngrok
+        if ($NgrokOnly) {
+            return
+        }
         Ensure-DevSpace
         Ensure-Hermes
         Ensure-Router
-        Ensure-Ngrok
     } catch {
         Write-WatchdogLog "watchdog error: $($_.Exception.Message)"
     } finally {

@@ -8,8 +8,19 @@ function Test-NgrokEndpointFlagSupport([string]$NgrokPath) {
     try {
         $helpText = (& $NgrokPath http --help 2>&1 | Out-String)
         return $helpText -match "(?m)^\s*--url(?:\s|$)" -and
-            $helpText -match "(?m)^\s*--binding(?:\s|$)" -and
-            $helpText -match "(?m)^\s*--web-addr(?:\s|$)"
+            $helpText -match "(?m)^\s*--binding(?:\s|$)"
+    } catch {
+        return $false
+    }
+}
+
+function Test-NgrokWebAddrSupport([string]$NgrokPath) {
+    if (-not $NgrokPath -or -not (Test-Path -LiteralPath $NgrokPath)) {
+        return $false
+    }
+    try {
+        $helpText = (& $NgrokPath http --help 2>&1 | Out-String)
+        return $helpText -match "(?m)^\s*--web-addr(?:\s|$)"
     } catch {
         return $false
     }

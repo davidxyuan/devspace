@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevSpace Control Center</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0c111b; --panel:#151d2b; --panel2:#1b2638; --text:#eef3fb; --muted:#9eacc0; --line:#2a3850; --accent:#66a6ff; --green:#28b463; --yellow:#f4b400; --red:#dc3545; --gray:#7d8590; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:320px; background:radial-gradient(circle at top right,#182844 0,#0c111b 42%); color:var(--text); font:14px/1.45 "Segoe UI",system-ui,sans-serif; }
+    button,input,select { font:inherit; }
+    button { border:1px solid var(--line); border-radius:8px; padding:.58rem .86rem; background:#24334a; color:var(--text); cursor:pointer; }
+    button:hover { border-color:var(--accent); }
+    button:focus-visible,input:focus-visible,select:focus-visible { outline:3px solid rgba(102,166,255,.45); outline-offset:2px; }
+    button.danger { background:#4a2027; border-color:#7b303a; }
+    button.primary { background:#185fb0; border-color:#438be0; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    header { display:flex; gap:1rem; justify-content:space-between; align-items:center; padding:1.2rem clamp(1rem,4vw,3rem); border-bottom:1px solid var(--line); background:rgba(12,17,27,.88); position:sticky; top:0; z-index:5; backdrop-filter:blur(10px); }
+    h1 { margin:0; font-size:1.35rem; letter-spacing:.01em; }
+    h2 { margin:0 0 1rem; font-size:1.08rem; }
+    h3 { margin:.2rem 0 .8rem; font-size:.98rem; }
+    .subtitle,.muted { color:var(--muted); }
+    .header-status { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+    .chip { display:inline-flex; align-items:center; gap:.45rem; border:1px solid var(--line); border-radius:999px; padding:.35rem .65rem; background:var(--panel); }
+    .dot { width:.68rem; height:.68rem; border-radius:50%; background:var(--gray); box-shadow:0 0 0 3px rgba(125,133,144,.14); }
+    .dot.GREEN { background:var(--green); box-shadow:0 0 0 3px rgba(40,180,99,.14); }
+    .dot.YELLOW { background:var(--yellow); box-shadow:0 0 0 3px rgba(244,180,0,.14); }
+    .dot.RED { background:var(--red); box-shadow:0 0 0 3px rgba(220,53,69,.14); }
+    nav { display:flex; gap:.35rem; padding:.8rem clamp(1rem,4vw,3rem) 0; overflow:auto; }
+    nav button { background:transparent; border-color:transparent; white-space:nowrap; }
+    nav button[aria-selected="true"] { background:var(--panel); border-color:var(--line); color:#fff; }
+    main { max-width:1380px; margin:0 auto; padding:1rem clamp(1rem,4vw,3rem) 3rem; }
+    section[hidden] { display:none; }
+    .panel { background:linear-gradient(145deg,rgba(27,38,56,.95),rgba(20,29,43,.95)); border:1px solid var(--line); border-radius:14px; padding:1rem; box-shadow:0 12px 35px rgba(0,0,0,.18); margin-bottom:1rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:1rem; }
+    .card { min-height:150px; }
+    .card-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem; }
+    .status-text { font-weight:650; }
+    dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:.5rem 0 0; }
+    dt { color:var(--muted); }
+    dd { margin:0; overflow-wrap:anywhere; }
+    .actions { display:flex; gap:.55rem; flex-wrap:wrap; }
+    .form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:1rem; }
+    label { display:grid; gap:.38rem; color:var(--muted); }
+    input,select { width:100%; padding:.62rem .7rem; border-radius:8px; border:1px solid var(--line); background:#0f1724; color:var(--text); }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:.65rem .55rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    .table-wrap { overflow:auto; }
+    .impact { border-left:4px solid var(--gray); }
+    .impact.GREEN { border-left-color:var(--green); }
+    .impact.YELLOW { border-left-color:var(--yellow); }
+    .impact.RED { border-left-color:var(--red); }
+    pre { max-height:320px; overflow:auto; padding:.8rem; border-radius:8px; background:#090e17; border:1px solid var(--line); white-space:pre-wrap; word-break:break-word; }
+    .wizard-steps { margin:.4rem 0 1rem 1.2rem; padding:0; }
+    .warning { color:#ffd166; }
+    .error { color:#ff8994; }
+    #toast { position:fixed; right:1rem; bottom:1rem; max-width:min(430px,calc(100vw - 2rem)); background:#101a29; border:1px solid var(--line); border-radius:10px; padding:.8rem 1rem; box-shadow:0 10px 30px rgba(0,0,0,.4); opacity:0; transform:translateY(8px); transition:.18s; pointer-events:none; z-index:10; }
+    #toast.show { opacity:1; transform:none; }
+    @media (max-width:700px) { header { align-items:flex-start; } .header-status { justify-content:flex-start; } th:nth-child(4),td:nth-child(4) { display:none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>DevSpace Control Center</h1><div class="subtitle">Local watchdog and MCP operations</div></div>
+    <div class="header-status">
+      <span class="chip"><span id="overall-dot" class="dot"></span><span id="overall-label">Checking</span></span>
+      <span id="maintenance-chip" class="chip" hidden>Maintenance mode</span>
+      <button id="refresh-button" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <nav role="tablist" aria-label="Control Center sections">
+    <button role="tab" aria-selected="true" data-tab="overview">Overview</button>
+    <button role="tab" aria-selected="false" data-tab="control">Control</button>
+    <button role="tab" aria-selected="false" data-tab="network">Network &amp; MCP</button>
+    <button role="tab" aria-selected="false" data-tab="ngrok">ngrok Setup</button>
+    <button role="tab" aria-selected="false" data-tab="logs">Logs &amp; Recovery</button>
+  </nav>
+
+  <main>
+    <section id="tab-overview" role="tabpanel">
+      <div id="overview-cards" class="grid" aria-live="polite"></div>
+      <div class="panel"><h2>Public endpoint</h2><div id="public-summary">Checking MCP protocol behavior…</div></div>
+    </section>
+
+    <section id="tab-control" role="tabpanel" hidden>
+      <div class="panel">
+        <h2>All services</h2>
+        <div class="actions">
+          <button class="primary" data-action="start" data-service="all">Start All</button>
+          <button class="danger" data-action="stop" data-service="all">Stop All</button>
+          <button data-action="restart" data-service="all">Restart All</button>
+          <button id="maintenance-button">Maintenance Mode</button>
+          <button id="resume-button">Resume Auto Recovery</button>
+        </div>
+        <p class="muted">Exit Tray stops only this UI and monitoring process. Stop All persists STOPPED_BY_USER and stops managed services.</p>
+      </div>
+      <div class="panel"><h2>Individual services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Desired</th><th>State</th><th>Evidence</th><th>Actions</th></tr></thead><tbody id="service-controls"></tbody></table></div></div>
+    </section>
+
+    <section id="tab-network" role="tabpanel" hidden>
+      <form id="config-form" class="panel">
+        <h2>Network &amp; MCP settings</h2>
+        <div class="form-grid">
+          <label>Endpoint Mode<select name="endpointMode"><option>AgentEndpoint</option><option>CloudEndpoint</option></select></label>
+          <label>Public Domain<input name="publicDomain" type="url" required></label>
+          <label>Internal Agent Endpoint<input name="internalAgentEndpoint" type="url"></label>
+          <label>ngrok Inspector Port<input name="ngrokInspectorPort" type="number" min="1" max="65535" required></label>
+          <label>Router Port<input name="routerPort" type="number" min="1" max="65535" required></label>
+          <label>Machine Slug<input name="machineSlug" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label>
+          <label>Internal MCP Name / Suffix<input name="mcpNameSuffix"></label>
+          <label>DevSpace Display Name<input name="devspaceDisplayName" maxlength="64" required></label>
+          <label>Hermes Display Name<input name="hermesDisplayName" maxlength="64" required></label>
+          <label>DevSpace Route Path<input name="devspaceRoutePath" required></label>
+          <label>Hermes Route Path<input name="hermesRoutePath" required></label>
+        </div>
+        <p class="muted">Display names have no connection impact. Domain and route changes alter public MCP URLs and can require ChatGPT reconnection.</p>
+        <div class="actions"><button class="primary" type="submit">Validate &amp; Preview</button><button id="cancel-preview" type="button">Cancel Preview</button></div>
+      </form>
+      <div id="impact-panel" class="panel impact" hidden><h2>Connection Impact Preview</h2><div id="impact-content"></div></div>
+    </section>
+
+    <section id="tab-ngrok" role="tabpanel" hidden>
+      <div class="panel">
+        <h2>Guided endpoint switch</h2>
+        <div id="wizard-empty" class="muted">Validate a configuration change in Network &amp; MCP to begin.</div>
+        <div id="wizard" hidden>
+          <h3 id="wizard-title"></h3>
+          <ol id="wizard-steps" class="wizard-steps"></ol>
+          <p id="wizard-impact"></p>
+          <pre id="traffic-policy" hidden></pre>
+          <div class="actions">
+            <button id="copy-policy" type="button">Copy Traffic Policy</button>
+            <button id="open-ngrok" type="button">Open ngrok Dashboard</button>
+            <button id="apply-config" class="primary" type="button">Continue &amp; Apply</button>
+            <button id="cancel-wizard" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel"><h2>Credential policy</h2><p>No ngrok API key is stored by this Control Center. The first release generates Traffic Policy and guides the dashboard action, then applies the validated local configuration.</p></div>
+    </section>
+
+    <section id="tab-logs" role="tabpanel" hidden>
+      <div class="panel"><div class="card-head"><h2>Health, recovery, and manual actions</h2><button id="refresh-history">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Timestamp</th><th>Service</th><th>Event</th><th>Cause</th><th>Action / Result</th></tr></thead><tbody id="history-body"></tbody></table></div></div>
+      <div class="panel"><h2>Configuration backups &amp; rollback</h2><div id="backup-list" class="grid"></div></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    "use strict";
+    const controlToken = "{{CONTROL_TOKEN}}";
+    const dashboardPort = {{DASHBOARD_PORT}};
+    const state = { status: null, pendingConfig: null, impact: null };
+    const $ = (selector) => document.querySelector(selector);
+    const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined && text !== null) node.textContent = String(text); if (className) node.className = className; return node; };
+    const addCell = (row, text) => row.appendChild(el("td", text));
+
+    function toast(message, isError = false) {
+      const node = $("#toast"); node.textContent = message; node.className = isError ? "show error" : "show";
+      clearTimeout(toast.timer); toast.timer = setTimeout(() => { node.className = ""; }, 4500);
+    }
+
+    async function api(path, options = {}) {
+      const init = { cache: "no-store", ...options, headers: { ...(options.headers || {}) } };
+      if (init.method === "POST") {
+        init.headers["Content-Type"] = "application/json";
+        init.headers["X-DevSpace-Control-Token"] = controlToken;
+      }
+      const response = await fetch(path, init);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload;
+    }
+
+    function formatUptime(seconds) {
+      if (seconds === null || seconds === undefined) return "—";
+      const d = Math.floor(seconds / 86400), h = Math.floor((seconds % 86400) / 3600), m = Math.floor((seconds % 3600) / 60);
+      return [d ? `${d}d` : "", h ? `${h}h` : "", `${m}m`].filter(Boolean).join(" ");
+    }
+
+    function serviceLabel(name) {
+      if (name === "devspace" && state.status?.config?.devspaceDisplayName) return state.status.config.devspaceDisplayName;
+      if (name === "hermes" && state.status?.config?.hermesDisplayName) return state.status.config.hermesDisplayName;
+      return ({ devspace: "DevSpace", hermes: "Hermes", router: "MCP Router", ngrok: "ngrok" })[name] || name;
+    }
+    function serviceColor(service) {
+      if (!service.enabled || service.desired === "stopped_by_user") return "GRAY";
+      if (service.phase === "RecoveryFailed" || service.identityConflict) return "RED";
+      return service.healthy ? "GREEN" : "YELLOW";
+    }
+
+    function renderOverview(status) {
+      const cards = $("#overview-cards"); cards.replaceChildren();
+      for (const [name, service] of Object.entries(status.services)) {
+        const card = el("article", null, "panel card");
+        const head = el("div", null, "card-head"); head.append(el("h2", serviceLabel(name)));
+        const chip = el("span", null, "chip"); chip.append(el("span", null, `dot ${serviceColor(service)}`), el("span", service.desired === "stopped_by_user" ? "Stopped by user" : service.phase, "status-text")); head.append(chip); card.append(head);
+        const list = el("dl");
+        const entries = [["PID", service.pid ?? "—"], ["Port", service.port || "—"], ["Process", service.processFound ? "Found" : "Missing"], ["Local protocol", service.protocolHealthy ? "Valid" : "Not proven"], ["Uptime", formatUptime(service.uptimeSeconds)], ["Recovery", `${service.attemptCount} attempt(s)`]];
+        for (const [key, value] of entries) { list.append(el("dt", key), el("dd", value)); }
+        card.append(list); cards.append(card);
+      }
+      const pub = status.publicEndpoint, probes = pub.probes;
+      const summary = $("#public-summary"); summary.replaceChildren();
+      const list = el("dl");
+      const dev = probes?.devspace, hermes = probes?.hermes;
+      const rows = [["Mode", pub.mode], ["Domain", pub.domain], ["DevSpace URL", pub.devspaceUrl], ["Hermes URL", pub.hermesUrl], ["DevSpace MCP", dev ? (dev.protocolHealthy ? `Valid (${dev.behavior})` : `Degraded (${dev.behavior})`) : "Checking"], ["Hermes MCP", hermes ? (hermes.protocolHealthy ? `Valid (${hermes.behavior})` : `Degraded (${hermes.behavior})`) : "Checking"]];
+      for (const [key, value] of rows) { list.append(el("dt", key), el("dd", value)); }
+      summary.append(list);
+    }
+
+    function actionButton(label, action, service, className = "") {
+      const button = el("button", label, className); button.type = "button";
+      button.addEventListener("click", () => runAction(action, service)); return button;
+    }
+
+    function renderControls(status) {
+      const body = $("#service-controls"); body.replaceChildren();
+      for (const [name, service] of Object.entries(status.services)) {
+        const row = document.createElement("tr"); addCell(row, serviceLabel(name)); addCell(row, service.desired); addCell(row, service.phase);
+        addCell(row, service.detail || service.lastError || "—");
+        const cell = document.createElement("td"), actions = el("div", null, "actions");
+        actions.append(actionButton("Start", "start", name), actionButton("Stop", "stop", name, "danger"), actionButton("Restart", "restart", name), actionButton("Retry", "retry", name), actionButton("Keep Stopped", "keep_stopped", name));
+        for (const button of actions.children) button.disabled = !service.enabled;
+        cell.append(actions); row.append(cell); body.append(row);
+      }
+      $("#maintenance-button").disabled = status.maintenanceMode;
+      $("#resume-button").disabled = !status.maintenanceMode;
+    }
+
+    function fillConfig(config) {
+      const form = $("#config-form");
+      for (const [key, value] of Object.entries(config)) if (form.elements[key]) form.elements[key].value = value ?? "";
+      toggleInternalEndpoint();
+    }
+
+    function readConfig() {
+      const form = $("#config-form"), data = {};
+      for (const name of ["endpointMode","publicDomain","internalAgentEndpoint","ngrokInspectorPort","routerPort","machineSlug","mcpNameSuffix","devspaceDisplayName","hermesDisplayName","devspaceRoutePath","hermesRoutePath"]) data[name] = form.elements[name].value.trim();
+      data.ngrokInspectorPort = Number(data.ngrokInspectorPort); data.routerPort = Number(data.routerPort);
+      return data;
+    }
+
+    function toggleInternalEndpoint() {
+      const form = $("#config-form"), cloud = form.elements.endpointMode.value === "CloudEndpoint";
+      form.elements.internalAgentEndpoint.required = cloud;
+    }
+
+    function renderImpact(impact) {
+      const panel = $("#impact-panel"), content = $("#impact-content"); panel.hidden = false; panel.className = `panel impact ${impact.level}`; content.replaceChildren();
+      content.append(el("p", `${impact.level}: ${impact.requiresChatGptReconnect ? "Public MCP URL changes; ChatGPT reconnect may be required." : impact.requiresServiceRestart.length ? "Temporary interruption / service restart." : "No connection impact."}`));
+      const table = el("table"), head = el("thead"), hrow = el("tr"); for (const label of ["Configuration", "Before", "After"]) hrow.append(el("th", label)); head.append(hrow); table.append(head); const body = el("tbody");
+      if (!impact.changes.length) { const row = el("tr"); const cell = el("td", "No changes."); cell.colSpan = 3; row.append(cell); body.append(row); }
+      for (const change of impact.changes) { const row = el("tr"); addCell(row, change.label); addCell(row, change.before); addCell(row, change.after); body.append(row); }
+      table.append(body); content.append(table);
+      const list = el("dl"); for (const [key, value] of [["Requires service restart", impact.requiresServiceRestart.join(", ") || "NO"], ["Requires ngrok Dashboard action", impact.requiresNgrokDashboardAction ? "YES" : "NO"], ["Requires ChatGPT reconnect", impact.requiresChatGptReconnect ? "YES" : "NO"], ["Old DevSpace URL", impact.oldDevSpaceUrl], ["New DevSpace URL", impact.newDevSpaceUrl], ["Old Hermes URL", impact.oldHermesUrl], ["New Hermes URL", impact.newHermesUrl]]) list.append(el("dt", key), el("dd", value)); content.append(list);
+    }
+
+    function renderWizard(config, impact) {
+      $("#wizard-empty").hidden = true; $("#wizard").hidden = false;
+      const current = state.status.config.endpointMode, target = config.endpointMode, steps = $("#wizard-steps"); steps.replaceChildren();
+      $("#wizard-title").textContent = `${current} → ${target}`;
+      let instructions;
+      if (current === "AgentEndpoint" && target === "CloudEndpoint") instructions = ["Copy the generated Traffic Policy.", "Open the ngrok Dashboard and create or update the Cloud Endpoint.", "Paste or merge the rule under on_http_request.", "Return here and choose Continue & Apply."];
+      else if (current === "CloudEndpoint" && target === "AgentEndpoint") instructions = ["Open the ngrok Dashboard.", "Delete the Cloud Endpoint.", "DO NOT delete the Development Domain.", "Return here and choose Continue & Apply."];
+      else instructions = ["Review the validated Connection Impact Preview.", "Complete any required ngrok Dashboard action.", "Choose Continue & Apply to create a backup and switch local configuration."];
+      for (const instruction of instructions) steps.append(el("li", instruction));
+      $("#wizard-impact").textContent = impact.requiresChatGptReconnect ? "Public domain or route changes. ChatGPT MCP reconnect/update may be required." : "Existing ChatGPT MCP URLs are expected to remain unchanged.";
+      $("#wizard-impact").className = impact.requiresChatGptReconnect ? "warning" : "muted";
+      const policy = $("#traffic-policy"); policy.textContent = impact.trafficPolicy || ""; policy.hidden = !impact.trafficPolicy; $("#copy-policy").hidden = !impact.trafficPolicy;
+    }
+
+    async function refreshStatus() {
+      try {
+        const first = !state.status; state.status = await api("/api/status");
+        const overall = state.status.overall; $("#overall-dot").className = `dot ${overall.color}`; $("#overall-label").textContent = overall.label; $("#maintenance-chip").hidden = !state.status.maintenanceMode;
+        renderOverview(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function runAction(action, service) {
+      let confirmation = "";
+      if (service === "all" && action === "stop") { if (prompt("Type STOP ALL to confirm persistent manual stop:") !== "STOP ALL") return; confirmation = "STOP ALL"; }
+      if (service === "all" && action === "restart") { if (prompt("Type RESTART ALL to confirm interruption:") !== "RESTART ALL") return; confirmation = "RESTART ALL"; }
+      if (service !== "all" && ["stop","restart","retry","keep_stopped"].includes(action) && !confirm(`${action.replace("_", " ")} ${serviceLabel(service)}? This can interrupt an active MCP call.`)) return;
+      try { const result = await api("/api/action", { method:"POST", body:JSON.stringify({ action, service, confirmation }) }); toast(result.success ? "Action completed." : "One or more actions failed.", !result.success); await refreshStatus(); }
+      catch (error) { toast(error.message, true); }
+    }
+
+    async function previewConfig(event) {
+      event.preventDefault();
+      try {
+        state.pendingConfig = readConfig(); state.impact = await api("/api/config/preview", { method:"POST", body:JSON.stringify({ config:state.pendingConfig }) });
+        renderImpact(state.impact); renderWizard(state.pendingConfig, state.impact); toast("Configuration validated. Review impact before Apply.");
+      } catch (error) { state.pendingConfig = null; state.impact = null; toast(error.message, true); }
+    }
+
+    async function applyConfig() {
+      if (!state.pendingConfig || !state.impact) return;
+      if (prompt(`Type APPLY to create a backup and apply this ${state.impact.level} change:`) !== "APPLY") return;
+      try {
+        const result = await api("/api/config/apply", { method:"POST", body:JSON.stringify({ config:state.pendingConfig, confirmation:"APPLY" }) });
+        toast(`Configuration applied. Backup: ${result.backupId}`); state.pendingConfig = null; state.impact = null; $("#impact-panel").hidden = true; $("#wizard").hidden = true; $("#wizard-empty").hidden = false; await refreshStatus(); await refreshBackups();
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function refreshHistory() {
+      try {
+        const entries = await api("/api/history"), body = $("#history-body"); body.replaceChildren();
+        for (const entry of entries) { const row = el("tr"); addCell(row, entry.timestamp); addCell(row, entry.service); addCell(row, entry.event); addCell(row, entry.cause || "—"); addCell(row, `${entry.action || "—"} / ${entry.result || "—"}`); body.append(row); }
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function rollback(id) {
+      if (prompt(`Type ROLLBACK to restore ${id}:`) !== "ROLLBACK") return;
+      try { await api("/api/config/rollback", { method:"POST", body:JSON.stringify({ backupId:id, confirmation:"ROLLBACK" }) }); toast(`Restored ${id}.`); await refreshStatus(); await refreshBackups(); }
+      catch (error) { toast(error.message, true); }
+    }
+
+    async function refreshBackups() {
+      try {
+        const backups = await api("/api/backups"), list = $("#backup-list"); list.replaceChildren();
+        if (!backups.length) { list.append(el("p", "No configuration backups yet.", "muted")); return; }
+        for (const backup of backups) {
+          const card = el("article", null, "panel"); card.append(el("h3", backup.changeType), el("p", backup.timestamp, "muted"));
+          const details = el("pre", `Before\n${JSON.stringify(backup.before, null, 2)}\n\nAfter\n${JSON.stringify(backup.after, null, 2)}`); card.append(details);
+          const button = el("button", "Rollback", "danger"); button.addEventListener("click", () => rollback(backup.id)); card.append(button); list.append(card);
+        }
+      } catch (error) { toast(error.message, true); }
+    }
+
+    document.querySelectorAll('[role="tab"]').forEach((tab) => tab.addEventListener("click", () => {
+      document.querySelectorAll('[role="tab"]').forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+      document.querySelectorAll('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.id !== `tab-${tab.dataset.tab}`; });
+      if (tab.dataset.tab === "logs") { refreshHistory(); refreshBackups(); }
+    }));
+    document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runAction(button.dataset.action, button.dataset.service)));
+    $("#refresh-button").addEventListener("click", refreshStatus);
+    $("#maintenance-button").addEventListener("click", () => runAction("maintenance", "all"));
+    $("#resume-button").addEventListener("click", () => runAction("resume", "all"));
+    $("#config-form").addEventListener("submit", previewConfig);
+    $("#config-form").elements.endpointMode.addEventListener("change", toggleInternalEndpoint);
+    $("#cancel-preview").addEventListener("click", () => { state.pendingConfig = null; state.impact = null; $("#impact-panel").hidden = true; });
+    $("#cancel-wizard").addEventListener("click", () => { state.pendingConfig = null; state.impact = null; $("#wizard").hidden = true; $("#wizard-empty").hidden = false; });
+    $("#apply-config").addEventListener("click", applyConfig);
+    $("#copy-policy").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#traffic-policy").textContent); toast("Traffic Policy copied."); } catch { toast("Clipboard unavailable; select and copy the policy manually.", true); } });
+    $("#open-ngrok").addEventListener("click", () => window.open("https://dashboard.ngrok.com/", "_blank", "noopener,noreferrer"));
+    $("#refresh-history").addEventListener("click", refreshHistory);
+    refreshStatus(); setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>
