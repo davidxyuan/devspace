@@ -166,6 +166,8 @@ try {
     Assert-Equal "arbitrary HTTP 200 rejected" (Test-WatchdogMcpResponse 200 '<html>OK</html>' @{}).protocolHealthy $false
     Assert-Equal "generic JSON-RPC error rejected" (Test-WatchdogMcpResponse 200 '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}' @{}).protocolHealthy $false
     Assert-Equal "OAuth MCP challenge accepted" (Test-WatchdogMcpResponse 401 "" @{"www-authenticate"='Bearer resource_metadata="https://alpha.example/.well-known/oauth-protected-resource"'}).protocolHealthy $true
+    Assert-Equal "OAuth invalid_token 200 challenge accepted" (Test-WatchdogMcpResponse 200 '{"error":"invalid_token","error_description":"Missing Authorization header"}' @{"www-authenticate"='Bearer error="invalid_token", resource_metadata="https://alpha.example/.well-known/oauth-protected-resource"'}).protocolHealthy $true
+    Assert-Equal "arbitrary 200 with bearer metadata rejected" (Test-WatchdogMcpResponse 200 '{"ok":true}' @{"www-authenticate"='Bearer resource_metadata="https://alpha.example/.well-known/oauth-protected-resource"'}).protocolHealthy $false
     Assert-Equal "plain 401 rejected" (Test-WatchdogMcpResponse 401 "" @{"www-authenticate"="Basic"}).protocolHealthy $false
 
     $expectedNode = [pscustomobject]@{Name="node.exe";ExecutablePath=$config.nodePath;CommandLine='"C:\missing\node.exe" "C:\missing\cli.js" serve'}

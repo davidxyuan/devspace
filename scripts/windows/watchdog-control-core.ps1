@@ -835,13 +835,24 @@ function Test-WatchdogJsonRpcBody([string]$Body) {
 function Test-WatchdogMcpResponse([int]$Status, [string]$Body, $Headers) {
     $protocolHealthy = $false
     $behavior = "http_$Status"
+    $challenge = [string]$Headers["www-authenticate"]
+    $bearerChallenge = $challenge -match '(?i)^Bearer\b' -and $challenge -match '(?i)resource_metadata='
     if ($Status -eq 401) {
-        $challenge = [string]$Headers["www-authenticate"]
-        $protocolHealthy = $challenge -match '(?i)^Bearer\b' -and $challenge -match '(?i)resource_metadata='
+        $protocolHealthy = $bearerChallenge
         $behavior = if ($protocolHealthy) { "oauth_challenge" } else { "unexpected_401" }
     } elseif ($Status -ge 200 -and $Status -lt 300) {
-        $protocolHealthy = Test-WatchdogJsonRpcBody $Body
-        $behavior = if ($protocolHealthy) { "jsonrpc" } else { "non_mcp_success" }
+        if ($bearerChallenge) {
+            try {
+                $oauthError = $Body | ConvertFrom-Json
+                $protocolHealthy = [string](Get-WatchdogProperty $oauthError "error" "") -eq "invalid_token"
+            } catch { $protocolHealthy = $false }
+        }
+        if ($protocolHealthy) {
+            $behavior = "oauth_challenge"
+        } else {
+            $protocolHealthy = Test-WatchdogJsonRpcBody $Body
+            $behavior = if ($protocolHealthy) { "jsonrpc" } else { "non_mcp_success" }
+        }
     }
     return [pscustomobject]@{ protocolHealthy=[bool]$protocolHealthy; behavior=$behavior }
 }
