@@ -222,6 +222,17 @@
       return `${hours}h ${mins}m`;
     }
 
+    function formatSystemTime(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return new Intl.DateTimeFormat(undefined, {
+        year:"numeric", month:"2-digit", day:"2-digit",
+        hour:"2-digit", minute:"2-digit", second:"2-digit",
+        hourCycle:"h23", timeZoneName:"shortOffset"
+      }).format(date);
+    }
+
     function renderConnections(status) {
       const panel = $("#connections-panel"), metrics = status.connections;
       if (!metrics) { panel.hidden = true; return; }
@@ -244,7 +255,7 @@
       table.append(body); root.append(table);
       const details = el("dl");
       const cleanup = metrics.cleanup || {}, thresholds = metrics.thresholds || {};
-      const rows = [["Open client sockets", metrics.openClientSockets ?? 0], ["Idle sockets (no active request)", metrics.idleClientSockets ?? 0], ["Total active requests", metrics.activeRequests ?? 0], ["Warning threshold", thresholds.warnCount ?? "—"], ["Critical threshold", thresholds.criticalCount ?? "—"], ["Suspect idle time", thresholds.suspectIdleSeconds ? `${thresholds.suspectIdleSeconds}s` : "—"], ["Destroyed orphan upstreams", cleanup.upstreamsDestroyed ?? 0], ["Destroyed confirmed idle sockets", cleanup.idleClientSocketsDestroyed ?? 0], ["Last cleanup", cleanup.lastCleanupAt || "—"]];
+      const rows = [["Open client sockets", metrics.openClientSockets ?? 0], ["Idle sockets (no active request)", metrics.idleClientSockets ?? 0], ["Total active requests", metrics.activeRequests ?? 0], ["Warning threshold", thresholds.warnCount ?? "—"], ["Critical threshold", thresholds.criticalCount ?? "—"], ["Suspect idle time", thresholds.suspectIdleSeconds ? `${thresholds.suspectIdleSeconds}s` : "—"], ["Destroyed orphan upstreams", cleanup.upstreamsDestroyed ?? 0], ["Destroyed confirmed idle sockets", cleanup.idleClientSocketsDestroyed ?? 0], ["Last cleanup", formatSystemTime(cleanup.lastCleanupAt)]];
       for (const [key, value] of rows) details.append(el("dt", key), el("dd", value)); root.append(details);
       root.append(el("p", "Safety rule: an active MCP request is never auto-killed only because it is old or temporarily idle. It is flagged as suspect; automatic socket cleanup requires no active request plus repeated idle confirmation.", "muted"));
     }
@@ -382,7 +393,7 @@
     async function refreshHistory() {
       try {
         const entries = await api("/api/history"), body = $("#history-body"); body.replaceChildren();
-        for (const entry of entries) { const row = el("tr"); addCell(row, entry.timestamp); addCell(row, entry.service); addCell(row, entry.event); addCell(row, entry.cause || "—"); addCell(row, `${entry.action || "—"} / ${entry.result || "—"}`); body.append(row); }
+        for (const entry of entries) { const row = el("tr"); addCell(row, formatSystemTime(entry.timestamp)); addCell(row, entry.service); addCell(row, entry.event); addCell(row, entry.cause || "—"); addCell(row, `${entry.action || "—"} / ${entry.result || "—"}`); body.append(row); }
       } catch (error) { toast(error.message, true); }
     }
 
@@ -397,7 +408,7 @@
         const backups = await api("/api/backups"), list = $("#backup-list"); list.replaceChildren();
         if (!backups.length) { list.append(el("p", "No configuration backups yet.", "muted")); return; }
         for (const backup of backups) {
-          const card = el("article", null, "panel"); card.append(el("h3", backup.changeType), el("p", backup.timestamp, "muted"));
+          const card = el("article", null, "panel"); card.append(el("h3", backup.changeType), el("p", formatSystemTime(backup.timestamp), "muted"));
           const details = el("pre", `Before\n${JSON.stringify(backup.before, null, 2)}\n\nAfter\n${JSON.stringify(backup.after, null, 2)}`); card.append(details);
           const button = el("button", "Rollback", "danger"); button.addEventListener("click", () => rollback(backup.id)); card.append(button); list.append(card);
         }
