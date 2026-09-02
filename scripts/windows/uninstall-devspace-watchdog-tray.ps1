@@ -79,6 +79,7 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray witho
     }
 
     if (-not $KeepLegacyTaskDisabled -and [bool]$record.legacyTaskWasEnabled -and [string]$record.legacyTaskName) {
+        Remove-Item -LiteralPath (Join-Path $InstallDir "legacy-watchdog-poller.disabled") -Force -ErrorAction SilentlyContinue
         $task = Get-ScheduledTask -TaskName ([string]$record.legacyTaskName) -ErrorAction SilentlyContinue
         if ($task) { Enable-ScheduledTask -TaskName ([string]$record.legacyTaskName) | Out-Null }
     }

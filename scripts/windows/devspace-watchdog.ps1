@@ -19,6 +19,8 @@ function Read-WatchdogConfig {
 
 $config = Read-WatchdogConfig
 $stateDir = [string]$config.stateDir
+$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"
+if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }
 $port = [int]$config.port
 $devspaceEnabled = if ($null -eq $config.devspaceEnabled) { $true } else { [bool]$config.devspaceEnabled }
 $retiredPorts = @($config.retiredPorts)

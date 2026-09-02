@@ -90,6 +90,9 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configurat
         [System.IO.File]::Copy($source, $target, $true)
     }
 
+    $legacyPollerDisableMarker = Join-Path $InstallDir "legacy-watchdog-poller.disabled"
+    Remove-Item -LiteralPath $legacyPollerDisableMarker -Force -ErrorAction SilentlyContinue
+
     if ($taskName -and [string]$manifest.legacyTaskXml) {
         $taskXml = [System.IO.File]::ReadAllText($taskXmlPath, [System.Text.Encoding]::UTF8)
         Register-ScheduledTask -TaskName $taskName -Xml $taskXml -Force | Out-Null
