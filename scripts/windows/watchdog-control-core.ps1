@@ -948,12 +948,13 @@ function Test-WatchdogManagedProcess($Process, [string]$Service, $Config) {
             $upstream = "http://127.0.0.1:$upstreamPort"
             $agentUrl = [string](Get-WatchdogProperty $Config "ngrokAgentBaseUrl" (Get-WatchdogProperty $Config "publicBaseUrl" ""))
             try { $agentHost = ([Uri]$agentUrl).Host } catch { $agentHost = "" }
+            $agentMatches = (Test-WatchdogCommandToken $command $agentUrl) -or (Test-WatchdogCommandToken $command $agentHost)
             $binding = [string](Get-WatchdogProperty $Config "ngrokBinding" "")
             $bindingMatches = -not $binding -or ((Test-WatchdogCommandToken $command "--binding") -and (Test-WatchdogCommandToken $command $binding))
             $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $true)
             $inspector = "127.0.0.1:$([int](Get-WatchdogProperty $Config 'ngrokInspectorPort' 4040))"
             $inspectorMatches = -not $webSupported -or ((Test-WatchdogCommandToken $command "--web-addr") -and (Test-WatchdogCommandToken $command $inspector))
-            return (Test-WatchdogCommandToken $command $upstream) -and (Test-WatchdogCommandToken $command $agentHost) -and $bindingMatches -and $inspectorMatches
+            return (Test-WatchdogCommandToken $command $upstream) -and $agentMatches -and $bindingMatches -and $inspectorMatches
         }
     }
     return $false

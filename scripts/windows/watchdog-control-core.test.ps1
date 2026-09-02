@@ -176,6 +176,8 @@ try {
     Assert-Equal "Hermes process identity accepts uv child with exact server and port" (Test-WatchdogManagedProcess $hermesUvChild "hermes" $config) $true
     $hermesWithWrongPort = [pscustomobject]@{Name="python.exe";ExecutablePath=$config.hermesPython;CommandLine='"C:\missing\python.exe" "C:\missing\server.py" --http --host 127.0.0.1 --port 114750'}
     Assert-Equal "Hermes process identity rejects partial port match" (Test-WatchdogManagedProcess $hermesWithWrongPort "hermes" $config) $false
+    $agentNgrok = [pscustomobject]@{Name="ngrok.exe";ExecutablePath=$config.ngrokPath;CommandLine='"C:\missing\ngrok.exe" http http://127.0.0.1:18766 --url https://alpha.example.test'}
+    Assert-Equal "Agent ngrok identity accepts full URL token" (Test-WatchdogManagedProcess $agentNgrok "ngrok" $config) $true
     $cloudIdentityConfig = Copy-WatchdogObject $config; $cloudIdentityConfig.ngrokBinding = "internal"; $cloudIdentityConfig.ngrokAgentBaseUrl = "https://alpha-devspace.internal"
     $ngrokWithoutBinding = [pscustomobject]@{Name="ngrok.exe";ExecutablePath=$config.ngrokPath;CommandLine='"C:\missing\ngrok.exe" http http://127.0.0.1:18766 --url https://alpha-devspace.internal'}
     Assert-Equal "Cloud ngrok identity requires binding" (Test-WatchdogManagedProcess $ngrokWithoutBinding "ngrok" $cloudIdentityConfig) $false
