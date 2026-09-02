@@ -127,6 +127,12 @@ const server = http.createServer((req, res) => {
 
   const isWellKnown = path === "/.well-known/oauth-authorization-server";
 
+  let upstreamResponse = null;
+  const destroyUpstream = () => {
+    if (upstreamResponse && !upstreamResponse.destroyed) upstreamResponse.destroy();
+    if (!upstream.destroyed) upstream.destroy();
+  };
+
   const upstream = http.request(
     {
       host: route.targetHost,
@@ -136,6 +142,7 @@ const server = http.createServer((req, res) => {
       headers,
     },
     (upRes) => {
+      upstreamResponse = upRes;
       if (isWellKnown && upRes.statusCode === 200) {
         let body = "";
         upRes.on("data", (chunk) => { body += chunk; });
@@ -156,9 +163,14 @@ const server = http.createServer((req, res) => {
             meta.registration_endpoint = fixUrl(meta.registration_endpoint);
             body = JSON.stringify(meta);
           } catch {}
+          if (res.destroyed || res.writableEnded) return;
           res.writeHead(upRes.statusCode, { ...upRes.headers, "content-length": Buffer.byteLength(body), "x-mcp-router-target": route.name });
           res.end(body);
         });
+        return;
+      }
+      if (res.destroyed || res.writableEnded) {
+        destroyUpstream();
         return;
       }
       res.writeHead(upRes.statusCode || 502, { ...upRes.headers, "x-mcp-router-target": route.name });
@@ -166,7 +178,13 @@ const server = http.createServer((req, res) => {
     },
   );
 
+  req.once("aborted", destroyUpstream);
+  res.once("close", () => {
+    if (!res.writableEnded) destroyUpstream();
+  });
+
   upstream.on("error", (err) => {
+    if (res.destroyed || res.writableEnded) return;
     const body = JSON.stringify({ ok: false, target: route.name, error: err.message });
     res.writeHead(502, {
       "content-type": "application/json; charset=utf-8",
