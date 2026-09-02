@@ -924,10 +924,16 @@ function Test-WatchdogManagedProcess($Process, [string]$Service, $Config) {
             $server = [string](Get-WatchdogProperty $Config "hermesServer" "")
             $wrapper = [string](Get-WatchdogProperty $Config "hermesCommand" "")
             $port = [string](Get-WatchdogProperty $Config "hermesPort" "")
-            $direct = $python -and $server -and (Test-WatchdogExecutablePath $Process $python) -and
+            $directCommand = $server -and $name -eq "python.exe" -and
                 (Test-WatchdogCommandContains $command $server) -and
                 (Test-WatchdogCommandToken $command "--port") -and
                 (Test-WatchdogCommandToken $command $port)
+            # uv/venv on Windows can launch the configured venv python.exe as a
+            # parent shim while the actual listener is owned by the underlying
+            # managed Python runtime. The exact server path + exact port tokens
+            # still uniquely identify this Hermes instance, so do not require
+            # the listener child executable path to equal the venv shim path.
+            $direct = $python -and $directCommand
             $wrapped = $wrapper -and $name -eq "cmd.exe" -and (Test-WatchdogCommandContains $command $wrapper)
             return [bool]($direct -or $wrapped)
         }
@@ -1073,12 +1079,94 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
     }
 }
 
+function Get-WatchdogOptionalToolStatus($Config, $Processes) {
+    $userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath('UserProfile') }
+    $appData = if ($env:APPDATA) { $env:APPDATA } else { [Environment]::GetFolderPath('ApplicationData') }
+    $codexPath = [string](Get-WatchdogProperty $Config "codexPath" "")
+    if (-not $codexPath -and $appData) {
+        foreach ($candidate in @((Join-Path $appData 'npm\codex.cmd'), (Join-Path $appData 'npm\codex.exe'))) {
+            if ([System.IO.File]::Exists($candidate)) { $codexPath = $candidate; break }
+        }
+    }
+    if (-not $codexPath) {
+        try { $command = Get-Command codex -CommandType Application -ErrorAction Stop | Select-Object -First 1; $codexPath = [string]$command.Source } catch { }
+    }
+    $codexInstalled = [bool]($codexPath -and [System.IO.File]::Exists($codexPath))
+    $codexRunning = @($Processes | Where-Object { ([string]$_.Name).ToLowerInvariant() -eq 'codex.exe' }).Count -gt 0
+
+    $skillRoot = [string](Get-WatchdogProperty $Config "codexSkillRoot" "")
+    if (-not $skillRoot -and $userProfile) { $skillRoot = Join-Path $userProfile '.codex\skills' }
+    $officialSkill = $codexInstalled -and [System.IO.File]::Exists((Join-Path $skillRoot 'codex-with-chatgpt\SKILL.md'))
+    $tyoSkill = $codexInstalled -and [System.IO.File]::Exists((Join-Path $skillRoot 'tyo-c2c-orchestrator\SKILL.md'))
+
+    $openCodexHome = [string](Get-WatchdogProperty $Config "openCodexHome" "")
+    if (-not $openCodexHome -and $userProfile) { $openCodexHome = Join-Path $userProfile '.opencodex' }
+    $openCodexInstalled = [System.IO.Directory]::Exists($openCodexHome)
+    $openCodexTrayScript = if ($openCodexInstalled) { Join-Path $openCodexHome 'opencodex-tray.ps1' } else { '' }
+    $openCodexTrayLauncher = if ($openCodexInstalled) { Join-Path $openCodexHome 'opencodex-tray.vbs' } else { '' }
+    $openCodexTrayInstalled = [System.IO.File]::Exists($openCodexTrayScript) -and [System.IO.File]::Exists($openCodexTrayLauncher)
+    $openCodexTrayRunning = @($Processes | Where-Object { ([string]$_.CommandLine) -like '*opencodex-tray.ps1*' }).Count -gt 0
+    $openCodexProxyRunning = @($Processes | Where-Object {
+        $commandLine = [string]$_.CommandLine
+        $commandLine -like '*opencodex*' -and $commandLine -match '(?i)(^|\s)start(\s|$)'
+    }).Count -gt 0
+    $openCodexProxyHealthy = $false
+    $openCodexPort = 10100
+    if ($openCodexInstalled) {
+        foreach ($runtimeFile in @((Join-Path $openCodexHome 'runtime-port.json'), (Join-Path $openCodexHome 'config.json'))) {
+            if (-not [System.IO.File]::Exists($runtimeFile)) { continue }
+            try {
+                $runtime = Read-WatchdogJson $runtimeFile
+                $candidatePort = [int](Get-WatchdogProperty $runtime 'port' 0)
+                if ($candidatePort -gt 0 -and $candidatePort -le 65535) { $openCodexPort = $candidatePort; break }
+            } catch { }
+        }
+        if ($openCodexProxyRunning) {
+            $probe = Invoke-WatchdogJsonProbe "http://127.0.0.1:$openCodexPort/healthz" { param($json) [string](Get-WatchdogProperty $json 'status' '') -eq 'ok' -and [string](Get-WatchdogProperty $json 'service' '') -eq 'opencodex' }
+            $openCodexProxyHealthy = [bool]$probe.semanticHealthy
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        codex = [pscustomobject][ordered]@{
+            installed=$codexInstalled; path=$codexPath; running=[bool]$codexRunning
+            officialC2c=[bool]$officialSkill; tyoC2c=[bool]$tyoSkill
+            visible=[bool]$codexInstalled
+        }
+        openCodex = [pscustomobject][ordered]@{
+            installed=[bool]$openCodexInstalled; home=$openCodexHome; port=$openCodexPort
+            proxyRunning=[bool]$openCodexProxyRunning; proxyHealthy=[bool]$openCodexProxyHealthy
+            trayInstalled=[bool]$openCodexTrayInstalled; trayRunning=[bool]$openCodexTrayRunning
+            repairTrayAvailable=([bool]$openCodexTrayInstalled -and -not [bool]$openCodexTrayRunning)
+            visible=[bool]$openCodexInstalled
+        }
+    }
+}
+
+function Repair-WatchdogOptionalTool([string]$Tool, $Status) {
+    if ($Tool -ne 'opencodex-tray') { return [pscustomobject]@{ success=$false; error='Unsupported optional tool repair.' } }
+    $openCodex = Get-WatchdogProperty $Status 'openCodex' $null
+    if (-not [bool](Get-WatchdogProperty $openCodex 'installed' $false)) { return [pscustomobject]@{ success=$false; error='OpenCodex is not installed; automatic installation is intentionally disabled.' } }
+    if ([bool](Get-WatchdogProperty $openCodex 'trayRunning' $false)) { return [pscustomobject]@{ success=$true; error='already running' } }
+    $home = [string](Get-WatchdogProperty $openCodex 'home' '')
+    $launcher = Join-Path $home 'opencodex-tray.vbs'
+    if (-not [System.IO.File]::Exists($launcher)) { return [pscustomobject]@{ success=$false; error='OpenCodex Tray launcher is missing.' } }
+    try {
+        $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+        [void](Start-Process -FilePath $wscript -ArgumentList @('//B','//NoLogo',$launcher) -WindowStyle Hidden -PassThru)
+        return [pscustomobject]@{ success=$true; error='' }
+    } catch {
+        return [pscustomobject]@{ success=$false; error=(Protect-WatchdogText $_.Exception.Message) }
+    }
+}
+
 function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic) {
     $config = Read-WatchdogJson $ConfigPath
     [void](Get-WatchdogControlSettings $config)
     $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     $services = [ordered]@{}
     foreach ($service in $script:WatchdogServiceNames) { $services[$service] = Get-WatchdogServiceHealth $service $config $processes }
+    $optionalTools = Get-WatchdogOptionalToolStatus $config $processes
     $public = $null
     if ($IncludePublic) {
         $editable = Get-WatchdogEditableConfig $config
@@ -1093,6 +1181,7 @@ function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic)
     return [pscustomobject][ordered]@{
         timestamp = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
         services = [pscustomobject]$services
+        optionalTools = $optionalTools
         public = $public
     }
 }

@@ -176,6 +176,7 @@ function Get-ControlStatusPayload {
         overall = $overall
         maintenanceMode = [bool]$script:state.maintenanceMode
         services = [pscustomobject]$services
+        optionalTools = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
         publicEndpoint = [pscustomobject]@{
             mode = $editable.endpointMode
             domain = $editable.publicDomain
@@ -267,6 +268,14 @@ function Complete-HealthRunspace {
         $script:healthPowerShell = $null
         $script:healthAsync = $null
     }
+}
+
+function Invoke-OptionalToolRepair([string]$Tool) {
+    $status = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
+    if (-not $status) { return [pscustomobject]@{ success=$false; error="Optional-tool health check is not ready." } }
+    $result = Repair-WatchdogOptionalTool $Tool $status
+    Write-WatchdogEvent $script:stateDir $script:config "optional:$Tool" "manual_repair" "user request" "repair" $(if ($result.success) { "dispatched" } else { $result.error })
+    return $result
 }
 
 function Invoke-ManualServiceAction([string]$Action, [string]$Service) {
@@ -523,6 +532,10 @@ function Invoke-ControlHttpRequest($Request) {
                 if ($service -eq "all" -and $action -eq "restart" -and $confirmation -ne "RESTART ALL") { throw "RESTART ALL confirmation is required." }
                 Write-ControlJson $Request.stream 200 (Invoke-ManualServiceAction $action $service)
             }
+            "/api/optional/repair" {
+                $tool = [string](Get-WatchdogProperty $payload "tool" "")
+                Write-ControlJson $Request.stream 200 (Invoke-OptionalToolRepair $tool)
+            }
             "/api/config/preview" {
                 $editable = ConvertTo-WatchdogEditableConfig (Get-WatchdogProperty $payload "config" $null) $script:config
                 Write-ControlJson $Request.stream 200 (New-WatchdogConfigImpact $script:config $editable)
@@ -605,6 +618,24 @@ foreach ($service in $script:WatchdogServiceNames) {
     [void]$servicesMenu.DropDownItems.Add($serviceMenu)
 }
 [void]$menu.Items.Add($servicesMenu)
+$optionalMenu = New-Object System.Windows.Forms.ToolStripMenuItem("Optional tools")
+$codexStateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Codex: Not detected")
+$codexStateItem.Enabled = $false
+$officialC2cItem = New-Object System.Windows.Forms.ToolStripMenuItem("Official C2C: Not detected")
+$officialC2cItem.Enabled = $false
+$tyoC2cItem = New-Object System.Windows.Forms.ToolStripMenuItem("TYO C2C: Not detected")
+$tyoC2cItem.Enabled = $false
+$openCodexStateItem = New-Object System.Windows.Forms.ToolStripMenuItem("OpenCodex: Not detected")
+$openCodexStateItem.Enabled = $false
+$repairOpenCodexTrayItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair OpenCodex Tray")
+[void]$optionalMenu.DropDownItems.Add($codexStateItem)
+[void]$optionalMenu.DropDownItems.Add($officialC2cItem)
+[void]$optionalMenu.DropDownItems.Add($tyoC2cItem)
+[void]$optionalMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+[void]$optionalMenu.DropDownItems.Add($openCodexStateItem)
+[void]$optionalMenu.DropDownItems.Add($repairOpenCodexTrayItem)
+$optionalMenu.Visible = $false
+[void]$menu.Items.Add($optionalMenu)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $maintenanceItem = $menu.Items.Add("Maintenance Mode")
 $resumeItem = $menu.Items.Add("Resume Auto Recovery")
@@ -625,6 +656,12 @@ $restartAllItem.add_Click({
         [void](Invoke-ManualServiceAction "restart" "all")
     }
 })
+$repairOpenCodexTrayItem.add_Click({
+    $result = Invoke-OptionalToolRepair "opencodex-tray"
+    if (-not $result.success) {
+        [void][System.Windows.Forms.MessageBox]::Show($result.error, "Optional tool repair", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    }
+})
 $maintenanceItem.add_Click({ [void](Invoke-ManualServiceAction "maintenance" "all") })
 $resumeItem.add_Click({ [void](Invoke-ManualServiceAction "resume" "all") })
 $logsItem.add_Click({ Open-ControlLogs })
@@ -637,6 +674,31 @@ function Update-TrayPresentation {
     $statusItem.Text = "Status: $($overall.label)"
     $maintenanceItem.Enabled = -not $script:state.maintenanceMode
     $resumeItem.Enabled = [bool]$script:state.maintenanceMode
+    $tools = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
+    $codex = Get-WatchdogProperty $tools "codex" $null
+    $openCodex = Get-WatchdogProperty $tools "openCodex" $null
+    $codexVisible = [bool](Get-WatchdogProperty $codex "visible" $false)
+    $openCodexVisible = [bool](Get-WatchdogProperty $openCodex "visible" $false)
+    $optionalMenu.Visible = $codexVisible -or $openCodexVisible
+    if ($codexVisible) {
+        $codexStateItem.Text = "Codex: " + $(if ([bool](Get-WatchdogProperty $codex "running" $false)) { "Running" } else { "Installed" })
+        $officialC2cItem.Visible = $true
+        $officialC2cItem.Text = "Official C2C: " + $(if ([bool](Get-WatchdogProperty $codex "officialC2c" $false)) { "Available" } else { "Not installed" })
+        $tyoC2cItem.Visible = $true
+        $tyoC2cItem.Text = "TYO C2C: " + $(if ([bool](Get-WatchdogProperty $codex "tyoC2c" $false)) { "Available" } else { "Not installed" })
+    } else {
+        $codexStateItem.Text = "Codex: Not detected"
+        $officialC2cItem.Visible = $false
+        $tyoC2cItem.Visible = $false
+    }
+    $openCodexStateItem.Visible = $openCodexVisible
+    $repairOpenCodexTrayItem.Visible = $openCodexVisible
+    if ($openCodexVisible) {
+        $proxyText = if ([bool](Get-WatchdogProperty $openCodex "proxyHealthy" $false)) { "Proxy OK" } elseif ([bool](Get-WatchdogProperty $openCodex "proxyRunning" $false)) { "Proxy degraded" } else { "Proxy stopped" }
+        $trayText = if ([bool](Get-WatchdogProperty $openCodex "trayRunning" $false)) { "Tray OK" } elseif ([bool](Get-WatchdogProperty $openCodex "trayInstalled" $false)) { "Tray stopped" } else { "No Tray" }
+        $openCodexStateItem.Text = "OpenCodex: $proxyText / $trayText"
+        $repairOpenCodexTrayItem.Enabled = [bool](Get-WatchdogProperty $openCodex "repairTrayAvailable" $false)
+    }
     foreach ($service in $script:WatchdogServiceNames) {
         $item = $script:serviceMenuItems[$service]
         $enabled = Test-WatchdogServiceEnabled $service $script:config

@@ -75,7 +75,23 @@ The context menu provides:
 `stopped_by_user`, then stops only identity-matched DevSpace, Hermes, Router, and
 ngrok processes. An unknown process is never killed to free a configured port.
 
-## 3. Dashboard
+## 3. Optional tools and multi-machine behavior
+
+The Watchdog core manages DevSpace, Hermes, MCP Router, and ngrok as the base stack. Codex, OpenCodex, and C2C are optional local capabilities and are auto-detected instead of required by configuration.
+
+This is intentional for mixed deployments such as TYO, NT1, and NT2R:
+
+- A machine without Codex remains healthy and does not show Codex/C2C controls.
+- A machine with Codex shows Codex runtime state plus the independently detected `codex-with-chatgpt` and `tyo-c2c-orchestrator` skills.
+- OpenCodex is shown only when its local home is present. Proxy health and Tray presence are reported separately.
+- An installed-but-stopped OpenCodex Tray can be repaired from the Tray/Dashboard. The Watchdog never installs Codex/OpenCodex merely because they are absent.
+- Base-service runtime failures continue to use the existing confirmed-failure recovery state machine. Missing or damaged installation files fail closed into recovery diagnostics rather than downloading arbitrary software automatically.
+
+The optional-tool layer is deliberately separate from `$script:WatchdogServiceNames`, so adding C2C to a Codex-capable workstation cannot make a non-Codex production station unhealthy.
+
+For future installer-backed repair, use the repository's pinned tested-stack installer/upgrade flow behind an explicit operator confirmation. Do not turn a missing optional tool into an unattended package installation.
+
+## 4. Dashboard
 
 The DevSpace Control Center binds a `TcpListener` to `127.0.0.1` only. It never
 binds `0.0.0.0`, an IPv6 wildcard, or a LAN interface. Its port defaults to 8777
@@ -115,7 +131,7 @@ Critical actions require explicit confirmation:
 - `APPLY`
 - `ROLLBACK`
 
-## 4. Health model
+## 5. Health model
 
 Local probes run every 5 seconds by default; public probes run every 45 seconds.
 Both intervals are configurable within bounded ranges. Probe work runs in a
@@ -163,7 +179,7 @@ requests. HTTP reachability and MCP protocol validity are recorded separately.
 This prevents an ngrok warning page or unrelated HTTP 200 response from being
 reported as MCP healthy.
 
-## 5. Auto Recovery
+## 6. Auto Recovery
 
 Each service has an independent state machine:
 
@@ -195,7 +211,7 @@ ngrok tunnel mismatch remain recoverable after confirmation. Manual Retry is an
 explicit operator restart and warns that it can interrupt active work. An
 unrecognized port owner always blocks both automatic and manual process mutation.
 
-## 6. Manual Stop
+## 7. Manual Stop
 
 Desired state is stored in:
 
@@ -208,7 +224,7 @@ atomically and survives Tray restart, logout/login, and reboot. A manually
 stopped service is never auto-started. Only Start, Restart, or Retry changes it
 back to `running`.
 
-## 7. Maintenance Mode
+## 8. Maintenance Mode
 
 Maintenance Mode is also persistent. Health monitoring, UI refresh, and event
 logging continue, but automatic recovery is suspended. Use it before editing
@@ -219,7 +235,7 @@ If the desired-state file is corrupt or invalid, the Tray fails safe into
 Maintenance Mode and records the parsing error instead of guessing that services
 should be restarted.
 
-## 8. Logs
+## 9. Logs
 
 Structured events are written to:
 
@@ -235,7 +251,7 @@ is also count-bounded.
 
 Service stdout/stderr continues to use timestamped files in the state directory.
 
-## 9. Agent Endpoint
+## 10. Agent Endpoint
 
 AgentEndpoint mode points the local ngrok agent directly at the public
 development domain:
@@ -250,7 +266,7 @@ The Router continues to expose machine-specific DevSpace and Hermes paths. The
 public domain form accepts an HTTPS origin only: no credentials, path, query,
 fragment, localhost, or shell characters.
 
-## 10. Cloud Endpoint
+## 11. Cloud Endpoint
 
 CloudEndpoint mode gives the local agent an internal endpoint and binding:
 
@@ -270,7 +286,7 @@ state directory. The rule covers:
 
 No ngrok API key is requested or stored.
 
-## 11. Agent to Cloud wizard
+## 12. Agent to Cloud wizard
 
 The wizard shows Current and Target modes, then:
 
@@ -288,7 +304,7 @@ The wizard shows Current and Target modes, then:
 The machine slug, routes, OAuth metadata prefixes, internal endpoint, ports,
 and domain come from validated configuration. Nothing is hard-coded to TYO.
 
-## 12. Cloud to Agent wizard
+## 13. Cloud to Agent wizard
 
 The wizard instructs the operator to:
 
@@ -302,7 +318,7 @@ If the public domain and route paths do not change, existing ChatGPT MCP URLs
 are expected to remain unchanged. A changed domain or route produces a red
 impact and a reconnect warning.
 
-## 13. Domain changes
+## 14. Domain changes
 
 Changing Public Domain is a red-impact operation. Preview shows old and new
 DevSpace/Hermes URLs and marks ChatGPT reconnect as required. Apply backs up
@@ -311,7 +327,7 @@ OAuth base, then restarts DevSpace, Router/ngrok only when required.
 
 The Control Center never changes ChatGPT MCP registration itself.
 
-## 14. MCP names and routes
+## 15. MCP names and routes
 
 - **Display Name** is dashboard text only. It is green impact and causes no
   service restart.
@@ -324,7 +340,7 @@ Paths must be lowercase absolute paths made from URL-safe segments. Traversal,
 duplicate paths, query/fragment characters, backslashes, whitespace, and shell
 characters are rejected.
 
-## 15. Connection Impact and configuration rollback
+## 16. Connection Impact and configuration rollback
 
 Preview levels:
 
@@ -353,7 +369,7 @@ file rollback.
 `auth.json`, environment variables, ngrok auth configuration, tokens, and
 credential stores are not copied or rendered.
 
-## 16. Install
+## 17. Install
 
 Prerequisite: a working legacy Windows stack with
 `devspace-watchdog.config.json`. Commit and test the source before deployment.
@@ -395,7 +411,7 @@ fails, it reenables the task, restores files/autostart, stops the failed Tray,
 and reports the recovery backup. Managed services are not stopped by installer
 rollback.
 
-## 17. Uninstall and recovery
+## 18. Uninstall and recovery
 
 Normal uninstall:
 
@@ -421,7 +437,7 @@ restores the install backup, re-registers/enables the old Scheduled Task, starts
 it, and checks configured listener ports. Use `-DoNotStartLegacyWatchdog` when
 an operator wants files/task restored without executing a watchdog cycle.
 
-## 18. TYO pilot checklist
+## 19. TYO pilot checklist
 
 Do not treat source tests as a pilot. Run this checklist only in an explicitly
 authorized TYO deployment window.
@@ -506,7 +522,7 @@ authorized TYO deployment window.
 - [ ] Confirm old task reenabled and running.
 - [ ] Confirm DevSpace, Hermes, Router, ngrok, and public MCP protocol health.
 
-## 19. Troubleshooting
+## 20. Troubleshooting
 
 | Symptom | Action |
 | --- | --- |

@@ -81,6 +81,7 @@
   <main>
     <section id="tab-overview" role="tabpanel">
       <div id="overview-cards" class="grid" aria-live="polite"></div>
+      <div id="optional-tools-panel" class="panel" hidden><h2>Optional local tools</h2><div id="optional-tools"></div></div>
       <div class="panel"><h2>Public endpoint</h2><div id="public-summary">Checking MCP protocol behavior…</div></div>
     </section>
 
@@ -211,6 +212,41 @@
       summary.append(list);
     }
 
+    function renderOptionalTools(status) {
+      const panel = $("#optional-tools-panel"), root = $("#optional-tools");
+      root.replaceChildren();
+      const tools = status.optionalTools || {}, codex = tools.codex || {}, openCodex = tools.openCodex || {};
+      const visible = Boolean(codex.visible || openCodex.visible);
+      panel.hidden = !visible;
+      if (!visible) return;
+      const list = el("dl");
+      if (codex.visible) {
+        const codexState = codex.running ? "Running" : "Installed";
+        list.append(el("dt", "Codex"), el("dd", codexState));
+        list.append(el("dt", "Official C2C"), el("dd", codex.officialC2c ? "Available" : "Not installed"));
+        list.append(el("dt", "TYO C2C"), el("dd", codex.tyoC2c ? "Available" : "Not installed"));
+      }
+      if (openCodex.visible) {
+        const proxy = openCodex.proxyHealthy ? "Healthy" : (openCodex.proxyRunning ? "Degraded" : "Stopped");
+        const tray = openCodex.trayRunning ? "Running" : (openCodex.trayInstalled ? "Stopped" : "Not installed");
+        list.append(el("dt", "OpenCodex proxy"), el("dd", `${proxy} (port ${openCodex.port || 10100})`));
+        list.append(el("dt", "OpenCodex Tray"), el("dd", tray));
+        if (openCodex.repairTrayAvailable) {
+          const actions = el("div", null, "actions"), repair = el("button", "Repair OpenCodex Tray");
+          repair.type = "button";
+          repair.addEventListener("click", async () => {
+            try {
+              const result = await api("/api/optional/repair", { method:"POST", body:JSON.stringify({ tool:"opencodex-tray" }) });
+              if (!result.success) throw new Error(result.error || "Repair failed");
+              toast("OpenCodex Tray repair dispatched."); setTimeout(refreshStatus, 1200);
+            } catch (error) { toast(error.message, true); }
+          });
+          actions.append(repair); root.append(list, actions); return;
+        }
+      }
+      root.append(list);
+    }
+
     function actionButton(label, action, service, className = "") {
       const button = el("button", label, className); button.type = "button";
       button.addEventListener("click", () => runAction(action, service)); return button;
@@ -276,7 +312,7 @@
       try {
         const first = !state.status; state.status = await api("/api/status");
         const overall = state.status.overall; $("#overall-dot").className = `dot ${overall.color}`; $("#overall-label").textContent = overall.label; $("#maintenance-chip").hidden = !state.status.maintenanceMode;
-        renderOverview(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
+        renderOverview(state.status); renderOptionalTools(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
       } catch (error) { toast(error.message, true); }
     }
 

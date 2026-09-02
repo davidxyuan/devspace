@@ -172,6 +172,8 @@ try {
     Assert-Equal "DevSpace process identity accepts exact executable" (Test-WatchdogManagedProcess $expectedNode "devspace" $config) $true
     $wrongNode = Copy-WatchdogObject $expectedNode; $wrongNode.ExecutablePath = "C:\other\node.exe"
     Assert-Equal "DevSpace process identity rejects wrong executable" (Test-WatchdogManagedProcess $wrongNode "devspace" $config) $false
+    $hermesUvChild = [pscustomobject]@{Name="python.exe";ExecutablePath="C:\uv\python.exe";CommandLine='"C:\uv\python.exe" "C:\missing\server.py" --http --host 127.0.0.1 --port 14750'}
+    Assert-Equal "Hermes process identity accepts uv child with exact server and port" (Test-WatchdogManagedProcess $hermesUvChild "hermes" $config) $true
     $hermesWithWrongPort = [pscustomobject]@{Name="python.exe";ExecutablePath=$config.hermesPython;CommandLine='"C:\missing\python.exe" "C:\missing\server.py" --http --host 127.0.0.1 --port 114750'}
     Assert-Equal "Hermes process identity rejects partial port match" (Test-WatchdogManagedProcess $hermesWithWrongPort "hermes" $config) $false
     $cloudIdentityConfig = Copy-WatchdogObject $config; $cloudIdentityConfig.ngrokBinding = "internal"; $cloudIdentityConfig.ngrokAgentBaseUrl = "https://alpha-devspace.internal"
@@ -187,6 +189,39 @@ try {
     $disabledHealth = Get-WatchdogHealthSnapshot $disabledPath
     Assert-Equal "disabled DevSpace is not probed" $disabledHealth.services.devspace.enabled $false
     Assert-Equal "disabled ngrok is not probed" $disabledHealth.services.ngrok.enabled $false
+
+    $optionalConfig = Copy-WatchdogObject $config
+    Set-WatchdogProperty $optionalConfig "codexPath" (Join-Path $tempRoot "missing-codex.cmd")
+    Set-WatchdogProperty $optionalConfig "codexSkillRoot" (Join-Path $tempRoot "missing-skills")
+    Set-WatchdogProperty $optionalConfig "openCodexHome" (Join-Path $tempRoot "missing-opencodex")
+    $absentTools = Get-WatchdogOptionalToolStatus $optionalConfig @()
+    Assert-Equal "missing Codex stays optional" $absentTools.codex.visible $false
+    Assert-Equal "missing OpenCodex stays optional" $absentTools.openCodex.visible $false
+
+    $fakeCodex = Join-Path $tempRoot "codex.cmd"
+    Write-WatchdogAtomicText $fakeCodex "@echo off`r`n"
+    $skillRoot = Join-Path $tempRoot "skills"
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $skillRoot "codex-with-chatgpt"))
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $skillRoot "tyo-c2c-orchestrator"))
+    Write-WatchdogAtomicText (Join-Path $skillRoot "codex-with-chatgpt\SKILL.md") "official"
+    Write-WatchdogAtomicText (Join-Path $skillRoot "tyo-c2c-orchestrator\SKILL.md") "tyo"
+    $fakeOpenCodex = Join-Path $tempRoot "opencodex"
+    [void][System.IO.Directory]::CreateDirectory($fakeOpenCodex)
+    Write-WatchdogAtomicText (Join-Path $fakeOpenCodex "opencodex-tray.ps1") "# tray"
+    Write-WatchdogAtomicText (Join-Path $fakeOpenCodex "opencodex-tray.vbs") "' launcher"
+    Set-WatchdogProperty $optionalConfig "codexPath" $fakeCodex
+    Set-WatchdogProperty $optionalConfig "codexSkillRoot" $skillRoot
+    Set-WatchdogProperty $optionalConfig "openCodexHome" $fakeOpenCodex
+    $fakeProcesses = @(
+        [pscustomobject]@{Name="codex.exe";CommandLine="codex.exe"},
+        [pscustomobject]@{Name="powershell.exe";CommandLine="powershell.exe -File $fakeOpenCodex\opencodex-tray.ps1"}
+    )
+    $presentTools = Get-WatchdogOptionalToolStatus $optionalConfig $fakeProcesses
+    Assert-Equal "Codex auto-detected" $presentTools.codex.visible $true
+    Assert-Equal "official C2C detected" $presentTools.codex.officialC2c $true
+    Assert-Equal "TYO C2C detected" $presentTools.codex.tyoC2c $true
+    Assert-Equal "OpenCodex tray detected" $presentTools.openCodex.trayRunning $true
+    Assert-Equal "running OpenCodex tray needs no repair" $presentTools.openCodex.repairTrayAvailable $false
 
     $applyInput = Copy-Editable $config; $applyInput.devspaceDisplayName = "Changed Display"
     $applied = Set-WatchdogConfiguration $configPath $applyInput
@@ -225,6 +260,10 @@ try {
     Assert-Contains "dashboard has Network and MCP" $dashboardSource 'data-tab="network"'
     Assert-Contains "dashboard has ngrok Setup" $dashboardSource 'data-tab="ngrok"'
     Assert-Contains "dashboard has Logs and Recovery" $dashboardSource 'data-tab="logs"'
+    Assert-Contains "dashboard has optional tools" $dashboardSource 'id="optional-tools-panel"'
+    Assert-Contains "dashboard supports OpenCodex Tray repair" $dashboardSource '/api/optional/repair'
+    Assert-Contains "Tray has optional tools menu" $traySource 'ToolStripMenuItem("Optional tools")'
+    Assert-Contains "Tray hides optional tools when absent" $traySource '$optionalMenu.Visible = $false'
     Assert-Contains "Stop All requires typed confirmation" $dashboardSource 'Type STOP ALL'
     Assert-Contains "config Apply requires typed confirmation" $dashboardSource 'Type APPLY'
     Assert-Contains "rollback requires typed confirmation" $dashboardSource 'Type ROLLBACK'
