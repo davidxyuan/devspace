@@ -133,6 +133,11 @@ function Get-OverallTrayState {
         $health = Get-ServiceFromSnapshot $service
         if (-not [bool](Get-WatchdogProperty $health "healthy" $false)) { return [pscustomobject]@{ color="YELLOW"; label="Degraded" } }
     }
+    $routerHealth = Get-ServiceFromSnapshot "router"
+    $connectionMetrics = Get-WatchdogProperty $routerHealth "connections" $null
+    $connectionLevel = [string](Get-WatchdogProperty $connectionMetrics "level" "")
+    if ($connectionLevel -eq "RED") { return [pscustomobject]@{ color="RED"; label="Connection overload" } }
+    if ($connectionLevel -eq "YELLOW") { return [pscustomobject]@{ color="YELLOW"; label="Connection warning" } }
     if (-not $script:lastPublic) { return [pscustomobject]@{ color="YELLOW"; label="Checking public MCP" } }
     foreach ($service in @("devspace", "hermes")) {
         if (Test-WatchdogServiceEnabled $service $script:config) {
@@ -177,6 +182,7 @@ function Get-ControlStatusPayload {
         maintenanceMode = [bool]$script:state.maintenanceMode
         services = [pscustomobject]$services
         optionalTools = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
+        connections = Get-WatchdogProperty (Get-ServiceFromSnapshot "router") "connections" $null
         publicEndpoint = [pscustomobject]@{
             mode = $editable.endpointMode
             domain = $editable.publicDomain

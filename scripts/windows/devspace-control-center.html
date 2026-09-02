@@ -81,6 +81,7 @@
   <main>
     <section id="tab-overview" role="tabpanel">
       <div id="overview-cards" class="grid" aria-live="polite"></div>
+      <div id="connections-panel" class="panel" hidden><div class="card-head"><h2>MCP connection monitor</h2><span id="connections-chip" class="chip"><span id="connections-dot" class="dot"></span><span id="connections-label">Checking</span></span></div><div id="connections-summary"></div></div>
       <div id="optional-tools-panel" class="panel" hidden><h2>Optional local tools</h2><div id="optional-tools"></div></div>
       <div class="panel"><h2>Public endpoint</h2><div id="public-summary">Checking MCP protocol behavior…</div></div>
     </section>
@@ -212,6 +213,42 @@
       summary.append(list);
     }
 
+    function formatDuration(seconds) {
+      if (!seconds) return "0s";
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60), secs = seconds % 60;
+      if (minutes < 60) return `${minutes}m ${secs}s`;
+      const hours = Math.floor(minutes / 60), mins = minutes % 60;
+      return `${hours}h ${mins}m`;
+    }
+
+    function renderConnections(status) {
+      const panel = $("#connections-panel"), metrics = status.connections;
+      if (!metrics) { panel.hidden = true; return; }
+      panel.hidden = false;
+      $("#connections-dot").className = `dot ${metrics.level || "GRAY"}`;
+      $("#connections-label").textContent = metrics.level === "RED" ? "Critical" : metrics.level === "YELLOW" ? "Warning" : "Normal";
+      const root = $("#connections-summary"); root.replaceChildren();
+      const intro = el("p", metrics.reason || "Connection telemetry available.", metrics.level === "RED" ? "error" : metrics.level === "YELLOW" ? "warning" : "muted");
+      root.append(intro);
+      const table = el("table"), head = el("thead"), hrow = el("tr");
+      for (const label of ["Route", "Active", "Suspect", "Oldest", "Longest idle", "State"]) hrow.append(el("th", label));
+      head.append(hrow); table.append(head); const body = el("tbody");
+      for (const name of ["devspace", "hermes"]) {
+        const item = metrics.services?.[name] || { activeRequests:0, suspectRequests:0, oldestRequestSeconds:0, longestIdleSeconds:0 };
+        const level = item.activeRequests >= (metrics.thresholds?.criticalCount || 200) ? "RED" : item.activeRequests >= (metrics.thresholds?.warnCount || 50) || item.suspectRequests > 0 ? "YELLOW" : "GREEN";
+        const row = el("tr");
+        addCell(row, serviceLabel(name)); addCell(row, item.activeRequests); addCell(row, item.suspectRequests); addCell(row, formatDuration(item.oldestRequestSeconds)); addCell(row, formatDuration(item.longestIdleSeconds));
+        const stateCell = document.createElement("td"), chip = el("span", null, "chip"); chip.append(el("span", null, `dot ${level}`), el("span", level === "RED" ? "Critical" : level === "YELLOW" ? "Watch" : "Normal")); stateCell.append(chip); row.append(stateCell); body.append(row);
+      }
+      table.append(body); root.append(table);
+      const details = el("dl");
+      const cleanup = metrics.cleanup || {}, thresholds = metrics.thresholds || {};
+      const rows = [["Open client sockets", metrics.openClientSockets ?? 0], ["Idle sockets (no active request)", metrics.idleClientSockets ?? 0], ["Total active requests", metrics.activeRequests ?? 0], ["Warning threshold", thresholds.warnCount ?? "—"], ["Critical threshold", thresholds.criticalCount ?? "—"], ["Suspect idle time", thresholds.suspectIdleSeconds ? `${thresholds.suspectIdleSeconds}s` : "—"], ["Destroyed orphan upstreams", cleanup.upstreamsDestroyed ?? 0], ["Destroyed confirmed idle sockets", cleanup.idleClientSocketsDestroyed ?? 0], ["Last cleanup", cleanup.lastCleanupAt || "—"]];
+      for (const [key, value] of rows) details.append(el("dt", key), el("dd", value)); root.append(details);
+      root.append(el("p", "Safety rule: an active MCP request is never auto-killed only because it is old or temporarily idle. It is flagged as suspect; automatic socket cleanup requires no active request plus repeated idle confirmation.", "muted"));
+    }
+
     function renderOptionalTools(status) {
       const panel = $("#optional-tools-panel"), root = $("#optional-tools");
       root.replaceChildren();
@@ -312,7 +349,7 @@
       try {
         const first = !state.status; state.status = await api("/api/status");
         const overall = state.status.overall; $("#overall-dot").className = `dot ${overall.color}`; $("#overall-label").textContent = overall.label; $("#maintenance-chip").hidden = !state.status.maintenanceMode;
-        renderOverview(state.status); renderOptionalTools(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
+        renderOverview(state.status); renderConnections(state.status); renderOptionalTools(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
       } catch (error) { toast(error.message, true); }
     }
 

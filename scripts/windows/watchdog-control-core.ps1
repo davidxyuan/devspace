@@ -1020,7 +1020,7 @@ function New-WatchdogDisabledHealth([string]$Service, [int]$Port) {
     return [pscustomobject][ordered]@{
         service=$Service; enabled=$false; healthy=$true; processFound=$false; listenerFound=$false
         identityConflict=$false; busyIndeterminate=$false; pid=$null; port=$Port; uptimeSeconds=$null
-        httpReachable=$false; protocolHealthy=$false; error=""; detail="disabled"
+        httpReachable=$false; protocolHealthy=$false; error=""; detail="disabled"; connections=$null
     }
 }
 
@@ -1032,6 +1032,7 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
     $protocolHealthy = $false
     $detail = ""
     $probeError = ""
+    $connectionMetrics = $null
     if ($layer.listenerFound -and -not $layer.identityConflict) {
         switch ($Service) {
             "devspace" {
@@ -1055,6 +1056,7 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $httpReachable = $routerProbe.httpReachable
                 $protocolHealthy = $routerProbe.semanticHealthy
                 $detail = "router_status=$($routerProbe.semanticHealthy)"
+                $connectionMetrics = if ($routerProbe.json) { Get-WatchdogProperty $routerProbe.json "connections" $null } else { $null }
                 $probeError = $routerProbe.error
             }
             "ngrok" {
@@ -1087,7 +1089,7 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
     return [pscustomobject][ordered]@{
         service=$Service; enabled=$true; healthy=[bool]$healthy; processFound=[bool]$layer.processFound; listenerFound=[bool]$layer.listenerFound
         identityConflict=[bool]$layer.identityConflict; busyIndeterminate=[bool]$busy; pid=$layer.pid; port=$port; uptimeSeconds=$layer.uptimeSeconds
-        httpReachable=[bool]$httpReachable; protocolHealthy=[bool]$protocolHealthy; error=(Protect-WatchdogText $error); detail=$detail
+        httpReachable=[bool]$httpReachable; protocolHealthy=[bool]$protocolHealthy; error=(Protect-WatchdogText $error); detail=$detail; connections=$connectionMetrics
     }
 }
 

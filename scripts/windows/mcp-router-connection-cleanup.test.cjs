@@ -21,6 +21,21 @@ function getFreePort() {
   return listen(server).then((port) => new Promise((resolve) => server.close(() => resolve(port))));
 }
 
+function readRouterStatus(port) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/__router/status" }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        try { resolve(JSON.parse(body)); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.on("error", reject);
+  });
+}
+
 function waitForRouter(port, deadlineMs = 5000) {
   const deadline = Date.now() + deadlineMs;
   return new Promise((resolve, reject) => {
@@ -81,9 +96,14 @@ async function main() {
         port: routerPort,
         path: "/cleanup-test/devspace_chatgpt/mcp",
       }, (res) => {
-        res.once("data", () => {
-          res.destroy();
-          resolve();
+        res.once("data", async () => {
+          try {
+            const live = await readRouterStatus(routerPort);
+            assert.equal(live.connections.services.devspace.activeRequests, 1, "active DevSpace request was not counted");
+            assert.equal(live.connections.level, "GREEN", "single healthy request should not warn");
+            res.destroy();
+            resolve();
+          } catch (error) { reject(error); }
         });
       });
       req.once("error", reject);
@@ -93,8 +113,12 @@ async function main() {
       backendRequestClosed,
       new Promise((_, reject) => setTimeout(() => reject(new Error("upstream request remained open after client disconnect")), 2000)),
     ]);
+    const cleaned = await readRouterStatus(routerPort);
+    assert.equal(cleaned.connections.services.devspace.activeRequests, 0, "closed DevSpace request remained active");
+    assert.ok(cleaned.connections.cleanup.upstreamsDestroyed >= 1, "cleanup counter did not record destroyed upstream");
+    assert.equal(cleaned.connections.thresholds.idleSocketConfirmations, 2, "idle socket cleanup must require repeated confirmation");
     assert.equal(child.exitCode, null, `router exited unexpectedly: ${stderr}`);
-    console.log("PASS: MCP router closes upstream when the client disconnects.");
+    console.log("PASS: MCP router closes upstream on disconnect and reports connection telemetry.");
   } finally {
     child.kill();
     await new Promise((resolve) => backend.close(resolve));
