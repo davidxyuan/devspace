@@ -286,6 +286,12 @@ try {
     Assert-Contains "installer deploys native launcher" $installerSource 'devspace-watchdog-tray-launcher.exe'
     Assert-Contains "native launcher uses CreateNoWindow" $nativeLauncherSource 'CreateNoWindow = true'
     Assert-Contains "native launcher hides child window" $nativeLauncherSource 'WindowStyle = ProcessWindowStyle.Hidden'
+    Assert-Contains "native launcher detects stale heartbeat" $nativeLauncherSource 'FreshHeartbeatSeconds'
+    Assert-Contains "native launcher validates exact Tray process" $nativeLauncherSource 'IsExactTrayProcess'
+    Assert-Contains "native launcher recovers stale Tray" $nativeLauncherSource 'RecoverStaleTrayIfNeeded'
+    Assert-Contains "Tray opens dashboard through child rundll32" $traySource 'url.dll,FileProtocolHandler'
+    Assert-Contains "Tray shell target avoids UseShellExecute" $traySource '$psi.UseShellExecute = $false'
+    Assert-True "Tray dashboard opener avoids shell-bound URL ProcessStart" (-not $traySource.Contains('$psi.FileName = "http://127.0.0.1:'))
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'
     Assert-True "installer disables task only after readiness check" ($installerSource.IndexOf('if (-not $ready)') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))

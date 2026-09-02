@@ -566,18 +566,24 @@ function Invoke-PendingDashboardRequest {
     } finally { $client.Dispose() }
 }
 
-function Open-ControlDashboard {
+function Start-ControlShellTarget([string]$Executable, [string[]]$Arguments) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "http://127.0.0.1:$($script:settings.dashboardPort)/"
-    $psi.UseShellExecute = $true
-    [void][System.Diagnostics.Process]::Start($psi)
+    $psi.FileName = $Executable
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.Arguments = (@($Arguments) | ForEach-Object { ConvertTo-WatchdogNativeArgument ([string]$_) }) -join " "
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if ($process) { $process.Dispose() }
+}
+
+function Open-ControlDashboard {
+    $url = "http://127.0.0.1:$($script:settings.dashboardPort)/"
+    Start-ControlShellTarget (Join-Path $env:WINDIR "System32\rundll32.exe") @("url.dll,FileProtocolHandler", $url)
 }
 
 function Open-ControlLogs {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $script:stateDir
-    $psi.UseShellExecute = $true
-    [void][System.Diagnostics.Process]::Start($psi)
+    Start-ControlShellTarget (Join-Path $env:WINDIR "explorer.exe") @($script:stateDir)
 }
 
 if (-not [System.IO.File]::Exists($script:templatePath)) { throw "Dashboard template is missing: $($script:templatePath)" }
