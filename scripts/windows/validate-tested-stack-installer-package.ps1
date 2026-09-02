@@ -24,6 +24,7 @@ $required = @(
     "watchdog-control-core.ps1",
     "devspace-watchdog-tray.ps1",
     "devspace-control-center.html",
+    "devspace-watchdog-tray-launcher.exe",
     "run-devspace-watchdog-tray-hidden.vbs",
     "install-devspace-watchdog-tray.ps1",
     "uninstall-devspace-watchdog-tray.ps1",

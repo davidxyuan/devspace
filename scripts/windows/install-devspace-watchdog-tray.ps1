@@ -15,6 +15,7 @@ $files = @(
     "watchdog-control-core.ps1",
     "devspace-watchdog-tray.ps1",
     "devspace-control-center.html",
+    "devspace-watchdog-tray-launcher.exe",
     "run-devspace-watchdog-tray-hidden.vbs",
     "uninstall-devspace-watchdog-tray.ps1",
     "restore-old-watchdog.ps1"

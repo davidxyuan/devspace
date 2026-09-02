@@ -249,6 +249,8 @@ try {
     $dashboardSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-control-center.html"), [System.Text.Encoding]::UTF8)
     $installerSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1"), [System.Text.Encoding]::UTF8)
     $launcherSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "run-devspace-watchdog-tray-hidden.vbs"), [System.Text.Encoding]::UTF8)
+    $nativeLauncherSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray-launcher.cs"), [System.Text.Encoding]::UTF8)
+    Assert-True "native launcher binary exists" ([System.IO.File]::Exists((Join-Path $PSScriptRoot "devspace-watchdog-tray-launcher.exe")))
     Assert-Contains "dashboard binds loopback" $traySource '[System.Net.IPAddress]::Loopback'
     Assert-True "dashboard does not bind all interfaces" (-not $traySource.Contains("0.0.0.0"))
     Assert-Contains "dashboard checks Origin" $traySource 'Invalid Origin header.'
@@ -274,8 +276,12 @@ try {
     [System.IO.File]::WriteAllText($javascriptPath, $scriptMatch.Groups[1].Value, (New-Object System.Text.UTF8Encoding($false)))
     & node.exe --check $javascriptPath
     if ($LASTEXITCODE -ne 0) { throw "dashboard JavaScript syntax validation failed." }
-    Assert-Contains "launcher uses STA" $launcherSource '-STA'
-    Assert-Contains "launcher hides PowerShell" $launcherSource 'shell.Run command, 0, False'
+    Assert-Contains "launcher delegates to native WinExe" $launcherSource 'devspace-watchdog-tray-launcher.exe'
+    Assert-True "launcher no longer starts PowerShell directly" (-not $launcherSource.Contains('powershell.exe'))
+    Assert-Contains "launcher starts native process hidden" $launcherSource 'shell.Run command, 0, False'
+    Assert-Contains "installer deploys native launcher" $installerSource 'devspace-watchdog-tray-launcher.exe'
+    Assert-Contains "native launcher uses CreateNoWindow" $nativeLauncherSource 'CreateNoWindow = true'
+    Assert-Contains "native launcher hides child window" $nativeLauncherSource 'WindowStyle = ProcessWindowStyle.Hidden'
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'
     Assert-True "installer disables task only after readiness check" ($installerSource.IndexOf('if (-not $ready)') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))

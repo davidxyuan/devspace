@@ -34,7 +34,7 @@ if (-not [System.IO.File]::Exists($recordPath)) { throw "Tray install record is 
 $record = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 if ([System.IO.Path]::GetFullPath([string]$record.installDir) -ne $InstallDir) { throw "Tray install record targets another directory." }
 if ([string]$record.runName -notmatch '^DevSpaceWatchdogTray-[a-f0-9]{12}$') { throw "Tray install record has an invalid Run value name." }
-$allowedFiles = @("watchdog-control-core.ps1","devspace-watchdog-tray.ps1","devspace-control-center.html","run-devspace-watchdog-tray-hidden.vbs","uninstall-devspace-watchdog-tray.ps1","restore-old-watchdog.ps1")
+$allowedFiles = @("watchdog-control-core.ps1","devspace-watchdog-tray.ps1","devspace-control-center.html","devspace-watchdog-tray-launcher.exe","run-devspace-watchdog-tray-hidden.vbs","uninstall-devspace-watchdog-tray.ps1","restore-old-watchdog.ps1")
 foreach ($item in @($record.installedFiles) + @($record.overwrittenFiles)) {
     if ([string]$item.name -notin $allowedFiles -or [System.IO.Path]::GetFileName([string]$item.name) -ne [string]$item.name) { throw "Tray install record contains an unsupported file target." }
 }
