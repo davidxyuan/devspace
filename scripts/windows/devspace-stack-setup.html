@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DevSpace Stack Setup</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b111b;--panel:#151e2d;--panel2:#1c293d;--text:#eef4fc;--muted:#a7b4c6;--line:#2b3a52;--accent:#69a9ff;--green:#2bb673;--yellow:#f4b400;--red:#e05260}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at top right,#1a2d4c,#0b111b 42%);color:var(--text);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+    header{padding:1.2rem clamp(1rem,4vw,3rem);border-bottom:1px solid var(--line);background:rgba(11,17,27,.9)} h1,h2{margin:0} h1{font-size:1.35rem} h2{font-size:1.05rem;margin-bottom:.8rem}
+    main{max-width:1180px;margin:auto;padding:1rem clamp(1rem,4vw,3rem) 3rem}.panel{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:1rem;margin-bottom:1rem;box-shadow:0 12px 34px rgba(0,0,0,.2)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}.status{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:999px;padding:.35rem .7rem;background:#101827}.dot{width:.68rem;height:.68rem;border-radius:50%;background:#7d8590}.dot.green{background:var(--green)}.dot.yellow{background:var(--yellow)}.dot.red{background:var(--red)}
+    label{display:grid;gap:.38rem;color:var(--muted)}input,select,button{font:inherit}input,select{width:100%;padding:.62rem .7rem;border:1px solid var(--line);border-radius:8px;background:#0e1624;color:var(--text)} input[type=checkbox]{width:auto}.check{display:flex;gap:.55rem;align-items:center;color:var(--text)}button{padding:.62rem .9rem;border:1px solid var(--line);border-radius:8px;background:#243650;color:var(--text);cursor:pointer}button.primary{background:#1762b9;border-color:#438fe7}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;gap:.6rem;flex-wrap:wrap}.muted{color:var(--muted)}.warning{color:#ffd166}.error{color:#ff8f99}pre{white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;background:#080d15;border:1px solid var(--line);border-radius:8px;padding:.8rem}dl{display:grid;grid-template-columns:max-content 1fr;gap:.35rem .8rem}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}.secret-note{border-left:4px solid var(--accent);padding-left:.8rem}.hidden{display:none!important}
+  </style>
+</head>
+<body>
+<header><h1>DevSpace Stack Setup</h1><div class="muted">New install / existing stack update · current-user friendly</div></header>
+<main>
+  <section class="panel"><div class="status"><span class="chip"><span id="state-dot" class="dot"></span><span id="state-label">Checking</span></span><span id="version" class="chip">Package —</span><span id="tray-state" class="chip">Tray —</span></div><dl id="summary"></dl></section>
+  <form id="setup-form" class="panel">
+    <h2>1. Components & Tray</h2>
+    <div class="grid">
+      <label class="check"><input name="installDevspace" type="checkbox"> Install / update DevSpace ChatGPT</label>
+      <label class="check"><input name="installHermes" type="checkbox"> Install / configure Hermes ChatGPT</label>
+      <label class="check"><input name="installTray" type="checkbox"> Install Watchdog Tray + login autostart</label>
+      <label class="check"><input name="userMode" type="checkbox"> User Mode (no Administrator)</label>
+      <label class="check"><input name="noLegacyPoller" type="checkbox"> Tray-only (no 1-minute legacy poller)</label>
+      <label class="check"><input name="installTools" type="checkbox"> Auto-install missing tools when possible</label>
+      <label class="check"><input name="updatePackageFromGithub" type="checkbox"> Update DevSpace package from GitHub first</label>
+      <label class="check"><input name="updateHermesSource" type="checkbox"> Update existing Hermes source (clean repo only)</label>
+    </div>
+    <p class="muted">Company PCs: recommended = User Mode + Tray + Tray-only. It uses HKCU login autostart and does not create the old per-minute poller.</p>
+
+    <h2>2. Machine & access</h2>
+    <div class="grid">
+      <label>Computer / Station Name<input name="machineName" required></label>
+      <label>Allowed project roots<input name="allowedRoots" placeholder="D:\\;H:\\project or D:\\projects;H:\\data"></label>
+      <label>Hermes directory<input name="hermesDir"></label>
+      <label class="check"><input name="fullAccess" type="checkbox"> Full filesystem access (advanced)</label>
+    </div>
+
+    <h2>3. ngrok & endpoint</h2>
+    <div class="grid">
+      <label>Endpoint Mode<select name="endpointMode"><option value="AgentEndpoint">Agent Endpoint</option><option value="CloudEndpoint">Cloud Endpoint</option></select></label>
+      <label>ngrok / Public Domain<input name="publicDomain" type="url" placeholder="https://machine.ngrok-free.dev" required></label>
+      <label id="internal-label">Internal Agent Endpoint<input name="internalAgentEndpoint" type="url" placeholder="https://machine-devspace.internal"></label>
+      <label>ngrok Authtoken<input name="ngrokAuthToken" type="password" autocomplete="new-password" placeholder="Blank = keep current token"></label>
+      <label>DevSpace Owner Token<input name="devspaceOwnerToken" type="password" autocomplete="new-password" placeholder="Blank = keep/generate automatically"></label>
+    </div>
+    <p class="secret-note muted">Secrets are sent only to this localhost setup process and passed to the installer through child-process environment variables. They are not stored in this Dashboard configuration or shown in the command line.</p>
+    <p id="cloud-note" class="warning hidden">Cloud Endpoint mode configures the local stack and generates the Traffic Policy. Creating/updating the ngrok Cloud Endpoint resource itself still requires an ngrok API credential or a one-time Dashboard action.</p>
+    <div class="actions"><button id="apply" class="primary" type="submit">Install / Update</button><button id="refresh" type="button">Refresh detection</button></div>
+  </form>
+  <section class="panel"><h2>Installation / update progress</h2><div id="job-state" class="muted">No active job.</div><pre id="job-log">—</pre></section>
+</main>
+<script>
+"use strict";
+const setupToken="{{SETUP_TOKEN}}"; let detected=null, activeJob=null, pollTimer=null;
+const $=(s)=>document.querySelector(s);
+function addDl(root,key,value){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=key;dd.textContent=String(value??"—");root.append(dt,dd)}
+async function api(path,options={}){const init={cache:"no-store",...options,headers:{...(options.headers||{})}};if(init.method==="POST"){init.headers["Content-Type"]="application/json";init.headers["X-DevSpace-Setup-Token"]=setupToken}const r=await fetch(path,init);const p=await r.json();if(!r.ok)throw new Error(p.error||`HTTP ${r.status}`);return p}
+function toggleCloud(){const cloud=$("[name=endpointMode]").value==="CloudEndpoint";$("#internal-label").classList.toggle("hidden",!cloud);$("#cloud-note").classList.toggle("hidden",!cloud);$("[name=internalAgentEndpoint]").required=cloud}
+function fill(status){detected=status;const d=status.defaults||{};const f=$("#setup-form").elements;for(const k of ["machineName","publicDomain","internalAgentEndpoint","allowedRoots","hermesDir"])if(f[k])f[k].value=d[k]||"";for(const k of ["installDevspace","installHermes","installTray","installTools","userMode","noLegacyPoller","updatePackageFromGithub","updateHermesSource"])if(f[k])f[k].checked=Boolean(d[k]);f.endpointMode.value=d.endpointMode||"AgentEndpoint";f.fullAccess.checked=false;toggleCloud();const state=status.state;$("#state-label").textContent=state;$("#state-dot").className=`dot ${state==="Existing"?"green":state==="Fresh"?"yellow":"red"}`;$("#version").textContent=`Package ${status.packageVersion}`;$("#tray-state").textContent=`Tray ${status.tray?.running?"Running":status.tray?.installed?"Installed":"Not installed"}`;const root=$("#summary");root.replaceChildren();addDl(root,"Install directory",status.installDir);addDl(root,"Package runtime",status.packageCliReady?"Ready":"dist/cli.js missing");addDl(root,"Legacy poller",status.legacyPollerQuiesced?"Quiesced":"Not quiesced / not detected");if(status.tray?.dashboard)addDl(root,"Operational Dashboard",status.tray.dashboard)}
+async function refresh(){try{fill(await api("/api/status"));if(detected.activeJobId){activeJob=detected.activeJobId;startPolling()}}catch(e){alert(e.message)}}
+function readForm(){const f=$("#setup-form").elements;return{installDevspace:f.installDevspace.checked,installHermes:f.installHermes.checked,installTray:f.installTray.checked,userMode:f.userMode.checked,noLegacyPoller:f.noLegacyPoller.checked,installTools:f.installTools.checked,updatePackageFromGithub:f.updatePackageFromGithub.checked,updateHermesSource:f.updateHermesSource.checked,fullAccess:f.fullAccess.checked,machineName:f.machineName.value.trim(),allowedRoots:f.allowedRoots.value.trim(),hermesDir:f.hermesDir.value.trim(),endpointMode:f.endpointMode.value,publicDomain:f.publicDomain.value.trim(),internalAgentEndpoint:f.internalAgentEndpoint.value.trim(),ngrokAuthToken:f.ngrokAuthToken.value,devspaceOwnerToken:f.devspaceOwnerToken.value}}
+async function apply(event){event.preventDefault();if(!confirm("Apply this install/update configuration? Managed MCP services may reconnect during the operation."))return;$("#apply").disabled=true;try{const r=await api("/api/apply",{method:"POST",body:JSON.stringify(readForm())});activeJob=r.jobId;$("[name=ngrokAuthToken]").value="";$("[name=devspaceOwnerToken]").value="";startPolling()}catch(e){alert(e.message);$("#apply").disabled=false}}
+function startPolling(){clearInterval(pollTimer);pollJob();pollTimer=setInterval(pollJob,1200)}
+async function pollJob(){if(!activeJob)return;try{const j=await api(`/api/job?id=${encodeURIComponent(activeJob)}`);$("#job-state").textContent=`${j.phase} · started ${new Date(j.startedAt).toLocaleString()}`;$("#job-log").textContent=(j.lines||[]).map(x=>`[${new Date(x.timestamp).toLocaleTimeString()}] ${x.text}`).join("\n")||"Waiting for output…";$("#job-log").scrollTop=$("#job-log").scrollHeight;if(j.phase!=="running"){clearInterval(pollTimer);pollTimer=null;$("#apply").disabled=false;activeJob=null;await refresh()}}catch(e){$("#job-state").textContent=e.message}}
+$("#setup-form").addEventListener("submit",apply);$("#refresh").addEventListener("click",refresh);$("[name=endpointMode]").addEventListener("change",toggleCloud);$("[name=installTray]").addEventListener("change",()=>{if(!$("[name=installTray]").checked)$("[name=noLegacyPoller]").checked=false});refresh();
+</script>
+</body>
+</html>

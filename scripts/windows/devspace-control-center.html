@@ -75,6 +75,7 @@
     <button role="tab" aria-selected="false" data-tab="control">Control</button>
     <button role="tab" aria-selected="false" data-tab="network">Network &amp; MCP</button>
     <button role="tab" aria-selected="false" data-tab="ngrok">ngrok Setup</button>
+    <button role="tab" aria-selected="false" data-tab="setup">Setup &amp; Update</button>
     <button role="tab" aria-selected="false" data-tab="logs">Logs &amp; Recovery</button>
   </nav>
 
@@ -141,6 +142,15 @@
         </div>
       </div>
       <div class="panel"><h2>Credential policy</h2><p>No ngrok API key is stored by this Control Center. The first release generates Traffic Policy and guides the dashboard action, then applies the validated local configuration.</p></div>
+    </section>
+
+    <section id="tab-setup" role="tabpanel" hidden>
+      <div class="panel">
+        <h2>Install, update, or reconfigure this machine</h2>
+        <p>Open the full Setup Dashboard to choose Tray installation, DevSpace/Hermes components, User Mode, machine name, allowed roots, Agent/Cloud Endpoint, ngrok domain, and credentials.</p>
+        <p class="muted">The Setup Dashboard runs only on localhost. Secrets are not placed in command-line arguments. On standard-user company PCs, choose User Mode + Tray-only to avoid the legacy per-minute Scheduled Task.</p>
+        <div class="actions"><button id="open-setup-dashboard" class="primary" type="button">Open Setup &amp; Update</button></div>
+      </div>
     </section>
 
     <section id="tab-logs" role="tabpanel" hidden>
@@ -432,6 +442,12 @@
     $("#copy-policy").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#traffic-policy").textContent); toast("Traffic Policy copied."); } catch { toast("Clipboard unavailable; select and copy the policy manually.", true); } });
     $("#open-ngrok").addEventListener("click", () => window.open("https://dashboard.ngrok.com/", "_blank", "noopener,noreferrer"));
     $("#refresh-history").addEventListener("click", refreshHistory);
+    $("#open-setup-dashboard").addEventListener("click", async () => {
+      try {
+        await api("/api/setup/launch", { method:"POST", body:"{}" });
+        toast("Setup & Update Dashboard launched.");
+      } catch (error) { toast(error.message, true); }
+    });
     refreshStatus(); setInterval(refreshStatus, 5000);
   </script>
 </body>

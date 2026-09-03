@@ -265,6 +265,8 @@ try {
     Assert-Contains "dashboard has Control" $dashboardSource 'data-tab="control"'
     Assert-Contains "dashboard has Network and MCP" $dashboardSource 'data-tab="network"'
     Assert-Contains "dashboard has ngrok Setup" $dashboardSource 'data-tab="ngrok"'
+    Assert-Contains "dashboard has Setup and Update" $dashboardSource 'data-tab="setup"'
+    Assert-Contains "dashboard launches bootstrap setup" $dashboardSource '/api/setup/launch'
     Assert-Contains "dashboard has Logs and Recovery" $dashboardSource 'data-tab="logs"'
     Assert-Contains "dashboard has optional tools" $dashboardSource 'id="optional-tools-panel"'
     Assert-Contains "dashboard supports OpenCodex Tray repair" $dashboardSource '/api/optional/repair'
@@ -300,6 +302,13 @@ try {
     Assert-True "installer disables task only after readiness check" ($installerSource.IndexOf('if (-not $ready)') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))
     Assert-Contains "installer refuses unverified skip-start migration" $installerSource 'Tray migration cannot use -SkipStart'
+    $stackInstallerSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-devspace-watchdog.ps1"), [System.Text.Encoding]::UTF8)
+    Assert-Contains "stack installer supports Tray-only mode" $stackInstallerSource '[switch]$NoLegacyPoller'
+    Assert-Contains "stack installer accepts owner token via environment" $stackInstallerSource '$env:DEVSPACE_OWNER_TOKEN'
+    Assert-Contains "Tray-only mode uses disable marker" $stackInstallerSource 'legacy-watchdog-poller.disabled'
+    $trayOnlyOnceIndex = $stackInstallerSource.IndexOf('& (Join-Path $InstallDir "devspace-watchdog.ps1") -Once')
+    $trayOnlyMarkerWriteIndex = $stackInstallerSource.IndexOf('[System.IO.File]::WriteAllText($legacyPollerDisableMarker')
+    Assert-True "Tray-only initial service start precedes disable marker" ($trayOnlyOnceIndex -ge 0 -and $trayOnlyMarkerWriteIndex -gt $trayOnlyOnceIndex)
     Assert-Contains "installer verifies exact PowerShell executable" $installerSource 'Test-WatchdogExecutablePath'
 
     Write-Host "watchdog control core, persistence, recovery, impact, security, backup, Tray, and installer tests passed."

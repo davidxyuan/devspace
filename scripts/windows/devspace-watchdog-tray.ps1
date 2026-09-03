@@ -506,6 +506,29 @@ function Write-ControlJson($Stream, [int]$Status, $Value) {
     Write-LoopbackHttpResponse $Stream $Status "application/json; charset=utf-8" ($Value | ConvertTo-Json -Depth 30 -Compress)
 }
 
+function Invoke-SetupDashboardLaunch {
+    $nodePath = [string](Get-WatchdogProperty $script:config "nodePath" "")
+    $cliPath = [string](Get-WatchdogProperty $script:config "cliPath" "")
+    if (-not $nodePath -or -not [System.IO.File]::Exists($nodePath)) { throw "Configured Node runtime is missing." }
+    if (-not $cliPath -or -not [System.IO.File]::Exists($cliPath)) { throw "Configured DevSpace CLI path is missing." }
+    $packageRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path $cliPath -Parent) ".."))
+    $setupScript = Join-Path $packageRoot "scripts\windows\devspace-stack-setup.cjs"
+    if (-not [System.IO.File]::Exists($setupScript)) { throw "This DevSpace package does not include the Setup Dashboard. Update the npm/GitHub package first." }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $nodePath
+    $psi.Arguments = ConvertTo-WatchdogNativeArgument $setupScript
+    $psi.WorkingDirectory = $packageRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if (-not $process) { throw "Setup Dashboard process did not start." }
+    $pid = $process.Id
+    $process.Dispose()
+    Write-WatchdogEvent $script:stateDir $script:config "setup" "launch" "user request" "open setup dashboard" "pid=$pid"
+    return [pscustomobject]@{ success=$true; pid=$pid }
+}
+
 function Assert-ControlMutation($Request) {
     $expectedOrigin = "http://127.0.0.1:$($script:settings.dashboardPort)"
     if ($Request.method -ne "POST") { throw "Mutation requires POST." }
@@ -541,6 +564,9 @@ function Invoke-ControlHttpRequest($Request) {
             "/api/optional/repair" {
                 $tool = [string](Get-WatchdogProperty $payload "tool" "")
                 Write-ControlJson $Request.stream 200 (Invoke-OptionalToolRepair $tool)
+            }
+            "/api/setup/launch" {
+                Write-ControlJson $Request.stream 200 (Invoke-SetupDashboardLaunch)
             }
             "/api/config/preview" {
                 $editable = ConvertTo-WatchdogEditableConfig (Get-WatchdogProperty $payload "config" $null) $script:config

@@ -41,6 +41,9 @@ async function main(argv) {
         case "agents":
             await runAgentsCommand(args);
             return;
+        case "stack":
+            await runStackSetup(args);
+            return;
         case "help":
             printHelp();
             return;
@@ -52,7 +55,7 @@ async function main(argv) {
 function normalizeCommand(command) {
     if (!command || command === "serve" || command === "start")
         return "serve";
-    if (command === "init" || command === "doctor" || command === "config" || command === "agents")
+    if (command === "init" || command === "doctor" || command === "config" || command === "agents" || command === "stack")
         return command;
     if (command === "help" || command === "--help" || command === "-h")
         return "help";
@@ -239,6 +242,24 @@ function runConfigCommand(args) {
     });
     console.log(`Updated ${files.configPath}`);
 }
+async function runStackSetup(args) {
+    if (process.platform !== "win32") {
+        throw new Error("`devspace stack` currently supports Windows only.");
+    }
+    const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+    const setupScript = join(packageRoot, "scripts", "windows", "devspace-stack-setup.cjs");
+    const child = spawn(process.execPath, [setupScript, ...args], {
+        cwd: packageRoot,
+        stdio: "inherit",
+        windowsHide: true,
+    });
+    const exitCode = await new Promise((resolveExit, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code) => resolveExit(code ?? 1));
+    });
+    if (exitCode !== 0)
+        process.exitCode = exitCode;
+}
 function printHelp() {
     console.log([
         "DevSpace",
@@ -253,6 +274,7 @@ function printHelp() {
         "  devspace agents ls       List subagent sessions",
         "  devspace agents run <profile-or-provider-or-id> [--model <model>] <prompt>",
         "  devspace agents show <id>",
+        "  devspace stack           Open the Windows Stack Setup / Update Dashboard",
         "  devspace -v, --version   Print the installed version",
         "",
         "For temporary tunnels:",

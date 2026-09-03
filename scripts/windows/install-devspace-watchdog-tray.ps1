@@ -136,6 +136,7 @@ $installed = @()
 $configBackups = @()
 $runChanged = $false
 $taskDisabled = $false
+$taskQuiesced = $false
 
 try {
     if (-not $PSCmdlet.ShouldProcess($InstallDir, "install and start DevSpace Watchdog Tray")) { return }
@@ -222,8 +223,15 @@ try {
         }
         if (-not $ready) { throw "Tray did not produce a fresh heartbeat, loopback dashboard, and service-management state within $StartupTimeoutSeconds seconds." }
         if ($legacyTask) {
-            Disable-ScheduledTask -TaskName $legacyName | Out-Null
-            $taskDisabled = $true
+            try {
+                Disable-ScheduledTask -TaskName $legacyName -ErrorAction Stop | Out-Null
+                $taskDisabled = $true
+            } catch {
+                $marker = Join-Path $InstallDir "legacy-watchdog-poller.disabled"
+                [System.IO.File]::WriteAllText($marker, "Tray healthy; legacy task ACL prevented disable at $([DateTimeOffset]::UtcNow.ToString('o'))" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
+                $taskQuiesced = $true
+                Write-Warning "Legacy task '$legacyName' could not be disabled with current-user permissions. It has been logically quiesced by $marker."
+            }
         }
     }
 
@@ -232,7 +240,7 @@ try {
     Write-Host "Autostart: $runName"
     Write-Host "Dashboard: http://127.0.0.1:$($settings.dashboardPort)/"
     Write-Host "Recovery backup: $backupPath"
-    if ($legacyTask) { Write-Host "Legacy watchdog task: $(if ($taskDisabled) { 'disabled after tray readiness' } else { 'unchanged' }) ($legacyName)" }
+    if ($legacyTask) { Write-Host "Legacy watchdog task: $(if ($taskDisabled) { 'disabled after tray readiness' } elseif ($taskQuiesced) { 'logically quiesced; ACL prevents disable' } else { 'unchanged' }) ($legacyName)" }
 } catch {
     $failure = $_
     if ($legacyWasEnabled -and $legacyName) { Enable-ScheduledTask -TaskName $legacyName -ErrorAction SilentlyContinue | Out-Null }

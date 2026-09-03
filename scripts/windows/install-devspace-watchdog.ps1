@@ -34,6 +34,7 @@ param(
     [switch]$SkipNgrok,
     [switch]$SkipStart,
     [switch]$InstallWatchdogTray,
+    [switch]$NoLegacyPoller,
     [switch]$UserMode,
     [switch]$NoElevate,
     [ValidateSet("minimal", "full", "codex")][string]$DevSpaceToolMode = "minimal",
@@ -418,7 +419,13 @@ Restart-ElevatedIfNeeded
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 if ($InstallWatchdogTray -and $SkipStart) {
-    Fail "-InstallWatchdogTray cannot be combined with -SkipStart." "Run the opt-in Tray migration only when it may start the Tray, prove readiness, and then disable the legacy task."
+    Fail "-InstallWatchdogTray cannot be combined with -SkipStart." "Run the opt-in Tray migration only when it may start the Tray and prove readiness."
+}
+if ($NoLegacyPoller -and -not $InstallWatchdogTray) {
+    Fail "-NoLegacyPoller requires -InstallWatchdogTray." "Tray-only mode needs the persistent Tray to own monitoring and recovery."
+}
+if ($NoLegacyPoller -and -not ($UserMode -or $NoElevate)) {
+    Fail "-NoLegacyPoller is intended for UserMode/NoElevate installs." "Use -UserMode -InstallWatchdogTray -NoLegacyPoller on standard-user company PCs."
 }
 $HermesDir = [System.IO.Path]::GetFullPath($HermesDir)
 $componentList = Get-ComponentList
@@ -611,7 +618,7 @@ if ($installDevSpace) {
     }
     Write-JsonFile $configPath $devspaceConfig 4
 
-    $ownerToken = [string]$existingAuth.ownerToken
+    $ownerToken = if ($env:DEVSPACE_OWNER_TOKEN) { [string]$env:DEVSPACE_OWNER_TOKEN } else { [string]$existingAuth.ownerToken }
     if (-not $ownerToken) {
         $ownerToken = New-OwnerToken
     }
@@ -796,78 +803,63 @@ $legacyTaskName = "DevSpaceNgrokWatchdog"
 $taskName = if ($UserMode -or $NoElevate) { "DevSpaceNgrokWatchdogUserPoller" } else { "DevSpaceNgrokWatchdogPoller" }
 $runLevel = if ($UserMode -or $NoElevate) { "Limited" } else { "Highest" }
 $modeName = if ($UserMode -or $NoElevate) { "standard user" } else { "administrator" }
-foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
-    Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
-}
-
-$taskActionSpec = Get-DevSpaceWatchdogTaskActionSpec `
-    -TaskLauncher $TaskLauncher `
-    -InstallDir $InstallDir
+$taskActionSpec = Get-DevSpaceWatchdogTaskActionSpec -TaskLauncher $TaskLauncher -InstallDir $InstallDir
 $taskCommand = $taskActionSpec.TaskCommand
-$action = New-ScheduledTaskAction `
-    -Execute $taskActionSpec.Execute `
-    -Argument $taskActionSpec.Arguments
-$logonTrigger = New-ScheduledTaskTrigger -AtLogOn
-$pollTrigger = New-ScheduledTaskTrigger `
-    -Once `
-    -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 1) `
-    -RepetitionDuration (New-TimeSpan -Days 3650)
-$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
-    -MultipleInstances IgnoreNew `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -StartWhenAvailable
-$settings.Hidden = $true
-$useSchtasks = $UserMode -or $NoElevate
-if ($useSchtasks) {
-    & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "schtasks.exe failed to register $taskName." "A stale task may belong to an elevated context. Open PowerShell as Administrator, run: schtasks.exe /Delete /TN $taskName /F, then rerun the installer."
-    }
-} else {
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-        -LogonType Interactive `
-        -RunLevel ($runLevel)
-    try {
-        Register-ScheduledTask `
-            -TaskName $taskName `
-            -Action $action `
-            -Trigger @($logonTrigger, $pollTrigger) `
-            -Settings $settings `
-            -Principal $principal `
-            -Description "Runs the DevSpace watchdog every minute in the background as $modeName." `
-            -Force | Out-Null
-    } catch {
-        Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode to install a current-user task."
-    }
-}
 
-if (-not $SkipStart) {
-    try {
-        Start-ScheduledTask -TaskName $taskName
-    } catch {
-        Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or run this once: powershell.exe -ExecutionPolicy Bypass -File `"$InstallDir\devspace-watchdog.ps1`" -Once"
+if ($NoLegacyPoller) {
+    $legacyPollerDisableMarker = Join-Path $InstallDir "legacy-watchdog-poller.disabled"
+    foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
+        Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $legacyPollerDisableMarker -Force -ErrorAction SilentlyContinue
+    if (-not $SkipStart) {
+        & (Join-Path $InstallDir "devspace-watchdog.ps1") -Once -ConfigPath $watchdogConfigPath
+        if ($LASTEXITCODE -ne 0) { Fail "Initial Tray-only service start failed." "Review devspace-watchdog.log, then rerun the installer." }
+    }
+    [System.IO.File]::WriteAllText($legacyPollerDisableMarker, "Tray-only install at $([DateTimeOffset]::UtcNow.ToString('o'))" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
+} else {
+    Remove-Item -LiteralPath (Join-Path $InstallDir "legacy-watchdog-poller.disabled") -Force -ErrorAction SilentlyContinue
+    foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
+        Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    $action = New-ScheduledTaskAction -Execute $taskActionSpec.Execute -Argument $taskActionSpec.Arguments
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $pollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+    $settings.Hidden = $true
+    $useSchtasks = $UserMode -or $NoElevate
+    if ($useSchtasks) {
+        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "schtasks.exe failed to register $taskName." "Use -UserMode -InstallWatchdogTray -NoLegacyPoller on PCs where an old elevated task cannot be replaced."
+        }
+    } else {
+        $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel ($runLevel)
+        try {
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $pollTrigger) -Settings $settings -Principal $principal -Description "Runs the DevSpace watchdog every minute in the background as $modeName." -Force | Out-Null
+        } catch {
+            Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode -InstallWatchdogTray -NoLegacyPoller."
+        }
+    }
+    if (-not $SkipStart) {
+        try { Start-ScheduledTask -TaskName $taskName }
+        catch { Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or use Tray-only UserMode." }
     }
 }
 
 if ($InstallWatchdogTray) {
-    & (Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1") `
-        -InstallDir $InstallDir `
-        -SkipStart:$SkipStart
+    & (Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1") -InstallDir $InstallDir -SkipStart:$SkipStart
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 Write-Host "DevSpace watchdog installed."
 Write-Host "Mode: $modeName"
 Write-Host "Machine: $machineSlug"
-Write-Host "Scheduled task: $taskName"
-Write-Host "Task launcher: $($taskActionSpec.Launcher)"
-Write-Host "Task action: $taskCommand"
+Write-Host "Scheduled task: $(if ($NoLegacyPoller) { 'none (Tray-only)' } else { $taskName })"
+Write-Host "Task launcher: $(if ($NoLegacyPoller) { 'none' } else { $taskActionSpec.Launcher })"
+Write-Host "Task action: $(if ($NoLegacyPoller) { 'none' } else { $taskCommand })"
 Write-Host "Config: $configPath"
 Write-Host "ngrok endpoint mode: $NgrokEndpointMode"
 Write-Host "Public router base URL: $publicOrigin"

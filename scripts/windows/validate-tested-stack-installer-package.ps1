@@ -28,7 +28,10 @@ $required = @(
     "run-devspace-watchdog-tray-hidden.vbs",
     "install-devspace-watchdog-tray.ps1",
     "uninstall-devspace-watchdog-tray.ps1",
-    "restore-old-watchdog.ps1"
+    "restore-old-watchdog.ps1",
+    "devspace-stack-setup.cjs",
+    "devspace-stack-setup.html",
+    "devspace-stack-setup.test.cjs"
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root $_)) })
 $migrationPath = Join-Path (Split-Path $root -Parent) "migrate-oauth-json-to-sqlite.mjs"
@@ -44,6 +47,24 @@ foreach ($name in @($required | Where-Object { $_ -like "*.ps1" })) {
     if ($errors.Count) { $parseErrors += "$name`n$($errors | Out-String)" }
 }
 if ($parseErrors.Count) { throw ($parseErrors -join "`n") }
+& node.exe --check (Join-Path $root "devspace-stack-setup.cjs")
+if ($LASTEXITCODE -ne 0) { throw "devspace-stack-setup.cjs syntax validation failed." }
+$setupSource = [IO.File]::ReadAllText((Join-Path $root "devspace-stack-setup.cjs"), [Text.Encoding]::UTF8)
+foreach ($marker in @('127.0.0.1', 'x-devspace-setup-token', 'NGROK_AUTHTOKEN', 'DEVSPACE_OWNER_TOKEN', '-NoLegacyPoller')) {
+    if (-not $setupSource.Contains($marker)) { throw "Setup Dashboard bootstrap is missing required marker: $marker" }
+}
+$packageJsonPath = Join-Path (Split-Path $root -Parent | Split-Path -Parent) "package.json"
+$packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+if ([string]$packageJson.bin.'devspace-stack' -ne 'scripts/windows/devspace-stack-setup.cjs') { throw "package.json must expose the devspace-stack bootstrap bin." }
+$setupHtml = [IO.File]::ReadAllText((Join-Path $root "devspace-stack-setup.html"), [Text.Encoding]::UTF8)
+$setupScriptMatch = [regex]::Match($setupHtml.Replace("{{SETUP_TOKEN}}", "test-token"), '(?s)<script>(.*?)</script>')
+if (-not $setupScriptMatch.Success) { throw "Setup Dashboard JavaScript block is missing." }
+$tempJs = Join-Path ([IO.Path]::GetTempPath()) ("devspace-stack-setup-" + [Guid]::NewGuid().ToString("N") + ".js")
+try {
+    [IO.File]::WriteAllText($tempJs, $setupScriptMatch.Groups[1].Value, (New-Object Text.UTF8Encoding($false)))
+    & node.exe --check $tempJs
+    if ($LASTEXITCODE -ne 0) { throw "devspace-stack-setup.html JavaScript syntax validation failed." }
+} finally { Remove-Item -LiteralPath $tempJs -Force -ErrorAction SilentlyContinue }
 
 $upgrade = Get-Content (Join-Path $root "upgrade-existing-tested-stack.ps1") -Raw
 foreach ($marker in @(
