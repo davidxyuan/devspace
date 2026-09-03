@@ -3,7 +3,8 @@
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 
 function request(url, options = {}, body = "") {
   return new Promise((resolve, reject) => {
@@ -27,6 +28,14 @@ function request(url, options = {}, body = "") {
 }
 
 async function main() {
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  assert.equal(packageJson.bin?.["devspace-stack"], "scripts/windows/devspace-stack-setup.cjs");
+
+  const cliHelp = spawnSync(process.execPath, [path.join(repoRoot, "dist", "cli.js"), "help"], { encoding: "utf8" });
+  assert.equal(cliHelp.status, 0, cliHelp.stderr || "devspace help failed");
+  assert.match(cliHelp.stdout, /devspace stack\s+Open the Windows Stack Setup \/ Update Dashboard/);
+
   const script = path.join(__dirname, "devspace-stack-setup.cjs");
   const child = spawn(process.execPath, [script, "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
@@ -57,6 +66,8 @@ async function main() {
     assert.equal(htmlResponse.status, 200);
     assert.match(htmlResponse.body, /DevSpace Stack Setup/);
     assert.match(htmlResponse.body, /Install \/ Update/);
+    assert.match(htmlResponse.body, /User Mode/);
+    assert.match(htmlResponse.body, /Tray-only/);
 
     const badOrigin = await request(`${baseUrl}api/apply`, {
       method: "POST",
@@ -72,7 +83,7 @@ async function main() {
     assert.equal(badToken.status, 400);
     assert.match(badToken.body, /Invalid setup token/);
 
-    console.log("PASS: Stack Setup dashboard is loopback-readable and rejects unauthorized mutations.");
+    console.log("PASS: Stack Setup exposes npm/CLI entry points, supports User Mode/Tray-only, is loopback-readable, and rejects unauthorized mutations.");
   } finally {
     child.kill();
   }

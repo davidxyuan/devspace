@@ -74,6 +74,7 @@ async function main() {
     port: backendPort,
     routerPort,
     publicBaseUrl: "https://example.invalid/cleanup-test/devspace_chatgpt",
+    routerSuspectIdleSeconds: 1,
     mcpRoutes: [{
       name: "devspace_chatgpt_cleanup_test",
       service: "devspace",
@@ -98,9 +99,12 @@ async function main() {
       }, (res) => {
         res.once("data", async () => {
           try {
+            await new Promise((done) => setTimeout(done, 1200));
             const live = await readRouterStatus(routerPort);
             assert.equal(live.connections.services.devspace.activeRequests, 1, "active DevSpace request was not counted");
-            assert.equal(live.connections.level, "GREEN", "single healthy request should not warn");
+            assert.equal(live.connections.services.devspace.streamingRequests, 1, "GET /mcp stream was not classified separately");
+            assert.equal(live.connections.services.devspace.suspectRequests, 0, "idle GET /mcp stream was incorrectly marked suspect");
+            assert.equal(live.connections.level, "GREEN", "single healthy MCP stream should not warn");
             res.destroy();
             resolve();
           } catch (error) { reject(error); }
@@ -116,9 +120,37 @@ async function main() {
     const cleaned = await readRouterStatus(routerPort);
     assert.equal(cleaned.connections.services.devspace.activeRequests, 0, "closed DevSpace request remained active");
     assert.ok(cleaned.connections.cleanup.upstreamsDestroyed >= 1, "cleanup counter did not record destroyed upstream");
+
+    await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: "127.0.0.1",
+        port: routerPort,
+        path: "/cleanup-test/devspace_chatgpt/mcp",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      }, (res) => {
+        res.once("data", async () => {
+          try {
+            await new Promise((done) => setTimeout(done, 1200));
+            const staleWork = await readRouterStatus(routerPort);
+            assert.equal(staleWork.connections.services.devspace.activeRequests, 1, "POST work request was not counted");
+            assert.equal(staleWork.connections.services.devspace.streamingRequests, 0, "POST work request was incorrectly classified as a stream");
+            assert.equal(staleWork.connections.services.devspace.suspectRequests, 1, "idle POST work request was not marked suspect");
+            assert.equal(staleWork.connections.level, "YELLOW", "stale POST work request should warn");
+            res.destroy();
+            resolve();
+          } catch (error) { reject(error); }
+        });
+      });
+      req.once("error", reject);
+      req.end("{}");
+    });
+    await new Promise((done) => setTimeout(done, 100));
+    const postCleaned = await readRouterStatus(routerPort);
+    assert.equal(postCleaned.connections.services.devspace.activeRequests, 0, "closed POST work request remained active");
     assert.equal(cleaned.connections.thresholds.idleSocketConfirmations, 2, "idle socket cleanup must require repeated confirmation");
     assert.equal(child.exitCode, null, `router exited unexpectedly: ${stderr}`);
-    console.log("PASS: MCP router closes upstream on disconnect and reports connection telemetry.");
+    console.log("PASS: MCP router distinguishes long-lived streams, warns on stale work, and closes upstreams on disconnect.");
   } finally {
     child.kill();
     await new Promise((resolve) => backend.close(resolve));

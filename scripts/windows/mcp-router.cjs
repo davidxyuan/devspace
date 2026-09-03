@@ -38,7 +38,7 @@ if (!defaultRoute) {
 
 const connectionWarnCount = Math.max(10, Number(config.routerConnectionWarnCount || 50));
 const connectionCriticalCount = Math.max(connectionWarnCount + 1, Number(config.routerConnectionCriticalCount || 200));
-const suspectIdleMs = Math.max(60_000, Number(config.routerSuspectIdleSeconds || 300) * 1000);
+const suspectIdleMs = Math.max(1_000, Number(config.routerSuspectIdleSeconds || 300) * 1000);
 const idleSocketCleanupMs = Math.max(15_000, Number(config.routerIdleSocketCleanupSeconds || 120) * 1000);
 const cleanupSweepMs = Math.min(30_000, Math.max(5_000, Math.floor(idleSocketCleanupMs / 4)));
 const clientSockets = new Map();
@@ -71,16 +71,23 @@ function connectionSnapshot() {
   const serviceNames = Array.from(new Set(routes.map(routeService).filter(Boolean)));
   const services = Object.fromEntries(serviceNames.map((service) => [service, {
     activeRequests: 0,
+    streamingRequests: 0,
     suspectRequests: 0,
     oldestRequestSeconds: 0,
     longestIdleSeconds: 0,
+    longestStreamSeconds: 0,
   }]));
   for (const request of activeRequests.values()) {
     const service = request.service || "unknown";
-    if (!services[service]) services[service] = { activeRequests: 0, suspectRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0 };
+    if (!services[service]) services[service] = { activeRequests: 0, streamingRequests: 0, suspectRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0, longestStreamSeconds: 0 };
     const ageSeconds = Math.max(0, Math.floor((now - request.startedAt) / 1000));
     const idleSeconds = Math.max(0, Math.floor((now - request.lastActivityAt) / 1000));
     services[service].activeRequests += 1;
+    if (request.longLivedStream) {
+      services[service].streamingRequests += 1;
+      services[service].longestStreamSeconds = Math.max(services[service].longestStreamSeconds, ageSeconds);
+      continue;
+    }
     services[service].oldestRequestSeconds = Math.max(services[service].oldestRequestSeconds, ageSeconds);
     services[service].longestIdleSeconds = Math.max(services[service].longestIdleSeconds, idleSeconds);
     if (now - request.lastActivityAt >= suspectIdleMs) services[service].suspectRequests += 1;
@@ -218,6 +225,9 @@ const server = http.createServer((req, res) => {
     id: requestId,
     service,
     route: route.name,
+    method: req.method,
+    path,
+    longLivedStream: req.method === "GET" && path === "/mcp",
     startedAt: now,
     lastActivityAt: now,
     finished: false,
