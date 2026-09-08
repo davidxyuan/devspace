@@ -344,6 +344,8 @@ try {
     Assert-Contains "public probe scheduler is used by health loop" $traySource 'Test-PublicProbeDue $now'
     Assert-Contains "Host startup honors persisted public schedule" $traySource 'Start-HealthRunspace -IncludePublic:(Test-PublicProbeDue ([DateTimeOffset]::UtcNow))'
     Assert-Contains "Host restart does not discard persisted public schedule" $traySource '$script:forcePublicProbe = ($script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue)'
+    Assert-Contains "Host restart restores last successful public status without probing" $traySource 'behavior = "persisted_success"'
+    Assert-Contains "persisted public status is used only before the next scheduled probe" $traySource '[DateTimeOffset]::UtcNow -lt $script:nextPublicProbeAt'
     Assert-Contains "public probe schedule is persisted" $traySource '$record.nextProbeUtc = ConvertTo-WatchdogIso $script:nextPublicProbeAt'
     Assert-Contains "public probe timeout enters backoff" $traySource 'if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }'
     Assert-Contains "automatic recovery requests public verification" $traySource 'Request-ImmediatePublicProbe "recovery:$service"'

@@ -44,6 +44,7 @@
 - install record 已加入 `supervisorTask`，上述四個 runtime 的 installed SHA256 亦更新為 live hash；舊 rollback payload 保留。
 - 原臨時 `DevSpaceWatchdogIndependent-537d551c36c3487787285c87f89b7c85` 已在 lifecycle stop 後回到 Ready，再精確移除；正式 Supervisor 為唯一獨立 watchdog supervisor。
 - 已做登入路徑等價實測：正式 Supervisor/Host/Tray 先 lifecycle Stop，再執行 HKCU Run 使用的 `bootstrap -Mode Watch`；launcher 立即返回，由正式 Scheduled Task 重新啟動新的 Supervisor/Host/Tray。Public probe 的 persisted `nextProbeUtc` 保持 6 小時節流，沒有因 handoff 被強制重置。
+- 發現 Host restart 後雖沿用 6 小時 public probe 排程，但舊成功 probe snapshot 只存在記憶體，導致 Tray 在下一輪排程前持續顯示 `Checking public MCP`。已修正為：`consecutiveFailures=0`、`lastSuccessUtc` 合法且尚未到 `nextProbeUtc` 時，從 persisted state 還原 `persisted_success` 顯示，不新增 ngrok request。實機 Host PID `62876 -> 19652` 後 Overall 直接維持 `GREEN / Healthy`，`lastAttemptUtc=2026-09-08T11:11:37.8058935Z` 與 `nextProbeUtc=2026-09-08T17:11:37.8058935Z` 均未改變。
 - 尚未直接重開 Windows 或真正登出使用者；這兩項屬會中斷目前工作階段的 destructive durability test，仍需在可重開機的維護窗口執行。
 
 ### 仍需外部條件或另行驗證

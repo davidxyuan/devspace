@@ -128,6 +128,25 @@ if ($script:publicProbeFailureCount -eq 0) {
             $publicProbeState.nextProbeUtc = ConvertTo-WatchdogIso $minimumNextProbe
             Save-WatchdogState $script:statePath $script:state
         }
+        if ($script:nextPublicProbeAt -ne [DateTimeOffset]::MinValue -and [DateTimeOffset]::UtcNow -lt $script:nextPublicProbeAt) {
+            # Restore the last known-good public status without spending another
+            # ngrok request just because the Host process restarted.
+            $restoredProbe = [pscustomobject][ordered]@{
+                httpReachable = $true
+                protocolHealthy = $true
+                status = 0
+                behavior = "persisted_success"
+                error = ""
+                lastVerifiedUtc = ConvertTo-WatchdogIso $parsedLastSuccess
+            }
+            $script:lastPublic = [pscustomobject][ordered]@{
+                devspace = $restoredProbe
+                hermes = $restoredProbe
+                restoredFromState = $true
+                lastVerifiedUtc = ConvertTo-WatchdogIso $parsedLastSuccess
+            }
+            $script:lastPublicSignature = "True|True"
+        }
     }
 }
 # Preserve a persisted public schedule across Host restarts. Only a fresh state
