@@ -181,7 +181,14 @@ function Get-RoleProcesses([string]$HeartbeatPath) {
     $isHost = $HeartbeatPath -eq $hostHeartbeatPath
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop)) {
         $command = [string]$process.CommandLine
-        if (-not $command) { throw "Cannot verify PowerShell process $($process.ProcessId)." }
+        if (-not $command) {
+            # CIM can retain a process that exited during enumeration. Recheck
+            # existence only; a live unreadable process must still block recovery.
+            $remaining = Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue
+            if (-not $remaining) { continue }
+            $remaining.Dispose()
+            throw "Cannot verify PowerShell process $($process.ProcessId)."
+        }
         if (-not (Test-WatchdogCommandToken $command $ConfigPath)) { continue }
         $matchesHost = (Test-WatchdogCommandToken $command $hostScript) -and $command -match '(?i)(?:^|\s)(?:"-Mode"|-Mode)\s+(?:"Host"|Host)(?=$|\s)'
         $matchesTray = ((Test-WatchdogCommandToken $command $trayScript) -or ((Test-WatchdogCommandToken $command $hostScript) -and -not $matchesHost)) -and

@@ -54,7 +54,7 @@ try {
     function Get-CimInstance { return @($script:inventory | Where-Object { $script:alive }) }
     $script:childModes = @()
     function Start-HiddenWatchdogProcess { param($ScriptPath, $ChildMode) $script:signals++; $script:childModes += $ChildMode }
-    function Get-Process { return $script:fakeProcess }
+    function Get-Process { param($Id) if ($Id -eq 999) { return $null }; return $script:fakeProcess }
     function Write-TestHeartbeat([bool]$Busy = $false) {
         Write-WatchdogAtomicJson $hostHeartbeatPath ([pscustomobject]@{pid=42;timestamp=[DateTimeOffset]::UtcNow.ToString("o");sessionId=0;mutationInProgress=$Busy}) 5
     }
@@ -79,6 +79,11 @@ try {
     Assert-True "cross-session exact Host identity is recognized" ((Get-RoleProcesses $hostHeartbeatPath).ProcessId -eq 42)
     Assert-True "Host does not count as Tray" (@(Get-RoleProcesses $trayHeartbeatPath).Count -eq 0)
     $originalCommand = $script:inventory[0].CommandLine
+    $script:inventory += [pscustomobject]@{ProcessId=999;CommandLine=$null}
+    Assert-True "exited unreadable CIM row does not block role discovery" (@(Get-RoleProcesses $hostHeartbeatPath).Count -eq 1)
+    $script:inventory[1].ProcessId=998
+    Assert-Throws "live unreadable process still blocks recovery" { Get-RoleProcesses $hostHeartbeatPath } 'Cannot verify PowerShell process 998'
+    $script:inventory = @($script:inventory[0])
 
     # Use production argument serialization so the fixture matches actual launches.
     $quotedHostCommand = (@($powershell, "-File", $hostScript, "-Mode", "Host", "-ConfigPath", $ConfigPath) | ForEach-Object { Convert-NativeArgument $_ }) -join " "
