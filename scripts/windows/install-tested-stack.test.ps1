@@ -11,16 +11,16 @@ $errors = $null
 if ($errors.Count) { throw ($errors | Out-String) }
 
 @(
-    '$DevSpaceVersion = "1.0.4"',
-    '$DevSpaceRef = "codex/devspace-v1.0.4-watchdog-fix"',
-    '$DevSpaceCommit = "15fcf9068608e51a56f97609aba32535a0359407"',
-    '$HermesVersion = "0.5.0"',
-    '$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"',
+    'tested-stack-manifest.json',
+    '$testedManifest.devspace.revision',
+    '$testedManifest.''hermes-gpt''.revision',
     '[switch]$VerifyOnly',
     'No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created.'
 ) | ForEach-Object {
     if (-not $installer.Contains($_)) { throw "Installer is missing expected pinned/safety text: $_" }
 }
+$manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tested-stack-manifest.json') -Raw | ConvertFrom-Json
+if ($manifest.devspace.version -ne '1.0.4' -or $manifest.devspace.revision -ne '15fcf9068608e51a56f97609aba32535a0359407' -or $manifest.'hermes-gpt'.version -ne '0.5.0' -or $manifest.'hermes-gpt'.revision -ne 'db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3') { throw 'Historical tested pair changed without validation.' }
 if (-not $html.Contains("install-tested-stack.ps1")) { throw "HTML does not use the tested-stack installer." }
 if (-not $html.Contains("codex/windows-fixed-port-conflicts/scripts/windows/install-tested-stack.ps1")) {
     throw "HTML code-only installer does not use the maintained one-click branch."

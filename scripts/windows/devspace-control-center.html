@@ -26,7 +26,7 @@
     .dot.GREEN { background:var(--green); box-shadow:0 0 0 3px rgba(40,180,99,.14); }
     .dot.YELLOW { background:var(--yellow); box-shadow:0 0 0 3px rgba(244,180,0,.14); }
     .dot.RED { background:var(--red); box-shadow:0 0 0 3px rgba(220,53,69,.14); }
-    nav { display:flex; gap:.35rem; padding:.8rem clamp(1rem,4vw,3rem) 0; overflow:auto; }
+    nav { display:flex; flex-wrap:wrap; gap:.35rem; padding:.8rem clamp(1rem,4vw,3rem) 0; overflow:visible; }
     nav button { background:transparent; border-color:transparent; white-space:nowrap; }
     nav button[aria-selected="true"] { background:var(--panel); border-color:var(--line); color:#fff; }
     main { max-width:1380px; margin:0 auto; padding:1rem clamp(1rem,4vw,3rem) 3rem; }
@@ -58,6 +58,8 @@
     #toast { position:fixed; right:1rem; bottom:1rem; max-width:min(430px,calc(100vw - 2rem)); background:#101a29; border:1px solid var(--line); border-radius:10px; padding:.8rem 1rem; box-shadow:0 10px 30px rgba(0,0,0,.4); opacity:0; transform:translateY(8px); transition:.18s; pointer-events:none; z-index:10; }
     #toast.show { opacity:1; transform:none; }
     @media (max-width:700px) { header { align-items:flex-start; } .header-status { justify-content:flex-start; } th:nth-child(4),td:nth-child(4) { display:none; } }
+    .component-table-wrap{overflow:auto}.component-table{min-width:1050px}.component-table td{white-space:pre-line;overflow-wrap:anywhere;max-width:260px}.component-table button{margin:0 .3rem .4rem 0}
+    @media(max-width:700px){.component-table th:nth-child(4),.component-table td:nth-child(4){display:table-cell}}
   </style>
 </head>
 <body>
@@ -141,10 +143,52 @@
           </div>
         </div>
       </div>
-      <div class="panel"><h2>Credential policy</h2><p>No ngrok API key is stored by this Control Center. The first release generates Traffic Policy and guides the dashboard action, then applies the validated local configuration.</p></div>
+      <div class="panel">
+        <div class="card-head"><div><h2>Saved ngrok accounts</h2><div class="muted">Store multiple ngrok account profiles on this Windows user and switch between them without retyping the Auth Token.</div></div><button id="refresh-ngrok-profiles" type="button">Refresh</button></div>
+        <div id="ngrok-profiles-empty" class="muted">No saved ngrok accounts yet.</div>
+        <div id="ngrok-profiles-table" class="table-wrap" hidden>
+          <table><thead><tr><th>Profile</th><th>Mode</th><th>Domain</th><th>State</th><th>Actions</th></tr></thead><tbody id="ngrok-profiles-body"></tbody></table>
+        </div>
+        <form id="ngrok-profile-form" style="margin-top:1rem">
+          <input name="profileId" type="hidden">
+          <h3 id="ngrok-profile-form-title">Add ngrok account</h3>
+          <div class="form-grid">
+            <label>Profile Name<input name="profileName" maxlength="64" placeholder="Account A" required></label>
+            <label>Endpoint Mode<select name="profileEndpointMode"><option>AgentEndpoint</option><option>CloudEndpoint</option></select></label>
+            <label>Public Domain<input name="profilePublicDomain" type="url" placeholder="https://account-a.ngrok-free.dev" required></label>
+            <label id="profile-internal-label" hidden>Internal Agent Endpoint<input name="profileInternalAgentEndpoint" type="url"></label>
+            <label>ngrok Auth Token<input name="profileAuthToken" type="password" autocomplete="new-password" placeholder="Required when adding; leave blank to keep token when editing"></label>
+          </div>
+          <p class="muted">Auth Tokens are encrypted with Windows DPAPI CurrentUser. The profile list never returns plaintext tokens to the browser.</p>
+          <div class="actions"><button id="save-ngrok-profile" class="primary" type="submit">Save Account</button><button id="cancel-ngrok-profile-edit" type="button" hidden>Cancel Edit</button></div>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>Quick switch (not saved)</h2>
+        <p class="muted">Use this when the current ngrok account is out of traffic/quota. The Auth Token is stored with Windows DPAPI CurrentUser encryption, is never written to normal configuration/logs, and is cleared from this form after submission.</p>
+        <form id="ngrok-account-form">
+          <div class="form-grid">
+            <label>Endpoint Mode<select name="switchEndpointMode"><option>AgentEndpoint</option><option>CloudEndpoint</option></select></label>
+            <label>New Public Domain<input name="switchPublicDomain" type="url" placeholder="https://new-account.ngrok-free.dev" required></label>
+            <label id="switch-internal-label">Internal Agent Endpoint<input name="switchInternalAgentEndpoint" type="url"></label>
+            <label>New ngrok Auth Token<input name="switchAuthToken" type="password" autocomplete="new-password" required></label>
+          </div>
+          <p id="switch-cloud-note" class="warning" hidden>Cloud Endpoint mode expects the new Cloud Endpoint/domain and Traffic Policy to already exist in the target ngrok account. If public MCP verification fails, the switch is rolled back automatically.</p>
+          <div class="actions"><button id="switch-ngrok-account" class="primary" type="submit">Switch Account &amp; Verify</button></div>
+        </form>
+        <div id="ngrok-switch-result" class="impact GREEN" hidden><h3>New ChatGPT MCP URLs</h3><pre id="ngrok-switch-urls"></pre><p class="warning">Update/reconnect the ChatGPT MCP connectors to these URLs after a successful domain switch.</p></div>
+      </div>
+      <div class="panel"><h2>Credential policy</h2><p>ngrok Auth Token is stored only as a Windows DPAPI CurrentUser encrypted record. No plaintext ngrok token or API key is stored in the normal Control Center configuration or event log.</p></div>
     </section>
 
     <section id="tab-setup" role="tabpanel" hidden>
+      <div class="panel">
+        <div class="actions"><h2>Components &amp; versions</h2><button id="components-refresh" type="button">Check latest versions</button></div>
+        <p id="components-state" class="muted" role="status">Checking components…</p>
+        <p id="components-blockers" class="warning"></p>
+        <div class="component-table-wrap"><table class="component-table"><thead><tr><th>Component</th><th>Installation / runtime</th><th>Installed version</th><th>Latest upstream</th><th>Historically tested</th><th>Source / local changes</th><th>Actions</th></tr></thead><tbody id="component-rows"></tbody></table></div>
+      </div>
+      <div class="panel"><h2>Component operation</h2><div id="job-state" role="status">No active job.</div><pre id="job-log">—</pre></div>
       <div class="panel">
         <h2>Install, update, or reconfigure this machine</h2>
         <p>Open the full Setup Dashboard to choose Tray installation, DevSpace/Hermes components, User Mode, machine name, allowed roots, Agent/Cloud Endpoint, ngrok domain, and credentials.</p>
@@ -164,7 +208,7 @@
     "use strict";
     const controlToken = "{{CONTROL_TOKEN}}";
     const dashboardPort = {{DASHBOARD_PORT}};
-    const state = { status: null, pendingConfig: null, impact: null };
+    const state = { status: null, pendingConfig: null, impact: null, ngrokProfiles: [] };
     const $ = (selector) => document.querySelector(selector);
     const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined && text !== null) node.textContent = String(text); if (className) node.className = className; return node; };
     const addCell = (row, text) => row.appendChild(el("td", text));
@@ -286,7 +330,7 @@
       }
       if (openCodex.visible) {
         const proxy = openCodex.proxyHealthy ? "Healthy" : (openCodex.proxyRunning ? "Degraded" : "Stopped");
-        const tray = openCodex.trayRunning ? "Running" : (openCodex.trayInstalled ? "Stopped" : "Not installed");
+        const tray = openCodex.trayRunning ? `Running in desktop session ${openCodex.activeSessionId ?? ""}`.trim() : (openCodex.trayBackgroundRunning ? "Background session only (not visible)" : (openCodex.trayInstalled ? "Stopped" : "Not installed"));
         list.append(el("dt", "OpenCodex proxy"), el("dd", `${proxy} (port ${openCodex.port || 10100})`));
         list.append(el("dt", "OpenCodex Tray"), el("dd", tray));
         if (openCodex.repairTrayAvailable) {
@@ -296,7 +340,7 @@
             try {
               const result = await api("/api/optional/repair", { method:"POST", body:JSON.stringify({ tool:"opencodex-tray" }) });
               if (!result.success) throw new Error(result.error || "Repair failed");
-              toast("OpenCodex Tray repair dispatched."); setTimeout(refreshStatus, 1200);
+              toast(result.interactiveBridge ? `OpenCodex Tray launched into desktop session ${result.sessionId}.` : "OpenCodex Tray repair dispatched."); setTimeout(refreshStatus, 1200);
             } catch (error) { toast(error.message, true); }
           });
           actions.append(repair); root.append(list, actions); return;
@@ -328,6 +372,14 @@
       const form = $("#config-form");
       for (const [key, value] of Object.entries(config)) if (form.elements[key]) form.elements[key].value = value ?? "";
       toggleInternalEndpoint();
+      const switchForm = $("#ngrok-account-form");
+      if (switchForm) {
+        switchForm.elements.switchEndpointMode.value = config.endpointMode || "AgentEndpoint";
+        switchForm.elements.switchPublicDomain.value = config.publicDomain || "";
+        switchForm.elements.switchInternalAgentEndpoint.value = config.internalAgentEndpoint || "";
+        switchForm.elements.switchAuthToken.value = "";
+        toggleNgrokSwitchCloud();
+      }
     }
 
     function readConfig() {
@@ -340,6 +392,137 @@
     function toggleInternalEndpoint() {
       const form = $("#config-form"), cloud = form.elements.endpointMode.value === "CloudEndpoint";
       form.elements.internalAgentEndpoint.required = cloud;
+    }
+
+    function toggleNgrokSwitchCloud() {
+      const form = $("#ngrok-account-form"), cloud = form.elements.switchEndpointMode.value === "CloudEndpoint";
+      form.elements.switchInternalAgentEndpoint.required = cloud;
+      $("#switch-internal-label").hidden = !cloud;
+      $("#switch-cloud-note").hidden = !cloud;
+    }
+
+    function toggleNgrokProfileCloud() {
+      const form = $("#ngrok-profile-form"), cloud = form.elements.profileEndpointMode.value === "CloudEndpoint";
+      form.elements.profileInternalAgentEndpoint.required = cloud;
+      $("#profile-internal-label").hidden = !cloud;
+    }
+
+    function resetNgrokProfileForm() {
+      const form = $("#ngrok-profile-form");
+      form.reset(); form.elements.profileId.value = "";
+      form.elements.profileEndpointMode.value = state.status?.config?.endpointMode || "AgentEndpoint";
+      form.elements.profilePublicDomain.value = "";
+      form.elements.profileInternalAgentEndpoint.value = "";
+      $("#ngrok-profile-form-title").textContent = "Add ngrok account";
+      $("#save-ngrok-profile").textContent = "Save Account";
+      $("#cancel-ngrok-profile-edit").hidden = true;
+      toggleNgrokProfileCloud();
+    }
+
+    function editNgrokProfile(profile) {
+      const form = $("#ngrok-profile-form");
+      form.elements.profileId.value = profile.id;
+      form.elements.profileName.value = profile.name;
+      form.elements.profileEndpointMode.value = profile.endpointMode;
+      form.elements.profilePublicDomain.value = profile.publicDomain;
+      form.elements.profileInternalAgentEndpoint.value = profile.internalAgentEndpoint || "";
+      form.elements.profileAuthToken.value = "";
+      $("#ngrok-profile-form-title").textContent = `Edit ngrok account: ${profile.name}`;
+      $("#save-ngrok-profile").textContent = "Save Changes";
+      $("#cancel-ngrok-profile-edit").hidden = false;
+      toggleNgrokProfileCloud();
+      form.scrollIntoView({ behavior:"smooth", block:"center" });
+    }
+
+    function renderNgrokProfiles(profiles) {
+      state.ngrokProfiles = profiles || [];
+      const empty = $("#ngrok-profiles-empty"), table = $("#ngrok-profiles-table"), body = $("#ngrok-profiles-body");
+      body.replaceChildren(); empty.hidden = state.ngrokProfiles.length > 0; table.hidden = state.ngrokProfiles.length === 0;
+      for (const profile of state.ngrokProfiles) {
+        const row = el("tr"); addCell(row, profile.name); addCell(row, profile.endpointMode); addCell(row, profile.publicDomain);
+        const stateCell = document.createElement("td"), chip = el("span", null, "chip"); chip.append(el("span", null, `dot ${profile.active ? "GREEN" : "GRAY"}`), el("span", profile.active ? "ACTIVE" : "Saved")); stateCell.append(chip); row.append(stateCell);
+        const actionCell = document.createElement("td"), actions = el("div", null, "actions");
+        const use = el("button", profile.active ? "Active" : "Switch", profile.active ? "" : "primary"); use.type = "button"; use.disabled = Boolean(profile.active); use.addEventListener("click", () => switchSavedNgrokProfile(profile));
+        const edit = el("button", "Edit"); edit.type = "button"; edit.addEventListener("click", () => editNgrokProfile(profile));
+        const remove = el("button", "Delete", "danger"); remove.type = "button"; remove.addEventListener("click", () => deleteNgrokProfile(profile));
+        actions.append(use, edit, remove); actionCell.append(actions); row.append(actionCell); body.append(row);
+      }
+    }
+
+    async function refreshNgrokProfiles() {
+      try { renderNgrokProfiles(await api("/api/ngrok/profiles")); }
+      catch (error) { toast(error.message, true); }
+    }
+
+    async function saveNgrokProfile(event) {
+      event.preventDefault();
+      const form = $("#ngrok-profile-form"), id = form.elements.profileId.value.trim(), authToken = form.elements.profileAuthToken.value;
+      if (!id && !authToken) { toast("Auth Token is required when adding a new ngrok account.", true); return; }
+      const payload = {
+        id,
+        name: form.elements.profileName.value.trim(),
+        endpointMode: form.elements.profileEndpointMode.value,
+        publicDomain: form.elements.profilePublicDomain.value.trim(),
+        internalAgentEndpoint: form.elements.profileInternalAgentEndpoint.value.trim(),
+        authToken
+      };
+      const button = $("#save-ngrok-profile"); button.disabled = true;
+      try {
+        const result = await api("/api/ngrok/profile/save", { method:"POST", body:JSON.stringify(payload) });
+        renderNgrokProfiles(result.profiles || []); resetNgrokProfileForm(); toast(id ? "ngrok account updated. It is not switched until you press Switch." : "ngrok account saved securely.");
+      } catch (error) { toast(error.message, true); }
+      finally { payload.authToken = ""; form.elements.profileAuthToken.value = ""; button.disabled = false; }
+    }
+
+    async function deleteNgrokProfile(profile) {
+      if (!confirm(`Delete saved ngrok account “${profile.name}”? This deletes only the saved profile, not the ngrok account itself.`)) return;
+      try {
+        const result = await api("/api/ngrok/profile/delete", { method:"POST", body:JSON.stringify({ id:profile.id, confirmation:"DELETE NGROK PROFILE" }) });
+        renderNgrokProfiles(result.profiles || []); resetNgrokProfileForm(); toast("Saved ngrok account deleted.");
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function switchSavedNgrokProfile(profile) {
+      if (!confirm(`Switch to ngrok account “${profile.name}”? Affected MCP services will restart and the new public endpoints will be verified automatically.`)) return;
+      try {
+        const result = await api("/api/ngrok/profile/switch", { method:"POST", body:JSON.stringify({ id:profile.id, confirmation:"SWITCH NGROK PROFILE" }) });
+        $("#ngrok-switch-urls").textContent = `DevSpace\n${result.devspaceUrl}\n\nHermes\n${result.hermesUrl}`;
+        $("#ngrok-switch-result").hidden = false;
+        toast(`Switched to ${result.profileName || profile.name} and verified.${result.backupId ? ` Backup: ${result.backupId}` : ""}`);
+        await refreshStatus(); await refreshNgrokProfiles(); await refreshBackups();
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function switchNgrokAccount(event) {
+      event.preventDefault();
+      const form = $("#ngrok-account-form"), button = $("#switch-ngrok-account");
+      const authToken = form.elements.switchAuthToken.value;
+      if (!authToken) { toast("New ngrok Auth Token is required.", true); return; }
+      if (prompt("This will restart affected MCP services and change public MCP URLs. Type SWITCH NGROK to continue:") !== "SWITCH NGROK") return;
+      const payload = {
+        endpointMode: form.elements.switchEndpointMode.value,
+        publicDomain: form.elements.switchPublicDomain.value.trim(),
+        internalAgentEndpoint: form.elements.switchInternalAgentEndpoint.value.trim(),
+        authToken,
+        confirmation: "SWITCH NGROK"
+      };
+      button.disabled = true;
+      button.textContent = "Switching & verifying…";
+      try {
+        const result = await api("/api/ngrok/switch", { method:"POST", body:JSON.stringify(payload) });
+        const output = `DevSpace\n${result.devspaceUrl}\n\nHermes\n${result.hermesUrl}`;
+        $("#ngrok-switch-urls").textContent = output;
+        $("#ngrok-switch-result").hidden = false;
+        toast(`ngrok account/domain switched and verified.${result.backupId ? ` Backup: ${result.backupId}` : ""}`);
+        await refreshStatus(); await refreshNgrokProfiles();
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        payload.authToken = "";
+        form.elements.switchAuthToken.value = "";
+        button.disabled = false;
+        button.textContent = "Switch Account & Verify";
+      }
     }
 
     function renderImpact(impact) {
@@ -366,12 +549,17 @@
       const policy = $("#traffic-policy"); policy.textContent = impact.trafficPolicy || ""; policy.hidden = !impact.trafficPolicy; $("#copy-policy").hidden = !impact.trafficPolicy;
     }
 
+    let statusLoading = false;
     async function refreshStatus() {
+      if (statusLoading) return;
+      statusLoading = true;
       try {
         const first = !state.status; state.status = await api("/api/status");
+        attachManagementStatus(state.status);
         const overall = state.status.overall; $("#overall-dot").className = `dot ${overall.color}`; $("#overall-label").textContent = overall.label; $("#maintenance-chip").hidden = !state.status.maintenanceMode;
         renderOverview(state.status); renderConnections(state.status); renderOptionalTools(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
       } catch (error) { toast(error.message, true); }
+      finally { statusLoading = false; }
     }
 
     async function runAction(action, service) {
@@ -429,6 +617,7 @@
       document.querySelectorAll('[role="tab"]').forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
       document.querySelectorAll('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.id !== `tab-${tab.dataset.tab}`; });
       if (tab.dataset.tab === "logs") { refreshHistory(); refreshBackups(); }
+      if (tab.dataset.tab === "ngrok") { refreshNgrokProfiles(); }
     }));
     document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runAction(button.dataset.action, button.dataset.service)));
     $("#refresh-button").addEventListener("click", refreshStatus);
@@ -436,6 +625,12 @@
     $("#resume-button").addEventListener("click", () => runAction("resume", "all"));
     $("#config-form").addEventListener("submit", previewConfig);
     $("#config-form").elements.endpointMode.addEventListener("change", toggleInternalEndpoint);
+    $("#ngrok-account-form").addEventListener("submit", switchNgrokAccount);
+    $("#ngrok-account-form").elements.switchEndpointMode.addEventListener("change", toggleNgrokSwitchCloud);
+    $("#ngrok-profile-form").addEventListener("submit", saveNgrokProfile);
+    $("#ngrok-profile-form").elements.profileEndpointMode.addEventListener("change", toggleNgrokProfileCloud);
+    $("#cancel-ngrok-profile-edit").addEventListener("click", resetNgrokProfileForm);
+    $("#refresh-ngrok-profiles").addEventListener("click", refreshNgrokProfiles);
     $("#cancel-preview").addEventListener("click", () => { state.pendingConfig = null; state.impact = null; $("#impact-panel").hidden = true; });
     $("#cancel-wizard").addEventListener("click", () => { state.pendingConfig = null; state.impact = null; $("#wizard").hidden = true; $("#wizard-empty").hidden = false; });
     $("#apply-config").addEventListener("click", applyConfig);
@@ -448,7 +643,115 @@
         toast("Setup & Update Dashboard launched.");
       } catch (error) { toast(error.message, true); }
     });
-    refreshStatus(); setInterval(refreshStatus, 5000);
+    const managementError = message => toast(message, true);
+    const refreshManagementStatus = () => refreshStatus();
+
+    // Shared component contract: keep every product visible even when discovery is unavailable.
+    const componentCatalog = [["node","Node.js"],["npm","npm"],["git","Git"],["python","Python"],["devspace-official","DevSpace Official"],["devspace-tray-fork","DevSpace Tray fork"],["hermes-gpt","Hermes GPT"],["hermes-agent","Hermes Agent"],["router","MCP Router"],["ngrok","ngrok"],["legacy-watchdog","Legacy Watchdog"],["tray","Watchdog Tray"]];
+    const management = { inventory:null, jobId:null, submitting:false, polling:false, timer:null, terminalJobId:null, inventoryLoading:false };
+    const componentNode = (tag, text) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=String(text); return n; };
+    function managementBusy() { return management.submitting || Boolean(management.jobId); }
+    function setManagementBusy() {
+      $("#components-refresh").disabled=managementBusy();
+      const applyButton=$("#apply"); if(applyButton)applyButton.disabled=managementBusy();
+      renderComponents();
+    }
+    function renderComponents(inventory) {
+      if(inventory)management.inventory=inventory;
+      const snapshot=management.inventory, root=$("#component-rows"); root.replaceChildren();
+      $("#components-state").textContent=snapshot ? `Local checked: ${snapshot.checkedAt||"unknown"} · Remote checked: ${snapshot.remoteCheckedAt||"not checked"}${snapshot.refreshing?" · Refreshing":""}` : "Discovery unavailable. Installation and latest versions are unknown.";
+      $("#components-blockers").textContent=(snapshot?.blockers||[]).map(x=>typeof x==="string"?x:x.reason||x.message||JSON.stringify(x)).join("\n");
+      const found=new Map((snapshot?.components||[]).map(c=>[c.id,c]));
+      for(const [id,label] of componentCatalog) {
+        const c=found.get(id)||{id,label,installState:"unknown",runtimeState:"unknown",actions:[]};
+        const row=componentNode("tr"); row.dataset.componentId=id;
+        const cell=(text)=>{const n=componentNode("td",text);row.append(n);return n;};
+        cell(c.label||label); cell(`${c.installState||"unknown"} / ${c.runtimeState||"unknown"}`);
+        cell(c.installedVersion||"Unknown");
+        const latest=c.latest;
+        cell(latest ? [latest.state||"unknown",latest.version&&`Version: ${latest.version}`,latest.tag&&`Tag: ${latest.tag}`,latest.commit&&`Commit: ${latest.commit}`,latest.reason,latest.checkedAt&&`Checked: ${latest.checkedAt}`].filter(Boolean).join("\n") : "Unknown / not checked");
+        cell(c.tested ? (typeof c.tested==="string"?c.tested:JSON.stringify(c.tested)) : "No historical test record");
+        const source=c.source||{};
+        cell([source.kind||"Unknown source",source.repository,source.branch&&`Branch: ${source.branch}`,source.head&&`HEAD: ${source.head}`,source.trackingRef&&`Tracking: ${source.trackingRef}`,source.dirty===true?"Local changes present":source.dirty===false?"Working tree clean":"Working tree state unknown",c.path,c.detail].filter(Boolean).join("\n"));
+        const actions=cell();
+        for(const action of c.actions||[]) {
+          const button=componentNode("button",action.label||action.id);button.type="button";
+          button.disabled=action.enabled!==true||managementBusy()||!snapshot?.revision;
+          button.title=action.reason||"";button.addEventListener("click",()=>requestComponentAction(c,action));actions.append(button);
+          if(action.reason)actions.append(componentNode("div",action.reason));
+        }
+        if(!(c.actions||[]).length)actions.textContent="No available action";
+        root.append(row);
+      }
+    }
+    function attachManagementStatus(status) {
+      if(status.inventory)renderComponents(status.inventory);
+      const job=status.activeJob, id=status.activeJobId||job?.id;
+      if(id && (!management.jobId || management.jobId===id) && id!==management.terminalJobId && (!job || ["queued","running"].includes(job.phase)))trackManagementJob(id);
+    }
+    function trackManagementJob(id) {
+      if(!id)return;
+      management.jobId=id;
+      try { sessionStorage.setItem("devspace-management-job",id); } catch {}
+      setManagementBusy(); scheduleManagementPoll(0);
+    }
+    function scheduleManagementPoll(delay=1200) {
+      if(management.polling||management.timer||!management.jobId)return;
+      management.timer=setTimeout(()=>{management.timer=null;pollManagementJob();},delay);
+    }
+    async function pollManagementJob() {
+      if(management.polling||!management.jobId)return;
+      management.polling=true;
+      const id=management.jobId;
+      try {
+        const job=await api(`/api/job?id=${encodeURIComponent(id)}`);
+        $("#job-state").textContent=[job.phase,job.step,job.error].filter(Boolean).join(" · ");
+        $("#job-log").textContent=(job.lines||[]).map(x=>`[${x.timestamp||""}] ${x.source?x.source+": ":""}${x.text}`).join("\n")||"Waiting for output…";
+        $("#job-log").scrollTop=$("#job-log").scrollHeight;
+        if(["completed","failed","rollback_failed"].includes(job.phase)) {
+          management.terminalJobId=id;management.jobId=null;
+          try { sessionStorage.removeItem("devspace-management-job"); } catch {}
+          setManagementBusy();
+          await refreshComponents();
+          await refreshManagementStatus();
+        }
+      } catch(error) { $("#job-state").textContent=`Reconnecting to job ${id}: ${error.message}`; }
+      finally { management.polling=false;scheduleManagementPoll(); }
+    }
+    async function refreshComponents() {
+      if(management.inventoryLoading)return;
+      management.inventoryLoading=true;
+      try { renderComponents(await api("/api/components")); }
+      catch(error) { $("#components-state").textContent=`Discovery unavailable; retaining last result: ${error.message}`; }
+      finally { management.inventoryLoading=false; }
+    }
+    async function requestComponentAction(component,action) {
+      if(managementBusy()||action.enabled!==true)return;
+      if(!confirm(`${action.label||action.id}: ${component.label||component.id}?`))return;
+      management.submitting=true;setManagementBusy();
+      try {
+        const requestId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const result=await api("/api/components/action",{method:"POST",body:JSON.stringify({componentId:component.id,action:action.id,expectedRevision:management.inventory.revision,requestId})});
+        trackManagementJob(result.jobId);
+      } catch(error) { managementError(error.message); }
+      finally { management.submitting=false;setManagementBusy(); }
+    }
+    async function checkLatestComponents() {
+      if(managementBusy())return;
+      management.submitting=true;setManagementBusy();
+      try { const result=await api("/api/components/refresh",{method:"POST",body:"{}"});trackManagementJob(result.jobId); }
+      catch(error) { managementError(error.message); }
+      finally { management.submitting=false;setManagementBusy(); }
+    }
+    function initializeComponents() {
+      renderComponents();
+      $("#components-refresh").addEventListener("click",checkLatestComponents);
+      try { const id=sessionStorage.getItem("devspace-management-job");if(id)trackManagementJob(id); } catch {}
+      refreshComponents();
+    }
+
+    async function statusLoop() { await refreshStatus(); setTimeout(statusLoop, 5000); }
+    resetNgrokProfileForm(); refreshNgrokProfiles(); initializeComponents(); statusLoop();
   </script>
 </body>
 </html>

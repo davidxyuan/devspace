@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PackageDir
 )
@@ -23,15 +23,20 @@ $required = @(
     "run-devspace-watchdog-hidden.vbs",
     "watchdog-control-core.ps1",
     "devspace-watchdog-tray.ps1",
+    "devspace-watchdog-tray-ui.ps1",
+    "devspace-watchdog-bootstrap.ps1",
     "devspace-control-center.html",
-    "devspace-watchdog-tray-launcher.exe",
     "run-devspace-watchdog-tray-hidden.vbs",
     "install-devspace-watchdog-tray.ps1",
     "uninstall-devspace-watchdog-tray.ps1",
     "restore-old-watchdog.ps1",
     "devspace-stack-setup.cjs",
     "devspace-stack-setup.html",
-    "devspace-stack-setup.test.cjs"
+    "devspace-stack-setup.test.cjs",
+    "install-devspace-stack.ps1", "install-devspace-stack.cmd", "build-oneclick-package.ps1",
+    "stack-jobs.cjs", "stack-management.cjs", "stack-setup-apply.cjs", "stack-apply-parameters.ps1",
+    "stack-operation.ps1", "stack-host-management.ps1", "stack-activate.ps1",
+    "watchdog-install-transaction.ps1", "tested-stack-manifest.json"
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root $_)) })
 $migrationPath = Join-Path (Split-Path $root -Parent) "migrate-oauth-json-to-sqlite.mjs"
@@ -50,8 +55,13 @@ if ($parseErrors.Count) { throw ($parseErrors -join "`n") }
 & node.exe --check (Join-Path $root "devspace-stack-setup.cjs")
 if ($LASTEXITCODE -ne 0) { throw "devspace-stack-setup.cjs syntax validation failed." }
 $setupSource = [IO.File]::ReadAllText((Join-Path $root "devspace-stack-setup.cjs"), [Text.Encoding]::UTF8)
-foreach ($marker in @('127.0.0.1', 'x-devspace-setup-token', 'NGROK_AUTHTOKEN', 'DEVSPACE_OWNER_TOKEN', '-NoLegacyPoller')) {
+foreach ($marker in @('127.0.0.1', 'x-devspace-setup-token', 'configurationFingerprint', 'startWorker')) {
     if (-not $setupSource.Contains($marker)) { throw "Setup Dashboard bootstrap is missing required marker: $marker" }
+}
+foreach ($name in @('stack-jobs.cjs','stack-management.cjs','stack-setup-apply.cjs')) { & node.exe --check (Join-Path $root $name); if ($LASTEXITCODE -ne 0) { throw "$name syntax validation failed." } }
+if ($setupSource.Contains('devspace-watchdog-tray-launcher.exe')) { throw "Setup Dashboard must not depend on the retired native Tray launcher executable." }
+foreach ($marker in @('devspace-watchdog-bootstrap.ps1', 'devspace-watchdog-tray.ps1', 'devspace-watchdog-tray-ui.ps1', 'run-devspace-watchdog-tray-hidden.vbs')) {
+    if (-not $setupSource.Contains($marker)) { throw "Setup Dashboard Tray detection is missing supported startup file: $marker" }
 }
 $packageJsonPath = Join-Path (Split-Path $root -Parent | Split-Path -Parent) "package.json"
 $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json

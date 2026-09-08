@@ -29,6 +29,7 @@ interface ToolContext {
   cwd: string;
   root: string;
   readRoots?: string[];
+  shellPath?: string;
 }
 
 function toMcpContent(result: AgentToolResult<unknown>): McpContent[] {
@@ -119,7 +120,7 @@ export async function listDirectoryTool(input: LsToolInput, context: ToolContext
 }
 
 export async function runShellTool(input: BashToolInput, context: ToolContext): Promise<ToolResponse> {
-  const tool = createBashTool(context.cwd);
+  const tool = createBashTool(context.cwd, context.shellPath ? { shellPath: context.shellPath } : undefined);
   const timeout = input.timeout === undefined ? 30 : Math.min(input.timeout, 300);
 
   return runTool((params) => tool.execute("run_shell", params), {

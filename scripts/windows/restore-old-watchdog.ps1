@@ -6,6 +6,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+. (Join-Path $PSScriptRoot 'stack-operation.ps1')
 
 function Get-RestoreFileSha256([string]$Path) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -20,10 +22,16 @@ function Test-RestoreCommandToken([string]$CommandLine, [string]$Value) {
 }
 
 function Test-RestoreTrayProcessRunning([string]$Directory) {
+    $bootstrap = Join-Path $Directory "devspace-watchdog-bootstrap.ps1"
+    if ([System.IO.File]::Exists($bootstrap)) {
+        & $bootstrap -Mode CheckStopped -ConfigPath (Join-Path $Directory "devspace-watchdog.config.json")
+        return $false
+    }
     $trayPath = Join-Path $Directory "devspace-watchdog-tray.ps1"
     $configPath = Join-Path $Directory "devspace-watchdog.config.json"
-    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop)) {
         $command = [string]$process.CommandLine
+        if (-not $command) { throw "Cannot verify PowerShell process $($process.ProcessId)." }
         if ((Test-RestoreCommandToken $command $trayPath) -and (Test-RestoreCommandToken $command $configPath)) { return $true }
     }
     return $false
@@ -45,6 +53,15 @@ $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]:
 if ([System.IO.Path]::GetFullPath([string]$manifest.installDir) -ne $InstallDir) { throw "Backup targets another install directory." }
 if ([string]$manifest.runName -notmatch '^DevSpaceWatchdogTray-[a-f0-9]{12}$') { throw "Backup manifest has an invalid Run value name." }
 if ([string]$manifest.legacyTaskName -and [string]$manifest.legacyTaskName -notmatch '^[A-Za-z0-9 _.()-]{1,100}$') { throw "Backup manifest has an invalid task name." }
+$retiredNames = @("run-devspace-watchdog-tray-ui-hidden.vbs", "devspace-watchdog-tray-launcher.exe", "devspace-watchdog-tray-launcher.cs")
+$installedNames = @($manifest.installedFiles | ForEach-Object { [string]$_.name })
+$retiredBackups = @($manifest.overwrittenFiles | Where-Object { [string]$_.name -in $retiredNames -and [string]$_.name -notin $installedNames })
+foreach ($original in $retiredBackups) {
+    $source = Join-Path (Join-Path $BackupPath "payload") ([string]$original.name)
+    $target = Join-Path $InstallDir ([string]$original.name)
+    if (-not [System.IO.File]::Exists($source) -or (Get-RestoreFileSha256 $source) -ne [string]$original.sha256) { throw "Retired file backup is missing or corrupt: $source" }
+    if ([System.IO.File]::Exists($target) -and (Get-RestoreFileSha256 $target) -ne [string]$original.sha256) { throw "Retired file was replaced after installation; refusing to overwrite $target." }
+}
 foreach ($item in @($manifest.configBackups)) {
     $targetName = [System.IO.Path]::GetFileName([string]$item.targetName)
     $backupName = [System.IO.Path]::GetFileName([string]$item.backupName)
@@ -62,13 +79,28 @@ if ($taskName -and [string]$manifest.legacyTaskXml) {
 }
 
 if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configuration, and re-enable the legacy watchdog")) {
+    $restoreLease = Enter-StackOperation $InstallDir
+    try {
+    $bootstrap = Join-Path $InstallDir "devspace-watchdog-bootstrap.ps1"
     $launcher = Join-Path $InstallDir "run-devspace-watchdog-tray-hidden.vbs"
-    if ([System.IO.File]::Exists($launcher)) {
-        Start-Process -FilePath "C:\Windows\System32\wscript.exe" -ArgumentList @("//B", "//NoLogo", "`"$launcher`"", "-Stop") -WindowStyle Hidden | Out-Null
+    if ([System.IO.File]::Exists($bootstrap)) {
+        & $bootstrap -Mode Stop -ConfigPath (Join-Path $InstallDir "devspace-watchdog.config.json")
+    } elseif ([System.IO.File]::Exists($launcher)) {
+        $stopLauncher = Start-Process -FilePath "C:\Windows\System32\wscript.exe" -ArgumentList @("//B", "//NoLogo", "`"$launcher`"", "-Stop") -WindowStyle Hidden -Wait -PassThru
+        if ($stopLauncher.ExitCode -ne 0) { throw "Watchdog stop launcher failed (exit $($stopLauncher.ExitCode))." }
     }
     $deadline = [DateTimeOffset]::Now.AddSeconds(10)
     do { $trayStillRunning = Test-RestoreTrayProcessRunning $InstallDir; if ($trayStillRunning) { Start-Sleep -Milliseconds 250 } } while ($trayStillRunning -and [DateTimeOffset]::Now -lt $deadline)
     if ($trayStillRunning) { throw "Tray did not stop within 10 seconds; refusing to restore configuration under a running process." }
+
+    foreach ($original in $retiredBackups) {
+        $source = Join-Path (Join-Path $BackupPath "payload") ([string]$original.name)
+        $target = Join-Path $InstallDir ([string]$original.name)
+        if (-not [System.IO.File]::Exists($source) -or (Get-RestoreFileSha256 $source) -ne [string]$original.sha256) { throw "Retired file backup is missing or corrupt: $source" }
+        if ([System.IO.File]::Exists($target)) {
+            if ((Get-RestoreFileSha256 $target) -ne [string]$original.sha256) { throw "Retired file was replaced after installation; refusing to overwrite $target." }
+        } else { [System.IO.File]::Copy($source, $target, $false) }
+    }
 
     $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     $runProperties = Get-ItemProperty -LiteralPath $runPath -Name ([string]$manifest.runName) -ErrorAction SilentlyContinue
@@ -93,11 +125,16 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configurat
     $legacyPollerDisableMarker = Join-Path $InstallDir "legacy-watchdog-poller.disabled"
     Remove-Item -LiteralPath $legacyPollerDisableMarker -Force -ErrorAction SilentlyContinue
 
-    if ($taskName -and [string]$manifest.legacyTaskXml) {
+    if (@($manifest.legacyTasks).Count) {
+        Restore-InstallLegacyTaskBackups $manifest $BackupPath $InstallDir -StartPreviouslyRunning:(-not $DoNotStartLegacyWatchdog)
+    } elseif ($taskName -and [string]$manifest.legacyTaskXml) {
         $taskXml = [System.IO.File]::ReadAllText($taskXmlPath, [System.Text.Encoding]::UTF8)
         Register-ScheduledTask -TaskName $taskName -Xml $taskXml -Force | Out-Null
         if ([bool]$manifest.legacyTaskWasEnabled) { Enable-ScheduledTask -TaskName $taskName | Out-Null }
         if (-not $DoNotStartLegacyWatchdog -and [bool]$manifest.legacyTaskWasEnabled) { Start-ScheduledTask -TaskName $taskName }
+    }
+    if (-not $DoNotStartLegacyWatchdog -and @($manifest.legacyProcesses).Count) {
+        Restart-InstallLegacyProcesses ([pscustomobject]@{installDir=$InstallDir;stoppedLegacyProcesses=@($manifest.legacyProcesses)})
     }
 
     if (-not $DoNotStartLegacyWatchdog -and [bool]$manifest.legacyTaskWasEnabled) {
@@ -118,4 +155,5 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configurat
     Write-Host "Pre-Tray configuration restored from $BackupPath"
     Write-Host "Tray autostart is disabled and the Tray process was stopped."
     Write-Host "Current files before restore: $safetyPath"
+    } finally { Exit-StackOperation $restoreLease }
 }

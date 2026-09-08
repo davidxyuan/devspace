@@ -26,6 +26,10 @@ assert.equal(loadConfig(baseEnv).skillsEnabled, true);
 assert.equal(loadConfig(baseEnv).devspaceSkillsDir, join(emptyConfigDir, "skills"));
 assert.equal(loadConfig(baseEnv).devspaceAgentsDir, join(emptyConfigDir, "agents"));
 assert.equal(loadConfig(baseEnv).subagents, false);
+assert.equal(loadConfig(baseEnv).shellPath, undefined);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SHELL_PATH: "D:\\Git\\bin\\bash.exe" }).shellPath, "D:\\Git\\bin\\bash.exe");
+assert.equal(loadConfig(baseEnv).mcpTransport, "stateful");
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MCP_TRANSPORT: "stateless-json" }).mcpTransport, "stateless-json");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "0" }).skillsEnabled, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "1" }).skillsEnabled, true);
 assert.equal(
@@ -59,6 +63,10 @@ assert.throws(
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "invalid" }),
   /Invalid DEVSPACE_TOOL_MODE: invalid/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_MCP_TRANSPORT: "invalid" }),
+  /Invalid DEVSPACE_MCP_TRANSPORT: invalid/,
 );
 
 assert.deepEqual(loadConfig(baseEnv).logging, {
@@ -161,6 +169,7 @@ writeFileSync(
   JSON.stringify({
     port: 8787,
     allowedRoots: [process.cwd()],
+    shellPath: "D:\\Git\\bin\\bash.exe",
     publicBaseUrl: "https://devspace.example.com",
     subagents: true,
   }),
@@ -177,6 +186,7 @@ assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
 assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com/");
 assert.equal(fileConfig.subagents, true);
+assert.equal(fileConfig.shellPath, "D:\\Git\\bin\\bash.exe");
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

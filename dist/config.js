@@ -109,6 +109,13 @@ function parseWidgetMode(value) {
         return value;
     throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
+function parseMcpTransportMode(value) {
+    if (!value || value === "stateful")
+        return "stateful";
+    if (value === "stateless-json")
+        return "stateless-json";
+    throw new Error(`Invalid DEVSPACE_MCP_TRANSPORT: ${value}`);
+}
 function parseRequiredSecret(value, name) {
     const secret = value?.trim();
     if (!secret) {
@@ -159,6 +166,8 @@ export function loadConfig(env = process.env) {
         port,
         oauth: parseOAuthConfig(env, files.auth.ownerToken),
         allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
+        shellPath: env.DEVSPACE_SHELL_PATH ?? files.config.shellPath,
+        mcpTransport: parseMcpTransportMode(env.DEVSPACE_MCP_TRANSPORT),
         allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
         publicBaseUrl,
         toolMode: parseToolMode(env),

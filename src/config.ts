@@ -7,6 +7,7 @@ import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-
 
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off" | "changes" | "full";
+export type McpTransportMode = "stateful" | "stateless-json";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -15,6 +16,8 @@ export interface ServerConfig {
   port: number;
   oauth: OAuthConfig;
   allowedRoots: string[];
+  shellPath?: string;
+  mcpTransport?: McpTransportMode;
   allowedHosts: string[];
   publicBaseUrl: string;
   toolMode: ToolMode;
@@ -154,6 +157,12 @@ function parseWidgetMode(value: string | undefined): WidgetMode {
   throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
 
+function parseMcpTransportMode(value: string | undefined): McpTransportMode {
+  if (!value || value === "stateful") return "stateful";
+  if (value === "stateless-json") return "stateless-json";
+  throw new Error(`Invalid DEVSPACE_MCP_TRANSPORT: ${value}`);
+}
+
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
@@ -220,6 +229,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     port,
     oauth: parseOAuthConfig(env, files.auth.ownerToken),
     allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
+    shellPath: env.DEVSPACE_SHELL_PATH ?? files.config.shellPath,
+    mcpTransport: parseMcpTransportMode(env.DEVSPACE_MCP_TRANSPORT),
     allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
     publicBaseUrl,
     toolMode: parseToolMode(env),

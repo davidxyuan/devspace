@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +40,7 @@ function New-TestConfig([string]$Root) {
         mcpNameSuffix="alpha"; cloudEndpointPolicyPath=""; cloudEndpointRulePath=""
         capabilities=[pscustomobject]@{devspace=[pscustomobject]@{toolMode="full";widgets="full";skills=$true;subagents=$true};hermes=[pscustomobject]@{}}
         controlCenter=[pscustomobject]@{
-            dashboardPort=18777;localProbeSeconds=5;publicProbeSeconds=45;failureThreshold=2;maxRecoveryAttempts=5
+            dashboardPort=18777;localProbeSeconds=5;publicProbeSeconds=45;publicProbeBackoffSeconds=@(60,120,300,900,1800);failureThreshold=2;maxRecoveryAttempts=5
             backoffSeconds=@(0,10,30,60,120);logMaxBytes=65536;historyLimit=100
             displayNames=[pscustomobject]@{devspace="Alpha DevSpace";hermes="Alpha Hermes"}
         }
@@ -61,16 +61,28 @@ try {
     $settings = Get-WatchdogControlSettings $config
     Assert-Equal "default dashboard port" $settings.dashboardPort 18777
     Assert-Equal "backoff count" $settings.backoffSeconds.Count 5
+    Assert-Equal "public failure backoff count" $settings.publicProbeBackoffSeconds.Count 5
+    $quotaSafeDefaults = Get-WatchdogControlSettings ([pscustomobject]@{})
+    Assert-Equal "quota-safe public probe default" $quotaSafeDefaults.publicProbeSeconds 21600
+    Assert-Equal "public retry begins at five minutes" $quotaSafeDefaults.publicProbeBackoffSeconds[0] 300
+    Assert-Equal "public retry backs off to six hours" $quotaSafeDefaults.publicProbeBackoffSeconds[-1] 21600
+    $monthlyBackgroundPublicRequests = [int](2 * [Math]::Ceiling((30 * 24 * 60 * 60) / $quotaSafeDefaults.publicProbeSeconds))
+    Assert-True "quota-safe public probes stay below 300 requests per 30 days" ($monthlyBackgroundPublicRequests -le 300)
 
     $statePath = Join-Path $tempRoot "watchdog-tray-state.json"
     $state = New-WatchdogState $config
     Set-WatchdogDesiredState $state "hermes" "stopped_by_user"
     $state.maintenanceMode = $true
+    $state.publicProbe.consecutiveFailures = 2
+    $state.publicProbe.nextProbeUtc = "2026-09-05T00:30:00Z"
+    $state.publicProbe.lastAttemptUtc = "2026-09-05T00:00:00Z"
     Save-WatchdogState $statePath $state
     $reloaded = Read-WatchdogState $statePath $config
     Assert-Equal "manual stop persisted" $reloaded.desired.hermes "stopped_by_user"
     Assert-Equal "maintenance persisted" $reloaded.maintenanceMode $true
     Assert-Equal "reboot-style state reload" $reloaded.recovery.hermes.phase "ManualStop"
+    Assert-Equal "public probe failure count persists across Host restart" $reloaded.publicProbe.consecutiveFailures 2
+    Assert-Equal "public probe next time persists across Host restart" $reloaded.publicProbe.nextProbeUtc "2026-09-05T00:30:00Z"
     $corruptStatePath = Join-Path $tempRoot "corrupt-state.json"
     Write-WatchdogAtomicText $corruptStatePath "{not-json"
     $safeState = Read-WatchdogState $corruptStatePath $config
@@ -104,8 +116,14 @@ try {
     Assert-Equal "manual stop never recovers" (Update-WatchdogRecoveryDecision $manualState "devspace" $failed $testSettings $now).reason "stopped_by_user"
     $maintenanceState = New-WatchdogState $config; $maintenanceState.maintenanceMode = $true
     Assert-Equal "maintenance never recovers" (Update-WatchdogRecoveryDecision $maintenanceState "devspace" $failed $testSettings $now).reason "maintenance"
-    $busy = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;identityConflict=$false;error="long MCP call"}
-    Assert-Equal "busy service never restarts" (Update-WatchdogRecoveryDecision (New-WatchdogState $config) "devspace" $busy $testSettings $now).reason "busy_indeterminate"
+    $busy = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;identityConflict=$false;httpReachable=$true;error="long MCP call"}
+    Assert-Equal "busy reachable service never restarts" (Update-WatchdogRecoveryDecision (New-WatchdogState $config) "devspace" $busy $testSettings $now).reason "busy_indeterminate"
+    $hungState = New-WatchdogState $config
+    $hung = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;identityConflict=$false;httpReachable=$false;error="transport timeout"}
+    for ($i = 1; $i -lt $testSettings.busyTransportFailureThreshold; $i++) {
+        Assert-Equal "unreachable busy transport confirms before hung threshold $i" (Update-WatchdogRecoveryDecision $hungState "hermes" $hung $testSettings $now.AddSeconds($i)).reason "busy_indeterminate"
+    }
+    Assert-Equal "confirmed hung transport can recover" (Update-WatchdogRecoveryDecision $hungState "hermes" $hung $testSettings $now.AddSeconds($testSettings.busyTransportFailureThreshold)).action "Recover"
     $conflict = [pscustomobject]@{healthy=$false;busyIndeterminate=$false;identityConflict=$true;error="wrong owner"}
     Assert-Equal "identity conflict fails closed" (Update-WatchdogRecoveryDecision (New-WatchdogState $config) "devspace" $conflict $testSettings $now).record.phase "RecoveryFailed"
     $healthyState = New-WatchdogState $config; $healthyState.recovery.devspace.attemptCount = 2
@@ -123,6 +141,37 @@ try {
     $domainImpact = New-WatchdogConfigImpact $config $domainValidated
     Assert-Equal "domain impact red" $domainImpact.level "RED"
     Assert-Equal "domain requires reconnect" $domainImpact.requiresChatGptReconnect $true
+    Assert-True "domain change restarts Router for public host rewrite" ($domainImpact.requiresServiceRestart -contains "router")
+
+    $testNgrokToken = "test-ngrok-token-" + [Guid]::NewGuid().ToString("N")
+    $credentialPath = Set-WatchdogNgrokCredential $config $testNgrokToken
+    Assert-True "ngrok DPAPI credential file exists" ([System.IO.File]::Exists($credentialPath))
+    Assert-Equal "ngrok DPAPI credential roundtrip" (Get-WatchdogNgrokCredential $config) $testNgrokToken
+    $credentialText = [System.IO.File]::ReadAllText($credentialPath, [System.Text.Encoding]::UTF8)
+    Assert-True "ngrok plaintext token is not stored" (-not $credentialText.Contains($testNgrokToken))
+    [System.IO.File]::Delete($credentialPath)
+
+    $profileTokenA = "profile-a-" + [Guid]::NewGuid().ToString("N")
+    $profileTokenB = "profile-b-" + [Guid]::NewGuid().ToString("N")
+    $savedA = Save-WatchdogNgrokProfile $config ([pscustomobject]@{name="Account A";endpointMode="AgentEndpoint";publicDomain="https://account-a.example.test";internalAgentEndpoint="";authToken=$profileTokenA})
+    $savedB = Save-WatchdogNgrokProfile $config ([pscustomobject]@{name="Account B";endpointMode="AgentEndpoint";publicDomain="https://account-b.example.test";internalAgentEndpoint="";authToken=$profileTokenB})
+    $profilePath = Get-WatchdogNgrokProfileStorePath $config
+    Assert-True "ngrok profile store exists" ([System.IO.File]::Exists($profilePath))
+    $profileText = [System.IO.File]::ReadAllText($profilePath, [System.Text.Encoding]::UTF8)
+    Assert-True "ngrok profile A token is encrypted" (-not $profileText.Contains($profileTokenA))
+    Assert-True "ngrok profile B token is encrypted" (-not $profileText.Contains($profileTokenB))
+    $safeProfiles = @(Get-WatchdogNgrokProfiles $config)
+    Assert-Equal "ngrok profile list count" $safeProfiles.Count 2
+    Assert-True "ngrok safe profile list never exposes token" (-not ($safeProfiles[0].PSObject.Properties.Name -contains "authToken") -and -not ($safeProfiles[0].PSObject.Properties.Name -contains "protectedToken"))
+    $resolvedProfile = Get-WatchdogNgrokProfileForSwitch $config $savedA.id
+    Assert-Equal "ngrok profile decrypts selected token" $resolvedProfile.authToken $profileTokenA
+    $resolvedProfile.authToken = $null
+    Set-WatchdogNgrokActiveProfile $config $savedA.id
+    Assert-True "ngrok active profile is marked" ([bool](@(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $savedA.id })[0].active))
+    [void](Remove-WatchdogNgrokProfile $config $savedB.id)
+    Assert-Equal "ngrok profile delete" (@(Get-WatchdogNgrokProfiles $config)).Count 1
+    [System.IO.File]::Delete($profilePath)
+
     $routeInput = Copy-Editable $config; $routeInput.devspaceRoutePath = "/alpha/new_devspace"
     Assert-Equal "route impact red" (New-WatchdogConfigImpact $config (ConvertTo-WatchdogEditableConfig $routeInput $config)).level "RED"
 
@@ -217,8 +266,8 @@ try {
     Set-WatchdogProperty $optionalConfig "codexSkillRoot" $skillRoot
     Set-WatchdogProperty $optionalConfig "openCodexHome" $fakeOpenCodex
     $fakeProcesses = @(
-        [pscustomobject]@{Name="codex.exe";CommandLine="codex.exe"},
-        [pscustomobject]@{Name="powershell.exe";CommandLine="powershell.exe -File $fakeOpenCodex\opencodex-tray.ps1"}
+        [pscustomobject]@{Name="codex.exe";CommandLine="codex.exe";SessionId=(Get-WatchdogActiveConsoleSessionId)},
+        [pscustomobject]@{Name="powershell.exe";CommandLine="powershell.exe -File $fakeOpenCodex\opencodex-tray.ps1";SessionId=(Get-WatchdogActiveConsoleSessionId)}
     )
     $presentTools = Get-WatchdogOptionalToolStatus $optionalConfig $fakeProcesses
     Assert-Equal "Codex auto-detected" $presentTools.codex.visible $true
@@ -249,16 +298,17 @@ try {
     Assert-True "rollback removes newly generated merge rule" (-not [System.IO.File]::Exists([string]$cloudConfig.cloudEndpointRulePath))
 
     $traySource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray.ps1"), [System.Text.Encoding]::UTF8)
+    $trayUiSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray-ui.ps1"), [System.Text.Encoding]::UTF8)
+    $bootstrapSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-bootstrap.ps1"), [System.Text.Encoding]::UTF8)
     $coreSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "watchdog-control-core.ps1"), [System.Text.Encoding]::UTF8)
     $dashboardSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-control-center.html"), [System.Text.Encoding]::UTF8)
     $installerSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1"), [System.Text.Encoding]::UTF8)
     $launcherSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "run-devspace-watchdog-tray-hidden.vbs"), [System.Text.Encoding]::UTF8)
-    $nativeLauncherSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray-launcher.cs"), [System.Text.Encoding]::UTF8)
-    Assert-True "native launcher binary exists" ([System.IO.File]::Exists((Join-Path $PSScriptRoot "devspace-watchdog-tray-launcher.exe")))
     Assert-Contains "dashboard binds loopback" $traySource '[System.Net.IPAddress]::Loopback'
     Assert-True "dashboard does not bind all interfaces" (-not $traySource.Contains("0.0.0.0"))
     Assert-Contains "dashboard checks Origin" $traySource 'Invalid Origin header.'
     Assert-Contains "dashboard checks control token" $traySource 'x-devspace-control-token'
+    Assert-Contains "control JSON preserves empty arrays" $traySource 'ConvertTo-Json -InputObject $Value'
     Assert-Contains "dashboard bounds request body" $traySource '$contentLength -gt 65536'
     Assert-True "dashboard avoids dynamic HTML injection" (-not $dashboardSource.Contains("innerHTML"))
     Assert-Contains "dashboard has Overview" $dashboardSource 'data-tab="overview"'
@@ -273,12 +323,31 @@ try {
     Assert-Contains "dashboard separates MCP streams" $dashboardSource '"Streams"'
     Assert-Contains "dashboard explains long-lived MCP streams" $dashboardSource 'long-lived GET /mcp streams are tracked separately'
     Assert-Contains "dashboard supports OpenCodex Tray repair" $dashboardSource '/api/optional/repair'
+    Assert-Contains "dashboard exposes ngrok account switch" $dashboardSource '/api/ngrok/switch'
+    Assert-Contains "dashboard exposes saved ngrok accounts" $dashboardSource 'id="ngrok-profile-form"'
+    Assert-Contains "dashboard loads saved ngrok profiles" $dashboardSource '/api/ngrok/profiles'
+    Assert-Contains "dashboard switches saved ngrok profile" $dashboardSource '/api/ngrok/profile/switch'
+    Assert-Contains "dashboard deletes saved ngrok profile" $dashboardSource '/api/ngrok/profile/delete'
+    Assert-Contains "dashboard keeps navigation tabs visible by wrapping" $dashboardSource 'nav { display:flex; flex-wrap:wrap;'
+    Assert-Contains "dashboard uses password field for ngrok token" $dashboardSource 'name="switchAuthToken" type="password"'
+    Assert-Contains "dashboard uses password field for saved profile token" $dashboardSource 'name="profileAuthToken" type="password"'
+    Assert-Contains "dashboard explains DPAPI credential storage" $dashboardSource 'Windows DPAPI CurrentUser'
     Assert-Contains "dashboard converts UTC timestamps in browser system timezone" $dashboardSource 'new Intl.DateTimeFormat(undefined'
     Assert-Contains "dashboard displays local UTC offset" $dashboardSource 'timeZoneName:"shortOffset"'
     Assert-Contains "dashboard converts history timestamps" $dashboardSource 'formatSystemTime(entry.timestamp)'
     Assert-Contains "dashboard converts cleanup timestamps" $dashboardSource 'formatSystemTime(cleanup.lastCleanupAt)'
     Assert-Contains "Tray has optional tools menu" $traySource 'ToolStripMenuItem("Optional tools")'
     Assert-Contains "Tray hides optional tools when absent" $traySource '$optionalMenu.Visible = $false'
+    Assert-Contains "public probes use adaptive schedule" $traySource 'function Update-PublicProbeSchedule'
+    Assert-Contains "public probes support immediate event verification" $traySource 'function Request-ImmediatePublicProbe'
+    Assert-Contains "public probes use backoff after failures" $traySource '$script:settings.publicProbeBackoffSeconds'
+    Assert-Contains "public probe scheduler is used by health loop" $traySource 'Test-PublicProbeDue $now'
+    Assert-Contains "Host startup honors persisted public schedule" $traySource 'Start-HealthRunspace -IncludePublic:(Test-PublicProbeDue ([DateTimeOffset]::UtcNow))'
+    Assert-Contains "public probe schedule is persisted" $traySource '$record.nextProbeUtc = ConvertTo-WatchdogIso $script:nextPublicProbeAt'
+    Assert-Contains "public probe timeout enters backoff" $traySource 'if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }'
+    Assert-Contains "automatic recovery requests public verification" $traySource 'Request-ImmediatePublicProbe "recovery:$service"'
+    Assert-Contains "local recovery requires process evidence" $traySource '$pidChanged -or $processRestored -or $listenerRestored'
+    Assert-Contains "manual restart requests public verification" $traySource 'Request-ImmediatePublicProbe "manual_$Action`:$target"'
     Assert-Contains "Stop All requires typed confirmation" $dashboardSource 'Type STOP ALL'
     Assert-Contains "config Apply requires typed confirmation" $dashboardSource 'Type APPLY'
     Assert-Contains "rollback requires typed confirmation" $dashboardSource 'Type ROLLBACK'
@@ -289,30 +358,73 @@ try {
     [System.IO.File]::WriteAllText($javascriptPath, $scriptMatch.Groups[1].Value, (New-Object System.Text.UTF8Encoding($false)))
     & node.exe --check $javascriptPath
     if ($LASTEXITCODE -ne 0) { throw "dashboard JavaScript syntax validation failed." }
-    Assert-Contains "launcher delegates to native WinExe" $launcherSource 'devspace-watchdog-tray-launcher.exe'
-    Assert-True "launcher no longer starts PowerShell directly" (-not $launcherSource.Contains('powershell.exe'))
-    Assert-Contains "launcher starts native process hidden" $launcherSource 'shell.Run command, 0, False'
-    Assert-Contains "installer deploys native launcher" $installerSource 'devspace-watchdog-tray-launcher.exe'
-    Assert-Contains "native launcher uses CreateNoWindow" $nativeLauncherSource 'CreateNoWindow = true'
-    Assert-Contains "native launcher hides child window" $nativeLauncherSource 'WindowStyle = ProcessWindowStyle.Hidden'
-    Assert-Contains "native launcher detects stale heartbeat" $nativeLauncherSource 'FreshHeartbeatSeconds'
-    Assert-Contains "native launcher validates exact Tray process" $nativeLauncherSource 'IsExactTrayProcess'
-    Assert-Contains "native launcher recovers stale Tray" $nativeLauncherSource 'RecoverStaleTrayIfNeeded'
-    Assert-Contains "Tray opens dashboard through child rundll32" $traySource 'url.dll,FileProtocolHandler'
-    Assert-Contains "Tray shell target avoids UseShellExecute" $traySource '$psi.UseShellExecute = $false'
-    Assert-True "Tray dashboard opener avoids shell-bound URL ProcessStart" (-not $traySource.Contains('$psi.FileName = "http://127.0.0.1:'))
+    Assert-Contains "launcher uses built-in Windows PowerShell" $launcherSource 'WindowsPowerShell\v1.0\powershell.exe'
+    Assert-Contains "launcher delegates to bootstrap" $launcherSource 'devspace-watchdog-bootstrap.ps1'
+    Assert-Contains "launcher requests hidden PowerShell window" $launcherSource '-WindowStyle Hidden'
+    Assert-True "autostart launcher avoids ExecutionPolicy Bypass" (-not $launcherSource.Contains('ExecutionPolicy Bypass'))
+    Assert-Contains "launcher waits for hidden bootstrap completion" $launcherSource 'shell.Run(command, 0, True)'
+    $installerDeployPrefix = $installerSource.Substring(0, $installerSource.IndexOf('$retiredFiles = @('))
+    Assert-True "installer no longer deploys native launcher exe" (-not $installerDeployPrefix.Contains('devspace-watchdog-tray-launcher.exe'))
+    Assert-Contains "bootstrap detects stale heartbeat" $bootstrapSource '$freshHeartbeatSeconds = 15'
+    Assert-Contains "bootstrap recovers stale role" $bootstrapSource 'Recover-StaleRole'
+    Assert-Contains "bootstrap detects active console session" $bootstrapSource 'WTSGetActiveConsoleSessionId'
+    Assert-Contains "bootstrap launches Tray through interactive task bridge" $bootstrapSource 'Start-InteractiveWatchdogTray'
+    Assert-Contains "bootstrap interactive bridge uses InteractiveToken task" $bootstrapSource '"/IT"'
+    Assert-Contains "bootstrap interactive task directly launches PowerShell" $bootstrapSource 'powershell.exe -NoP -Sta -W Hidden -F'
+    Assert-True "bootstrap runtime avoids ExecutionPolicy Bypass" (-not $bootstrapSource.Contains('Bypass'))
+    Assert-Contains "bootstrap interactive task directly targets thin Tray" $bootstrapSource '(Convert-NativeArgument $trayScript)'
+    Assert-Contains "bootstrap verifies interactive Tray heartbeat session" $bootstrapSource 'Test-RoleHeartbeatFresh $trayHeartbeatPath $ExpectedSessionId'
+    Assert-Contains "bootstrap launches child processes without a console" $bootstrapSource '$psi.CreateNoWindow = $true'
+    Assert-Contains "Host has separate run mode" $traySource '"Host", "StopHost"'
+    Assert-Contains "Host listener handle is non inheritable" $traySource 'SetHandleInformation($script:listener.Server.Handle, 1, 0)'
+    Assert-Contains "thin Tray probes Host asynchronously" $trayUiSource 'GetStringAsync($statusUrl)'
+    Assert-Contains "thin Tray maintains Host off UI thread" $trayUiSource 'Start-TrayBackgroundWorker'
+    Assert-Contains "thin Tray heartbeat records Windows session" $trayUiSource 'sessionId=$SessionId'
+    Assert-Contains "manual Host repair queues background work" $trayUiSource '$script:trayShared.RepairRequested = $true'
+    Assert-Contains "forced Host repair is Host-only" $trayUiSource '"RepairHost"'
+    Assert-True "thin Tray Host repair avoids ExecutionPolicy Bypass" (-not $trayUiSource.Contains('"ExecutionPolicy", "Bypass"'))
+    Assert-True "thin Tray does not host dashboard listener" (-not $trayUiSource.Contains('TcpListener'))
+    Assert-Contains "Tray opens dashboard through child rundll32" $trayUiSource 'url.dll,FileProtocolHandler'
+    Assert-Contains "Tray shell target avoids UseShellExecute" $trayUiSource '$psi.UseShellExecute = $false'
+    Assert-True "Tray dashboard opener avoids shell-bound URL ProcessStart" (-not $trayUiSource.Contains('$psi.FileName = "http://127.0.0.1:'))
+    Assert-Contains "installer deploys thin Tray UI" $installerSource 'devspace-watchdog-tray-ui.ps1'
+    Assert-Contains "installer deploys Watchdog bootstrap" $installerSource 'devspace-watchdog-bootstrap.ps1'
+    Assert-Contains "installer recognizes legacy monolithic Tray heartbeat" $installerSource 'legacyHeartbeat'
+    Assert-Contains "installer validates dashboard ownership from heartbeat" $installerSource 'expectedDashboardUrl'
+    Assert-Contains "bootstrap starts Host role" $bootstrapSource '"Host"'
+    Assert-Contains "bootstrap starts thin Tray role" $bootstrapSource 'devspace-watchdog-tray-ui.ps1'
+    Assert-Contains "installer stops installed roles through bootstrap" $installerSource 'Invoke-InstalledWatchdogStop'
+    Assert-Contains "installer starts installed roles through bootstrap" $installerSource 'Invoke-InstalledWatchdogRun'
+    Assert-Contains "installer invokes bootstrap in-process" $installerSource '& $bootstrap -Mode $Mode -ConfigPath $configPath'
+    Assert-True "installer does not spawn hidden PowerShell bootstrap child" (-not $installerSource.Contains('ExecutionPolicy", "Bypass"'))
+    Assert-True "installer does not timeout-kill bootstrap child" (-not $installerSource.Contains('Installed Watchdog bootstrap $Mode did not finish within 10 seconds.'))
+    Assert-Contains "installer transaction does not rely on VBS for normal Run" $installerSource 'Installed Watchdog bootstrap Run is missing after deployment.'
+    Assert-Contains "installer retries transient file locks" $installerSource 'Copy-InstallerFileWithRetry'
+    Assert-Contains "installer retires legacy interactive Tray VBS" $installerSource 'run-devspace-watchdog-tray-ui-hidden.vbs'
+    Assert-Contains "installer retires native Tray launcher exe" $installerSource 'devspace-watchdog-tray-launcher.exe'
+    Assert-True "installer avoids WMI/CIM role discovery" (-not $installerSource.Contains('Get-CimInstance'))
+    Assert-Contains "Hermes local health uses session-free OPTIONS transport probe" $coreSource 'Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS"'
+    Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=public_probe'
+    Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
+    Assert-True "recovery executor no longer re-blocks confirmed busy transport" (-not $coreSource.Contains('Busy or indeterminate service blocks automatic recovery.'))
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'
-    Assert-True "installer disables task only after readiness check" ($installerSource.IndexOf('if (-not $ready)') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
+    Assert-True "installer snapshots task XML before temporary quiesce" ($installerSource.IndexOf('$legacyTaskBackups = @()') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))
     Assert-Contains "installer refuses unverified skip-start migration" $installerSource 'Tray migration cannot use -SkipStart'
     $stackInstallerSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-devspace-watchdog.ps1"), [System.Text.Encoding]::UTF8)
     Assert-Contains "stack installer supports Tray-only mode" $stackInstallerSource '[switch]$NoLegacyPoller'
     Assert-Contains "stack installer accepts owner token via environment" $stackInstallerSource '$env:DEVSPACE_OWNER_TOKEN'
     Assert-Contains "Tray-only mode uses disable marker" $stackInstallerSource 'legacy-watchdog-poller.disabled'
-    $trayOnlyOnceIndex = $stackInstallerSource.IndexOf('& (Join-Path $InstallDir "devspace-watchdog.ps1") -Once')
-    $trayOnlyMarkerWriteIndex = $stackInstallerSource.IndexOf('[System.IO.File]::WriteAllText($legacyPollerDisableMarker')
-    Assert-True "Tray-only initial service start precedes disable marker" ($trayOnlyOnceIndex -ge 0 -and $trayOnlyMarkerWriteIndex -gt $trayOnlyOnceIndex)
-    Assert-Contains "installer verifies exact PowerShell executable" $installerSource 'Test-WatchdogExecutablePath'
+    Assert-Contains "parent installer suppresses interactive Tray confirmation" $stackInstallerSource '-Confirm:$false'
+    Assert-True "Tray-only migration does not unconditionally restart user-stopped services" (-not $stackInstallerSource.Contains('& (Join-Path $InstallDir "devspace-watchdog.ps1") -Once'))
+    Assert-Contains "installer verifies Host owns dashboard port" $installerSource 'hostOwnsDashboard'
+    Assert-Contains "installer verifies Tray is in active console session" $installerSource 'traySessionReady'
+    Assert-Contains "OpenCodex Tray repair delegates to bootstrap bridge" $coreSource "'RepairOpenCodexTray'"
+    Assert-Contains "OpenCodex Tray repair launches PowerShell script directly" $bootstrapSource 'opencodex-tray.ps1'
+    Assert-Contains "bootstrap supports OpenCodex repair mode" $bootstrapSource 'RepairOpenCodexTray'
+    Assert-True "bootstrap does not exit parent PowerShell host" (-not $bootstrapSource.Contains('exit 0'))
+    Assert-Contains "ngrok profile tokens use separate DPAPI entropy" $coreSource 'DevSpaceWatchdogNgrokProfileV1'
+    Assert-Contains "ngrok profile list redacts token" $coreSource 'function Get-WatchdogNgrokProfiles'
 
     Write-Host "watchdog control core, persistence, recovery, impact, security, backup, Tray, and installer tests passed."
 } finally {

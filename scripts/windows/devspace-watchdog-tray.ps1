@@ -1,7 +1,7 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ConfigPath,
-    [ValidateSet("Run", "Stop")]
+    [ValidateSet("Run", "Stop", "Host", "StopHost")]
     [string]$Mode = "Run"
 )
 
@@ -19,24 +19,29 @@ function Get-TrayStableHash([string]$Value) {
 }
 
 $stableHash = Get-TrayStableHash $ConfigPath
+$isHostMode = $Mode -in @("Host", "StopHost")
+$instanceRole = if ($isHostMode) { "Host" } else { "Tray" }
 $stopEventCreated = $false
-$stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, "Local\DevSpaceWatchdogTrayStop-$stableHash", [ref]$stopEventCreated)
-if ($Mode -eq "Stop") {
+$stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, "Local\DevSpaceWatchdog${instanceRole}Stop-$stableHash", [ref]$stopEventCreated)
+if ($Mode -in @("Stop", "StopHost")) {
     [void]$stopEvent.Set()
     $stopEvent.Dispose()
     exit 0
 }
 
+$env:DEVSPACE_STACK_OPERATION_TOKEN = $null
 . $corePath
+. (Join-Path $PSScriptRoot "stack-operation.ps1")
+. (Join-Path $PSScriptRoot "stack-host-management.ps1")
 $script:config = Read-WatchdogJson $ConfigPath
 $script:settings = Get-WatchdogControlSettings $script:config
 $script:stateDir = [System.IO.Path]::GetFullPath([string]$script:config.stateDir)
 $script:statePath = Join-Path $script:stateDir "watchdog-tray-state.json"
-$script:heartbeatPath = Join-Path $script:stateDir "watchdog-tray-heartbeat.json"
+$script:heartbeatPath = Join-Path $script:stateDir $(if ($isHostMode) { "watchdog-host-heartbeat.json" } else { "watchdog-tray-heartbeat.json" })
 $script:templatePath = Join-Path $PSScriptRoot "devspace-control-center.html"
 
 $createdNew = $false
-$mutex = New-Object System.Threading.Mutex($true, "Local\DevSpaceWatchdogTray-$stableHash", [ref]$createdNew)
+$mutex = New-Object System.Threading.Mutex($true, "Local\DevSpaceWatchdog$instanceRole-$stableHash", [ref]$createdNew)
 if (-not $createdNew) {
     $stopEvent.Dispose()
     $mutex.Dispose()
@@ -51,6 +56,8 @@ using System.Runtime.InteropServices;
 public static class DevSpaceTrayNative {
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern bool DestroyIcon(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
 }
 "@
 
@@ -105,8 +112,35 @@ $script:healthAsync = $null
 $script:healthIncludedPublic = $false
 $script:lastHealthStarted = [DateTimeOffset]::MinValue
 $script:lastPublicStarted = [DateTimeOffset]::MinValue
+$publicProbeState = Get-WatchdogProperty $script:state "publicProbe" $null
+$script:publicProbeFailureCount = [int](Get-WatchdogProperty $publicProbeState "consecutiveFailures" 0)
+$script:nextPublicProbeAt = [DateTimeOffset]::MinValue
+$nextPublicProbeText = [string](Get-WatchdogProperty $publicProbeState "nextProbeUtc" "")
+$parsedNextPublicProbe = [DateTimeOffset]::MinValue
+if ($nextPublicProbeText -and [DateTimeOffset]::TryParse($nextPublicProbeText, [ref]$parsedNextPublicProbe)) { $script:nextPublicProbeAt = $parsedNextPublicProbe }
+if ($script:publicProbeFailureCount -eq 0) {
+    $lastSuccessText = [string](Get-WatchdogProperty $publicProbeState "lastSuccessUtc" "")
+    $parsedLastSuccess = [DateTimeOffset]::MinValue
+    if ($lastSuccessText -and [DateTimeOffset]::TryParse($lastSuccessText, [ref]$parsedLastSuccess)) {
+        $minimumNextProbe = $parsedLastSuccess.AddSeconds([int]$script:settings.publicProbeSeconds)
+        if ($script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue -or $script:nextPublicProbeAt -lt $minimumNextProbe) {
+            $script:nextPublicProbeAt = $minimumNextProbe
+            $publicProbeState.nextProbeUtc = ConvertTo-WatchdogIso $minimumNextProbe
+            Save-WatchdogState $script:statePath $script:state
+        }
+    }
+}
+# A restart has no in-memory public snapshot. Probe once immediately instead of
+# leaving the tray at "Checking public MCP" until the persisted six-hour slot.
+$script:forcePublicProbe = $true
+$script:nextPublicProbeAt = [DateTimeOffset]::MinValue
 $script:lastHeartbeat = [DateTimeOffset]::MinValue
 $script:mutationInProgress = $false
+$script:mutationPowerShell = $null
+$script:mutationAsync = $null
+$script:stackMutationLease = $null
+$script:mutationClient = $null
+$script:shutdownRequested = $false
 $script:lastTimerError = ""
 $script:lastTimerErrorAt = [DateTimeOffset]::MinValue
 
@@ -179,7 +213,11 @@ function Get-ControlStatusPayload {
     return [pscustomobject][ordered]@{
         timestamp = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
         overall = $overall
+        inventory = Get-CachedStackInventory
+        activeJob = Get-CachedStackJob
         maintenanceMode = [bool]$script:state.maintenanceMode
+        mutationInProgress = [bool]$script:mutationInProgress
+        stopping = [bool]$script:shutdownRequested
         services = [pscustomobject]$services
         optionalTools = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
         connections = Get-WatchdogProperty (Get-ServiceFromSnapshot "router") "connections" $null
@@ -189,13 +227,19 @@ function Get-ControlStatusPayload {
             devspaceUrl = $editable.publicDomain.TrimEnd("/") + $editable.devspaceRoutePath + "/mcp"
             hermesUrl = $editable.publicDomain.TrimEnd("/") + $editable.hermesRoutePath + "/mcp"
             probes = $script:lastPublic
+            schedule = [pscustomobject]@{
+                healthyIntervalSeconds = [int]$script:settings.publicProbeSeconds
+                consecutiveFailures = [int]$script:publicProbeFailureCount
+                nextProbeUtc = $(if ($script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue) { $null } else { ConvertTo-WatchdogIso $script:nextPublicProbeAt })
+                forced = [bool]$script:forcePublicProbe
+            }
         }
         config = $editable
     }
 }
 
 function Start-HealthRunspace([switch]$IncludePublic) {
-    if ($script:healthAsync) { return }
+    if ($script:healthAsync -or $script:mutationInProgress -or $script:shutdownRequested) { return }
     $scriptText = @'
 param($CorePath, $ConfigurationPath, $ProbePublic)
 $ErrorActionPreference = "Stop"
@@ -217,6 +261,62 @@ function Stop-HealthRunspace {
     try { $script:healthPowerShell.Dispose() } catch { }
     $script:healthPowerShell = $null
     $script:healthAsync = $null
+    $script:healthIncludedPublic = $false
+}
+
+function Test-PublicProbeHealthy($PublicSnapshot) {
+    if (-not $PublicSnapshot) { return $false }
+    foreach ($service in @("devspace", "hermes")) {
+        if (-not (Test-WatchdogServiceEnabled $service $script:config)) { continue }
+        $probe = Get-WatchdogProperty $PublicSnapshot $service $null
+        if (-not [bool](Get-WatchdogProperty $probe "protocolHealthy" $false)) { return $false }
+    }
+    return $true
+}
+
+function Update-PublicProbeSchedule($PublicSnapshot, [bool]$Completed = $true) {
+    $now = [DateTimeOffset]::UtcNow
+    $healthy = $Completed -and (Test-PublicProbeHealthy $PublicSnapshot)
+    if ($healthy) {
+        $script:publicProbeFailureCount = 0
+        $delaySeconds = [int]$script:settings.publicProbeSeconds
+    } else {
+        $script:publicProbeFailureCount++
+        $backoff = @($script:settings.publicProbeBackoffSeconds)
+        $index = [Math]::Min([Math]::Max($script:publicProbeFailureCount - 1, 0), $backoff.Count - 1)
+        $delaySeconds = [int]$backoff[$index]
+    }
+    $script:forcePublicProbe = $false
+    $script:nextPublicProbeAt = $now.AddSeconds($delaySeconds)
+    $record = Get-WatchdogProperty $script:state "publicProbe" $null
+    if (-not $record) {
+        $record = [pscustomobject][ordered]@{ consecutiveFailures=0; nextProbeUtc=$null; lastAttemptUtc=$null; lastSuccessUtc=$null }
+        Set-WatchdogProperty $script:state "publicProbe" $record
+    }
+    $record.consecutiveFailures = [int]$script:publicProbeFailureCount
+    $record.lastAttemptUtc = ConvertTo-WatchdogIso $now
+    if ($healthy) { $record.lastSuccessUtc = ConvertTo-WatchdogIso $now }
+    $record.nextProbeUtc = ConvertTo-WatchdogIso $script:nextPublicProbeAt
+    try { Save-WatchdogState $script:statePath $script:state } catch { }
+}
+
+function Request-ImmediatePublicProbe([string]$Reason = "event") {
+    $script:forcePublicProbe = $true
+    $script:nextPublicProbeAt = [DateTimeOffset]::MinValue
+    $record = Get-WatchdogProperty $script:state "publicProbe" $null
+    if (-not $record) {
+        $record = [pscustomobject][ordered]@{ consecutiveFailures=0; nextProbeUtc=$null; lastAttemptUtc=$null; lastSuccessUtc=$null }
+        Set-WatchdogProperty $script:state "publicProbe" $record
+    }
+    $record.nextProbeUtc = $null
+    try { Save-WatchdogState $script:statePath $script:state } catch { }
+    if ($Reason) {
+        Write-WatchdogEvent $script:stateDir $script:config "public" "verify_requested" $Reason "schedule" "immediate"
+    }
+}
+
+function Test-PublicProbeDue([DateTimeOffset]$Now) {
+    return $script:forcePublicProbe -or $script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue -or $Now -ge $script:nextPublicProbeAt
 }
 
 function Write-HealthTransitions($Snapshot) {
@@ -239,9 +339,27 @@ function Write-HealthTransitions($Snapshot) {
 }
 
 function Apply-HealthSnapshot($Snapshot) {
+    $previousHealth = $script:lastHealth
     Write-HealthTransitions $Snapshot
     $script:lastHealth = $Snapshot
-    if ($Snapshot.public) { $script:lastPublic = $Snapshot.public }
+    if (-not $Snapshot.public -and $previousHealth) {
+        foreach ($service in @("devspace", "hermes", "router", "ngrok")) {
+            if (-not (Test-WatchdogServiceEnabled $service $script:config)) { continue }
+            $previousService = Get-WatchdogProperty $previousHealth.services $service $null
+            $currentService = Get-WatchdogProperty $Snapshot.services $service $null
+            if (-not $previousService -or -not $currentService -or -not [bool](Get-WatchdogProperty $currentService "healthy" $false)) { continue }
+            $previousPid = [int](Get-WatchdogProperty $previousService "pid" 0)
+            $currentPid = [int](Get-WatchdogProperty $currentService "pid" 0)
+            $pidChanged = $previousPid -gt 0 -and $currentPid -gt 0 -and $previousPid -ne $currentPid
+            $processRestored = -not [bool](Get-WatchdogProperty $previousService "processFound" $false) -and [bool](Get-WatchdogProperty $currentService "processFound" $false)
+            $listenerRestored = -not [bool](Get-WatchdogProperty $previousService "listenerFound" $false) -and [bool](Get-WatchdogProperty $currentService "listenerFound" $false)
+            if ($pidChanged -or $processRestored -or $listenerRestored) { Request-ImmediatePublicProbe "local_recovered:$service" }
+        }
+    }
+    if ($Snapshot.public) {
+        $script:lastPublic = $Snapshot.public
+        Update-PublicProbeSchedule $Snapshot.public $true
+    }
     if (-not $script:mutationInProgress) {
         foreach ($service in $script:WatchdogServiceNames) {
             if (-not (Test-WatchdogServiceEnabled $service $script:config)) { continue }
@@ -251,6 +369,7 @@ function Apply-HealthSnapshot($Snapshot) {
                 $result = Invoke-WatchdogServiceRecovery $service $ConfigPath $script:config $health
                 Complete-WatchdogRecoveryAttempt $script:state $service $result
                 Write-WatchdogEvent $script:stateDir $script:config $service "recovery" $decision.reason "attempt $($decision.record.attemptCount)" $(if ($result.success) { "dispatched" } else { $result.error })
+                if ($result.success -and $service -in @("devspace", "hermes", "router", "ngrok")) { Request-ImmediatePublicProbe "recovery:$service" }
             }
         }
         Save-WatchdogState $script:statePath $script:state
@@ -259,6 +378,7 @@ function Apply-HealthSnapshot($Snapshot) {
 
 function Complete-HealthRunspace {
     if (-not $script:healthAsync -or -not $script:healthAsync.IsCompleted) { return }
+    $includedPublic = [bool]$script:healthIncludedPublic
     try {
         $output = $script:healthPowerShell.EndInvoke($script:healthAsync)
         $json = ($output | ForEach-Object { [string]$_ }) -join ""
@@ -268,15 +388,18 @@ function Complete-HealthRunspace {
         }
         Apply-HealthSnapshot ($json | ConvertFrom-Json)
     } catch {
+        if ($includedPublic) { Update-PublicProbeSchedule $null $false }
         Write-WatchdogEvent $script:stateDir $script:config "tray" "health_cycle_failed" $_.Exception.Message "probe" "failed"
     } finally {
         $script:healthPowerShell.Dispose()
         $script:healthPowerShell = $null
         $script:healthAsync = $null
+        $script:healthIncludedPublic = $false
     }
 }
 
 function Invoke-OptionalToolRepair([string]$Tool) {
+    Assert-ControlMutationAvailable
     $status = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
     if (-not $status) { return [pscustomobject]@{ success=$false; error="Optional-tool health check is not ready." } }
     $result = Repair-WatchdogOptionalTool $Tool $status
@@ -285,6 +408,7 @@ function Invoke-OptionalToolRepair([string]$Tool) {
 }
 
 function Invoke-ManualServiceAction([string]$Action, [string]$Service) {
+    Assert-ControlMutationAvailable
     if ($Action -notin @("start", "stop", "restart", "retry", "keep_stopped", "maintenance", "resume")) { throw "Unknown action." }
     if ($Action -in @("maintenance", "resume")) {
         $script:state.maintenanceMode = ($Action -eq "maintenance")
@@ -323,12 +447,14 @@ function Invoke-ManualServiceAction([string]$Action, [string]$Service) {
         }
         $results += [pscustomobject]@{ service=$target; success=[bool]$result.success; error=[string](Get-WatchdogProperty $result "error" "") }
         Write-WatchdogEvent $script:stateDir $script:config $target "manual_action" "user request" $Action $(if ($result.success) { "complete" } else { $result.error })
+        if ($result.success -and $Action -in @("start", "restart", "retry")) { Request-ImmediatePublicProbe "manual_$Action`:$target" }
     }
     Save-WatchdogState $script:statePath $script:state
     return [pscustomobject]@{ success=(@($results | Where-Object { -not $_.success }).Count -eq 0); results=$results }
 }
 
 function Invoke-ConfigApply($InputObject) {
+    Assert-ControlMutationAvailable
     $script:mutationInProgress = $true
     Stop-HealthRunspace
     $oldConfig = $script:config
@@ -381,12 +507,13 @@ function Invoke-ConfigApply($InputObject) {
         $script:lastHealth = $null
         $script:lastPublic = $null
         $script:lastHealthStarted = [DateTimeOffset]::MinValue
-        $script:lastPublicStarted = [DateTimeOffset]::MinValue
+        Request-ImmediatePublicProbe "configuration_apply"
         $script:mutationInProgress = $false
     }
 }
 
 function Invoke-ConfigRollback([string]$BackupId) {
+    Assert-ControlMutationAvailable
     $script:mutationInProgress = $true
     Stop-HealthRunspace
     $oldConfig = $script:config
@@ -442,15 +569,130 @@ function Invoke-ConfigRollback([string]$BackupId) {
         $script:lastHealth = $null
         $script:lastPublic = $null
         $script:lastHealthStarted = [DateTimeOffset]::MinValue
-        $script:lastPublicStarted = [DateTimeOffset]::MinValue
+        Request-ImmediatePublicProbe "configuration_rollback"
         $script:mutationInProgress = $false
+    }
+}
+
+function Assert-ControlMutationAvailable {
+    if ($script:shutdownRequested) { throw "Watchdog is stopping; mutations are unavailable." }
+    if ($script:mutationInProgress) { throw "Another mutation is in progress. Wait for it to finish." }
+}
+
+function Start-ControlNgrokSwitch($Client, $Payload, [switch]$SavedProfile) {
+    Assert-ControlMutationAvailable
+    Stop-HealthRunspace
+    $script:mutationInProgress = $true
+    $scriptText = @'
+param($CorePath, $ConfigurationPath, $PayloadJson, $DesiredJson, $Saved)
+$ErrorActionPreference = "Stop"
+. $CorePath
+$payload = $PayloadJson | ConvertFrom-Json
+$PayloadJson = $null
+try {
+    $outcome = Invoke-WatchdogNgrokSwitch $ConfigurationPath $payload ($DesiredJson | ConvertFrom-Json) -SavedProfile:$Saved
+    [pscustomobject]@{ success=$true; outcome=$outcome } | ConvertTo-Json -Depth 30 -Compress
+} catch {
+    $failure = Protect-WatchdogText $_.Exception.Message
+    $needsAttention = [bool]$_.Exception.Data["WatchdogRollbackNeedsAttention"]
+    $currentConfig = $null
+    try { $currentConfig = Read-WatchdogJson $ConfigurationPath } catch { $needsAttention = $true }
+    [pscustomobject]@{ success=$false; error=$failure; config=$currentConfig; needsAttention=$needsAttention } | ConvertTo-Json -Depth 30 -Compress
+} finally {
+    if ($payload.PSObject.Properties["authToken"]) { $payload.authToken = $null }
+}
+'@
+    try {
+        Write-ControlHeartbeat -Force
+        $script:mutationPowerShell = [PowerShell]::Create()
+        [void]$script:mutationPowerShell.AddScript($scriptText).AddArgument($corePath).AddArgument($ConfigPath).AddArgument((ConvertTo-Json -InputObject $Payload -Depth 10 -Compress)).AddArgument((ConvertTo-Json -InputObject $script:state.desired -Compress)).AddArgument([bool]$SavedProfile)
+        $script:mutationAsync = $script:mutationPowerShell.BeginInvoke()
+        $script:mutationClient = $Client
+    } catch {
+        if ($script:mutationAsync) { throw }
+        if ($script:mutationPowerShell) { $script:mutationPowerShell.Dispose() }
+        $script:mutationPowerShell = $null
+        $script:mutationInProgress = $false
+        throw
+    }
+}
+
+function Complete-ControlNgrokSwitch {
+    if (-not $script:mutationAsync -or -not $script:mutationAsync.IsCompleted) { return }
+    $status = 400
+    $response = $null
+    try {
+        $output = $script:mutationPowerShell.EndInvoke($script:mutationAsync)
+        $json = ($output | ForEach-Object { [string]$_ }) -join ""
+        if (-not $json) { throw "Account switch worker returned no result; inspect configuration before retrying." }
+        $completed = $json | ConvertFrom-Json
+        if ($completed.success) {
+            $script:config = $completed.outcome.config
+            $script:settings = Get-WatchdogControlSettings $script:config
+            # Keep automatic recovery excluded while adopting the transaction's verified evidence.
+            Apply-HealthSnapshot $completed.outcome.snapshot
+            $response = $completed.outcome.result
+            $status = 200
+        } else {
+            if ($completed.config) {
+                $script:config = $completed.config
+                $script:settings = Get-WatchdogControlSettings $script:config
+            }
+            $script:lastHealth = $null
+            $script:lastPublic = $null
+            if ($completed.needsAttention) {
+                $script:state.maintenanceMode = $true
+                Save-WatchdogState $script:statePath $script:state
+            }
+            Request-ImmediatePublicProbe "ngrok_switch_failed"
+            $response = @{ error=[string]$completed.error }
+        }
+    } catch {
+        $script:state.maintenanceMode = $true
+        Save-WatchdogState $script:statePath $script:state
+        $response = @{ error=(Protect-WatchdogText $_.Exception.Message) }
+    } finally {
+        try { if ($script:mutationClient) { Write-ControlJson $script:mutationClient.GetStream() $status $response } } catch { }
+        if ($script:mutationClient) { $script:mutationClient.Dispose() }
+        $script:mutationPowerShell.Dispose()
+        $script:mutationClient = $null
+        $script:mutationPowerShell = $null
+        $script:mutationAsync = $null
+        Exit-StackOperation $script:stackMutationLease; $script:stackMutationLease = $null
+        $script:mutationInProgress = $false
+        $script:lastHealthStarted = [DateTimeOffset]::MinValue
+    }
+}
+
+function Write-ControlHeartbeat([switch]$Force) {
+    $now = [DateTimeOffset]::UtcNow
+    if (-not $Force -and ($now - $script:lastHeartbeat).TotalSeconds -lt 3) { return }
+    Write-WatchdogAtomicJson $script:heartbeatPath ([pscustomobject]@{
+        pid=$PID; timestamp=(ConvertTo-WatchdogIso $now)
+        processStartUtc=(ConvertTo-WatchdogIso ([DateTimeOffset][System.Diagnostics.Process]::GetCurrentProcess().StartTime))
+        dashboard="http://127.0.0.1:$($script:settings.dashboardPort)/"; status=(Get-OverallTrayState).label
+        role=$(if ($isHostMode) { "host" } else { "tray" })
+        sessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        mutationInProgress=[bool]$script:mutationInProgress
+    }) 5
+    $script:lastHeartbeat = $now
+}
+
+function Wait-ControlMutationDrain {
+    $script:shutdownRequested = $true
+    while ($script:mutationAsync) {
+        # An account transaction must finish its rollback; cancelling its pipeline is unsafe.
+        Start-Sleep -Milliseconds 100
+        Complete-ControlNgrokSwitch
+        Complete-StackManagementProxies
+        try { Write-ControlHeartbeat } catch { }
     }
 }
 
 function Read-LoopbackHttpRequest($Client) {
     if (-not [System.Net.IPAddress]::IsLoopback($Client.Client.RemoteEndPoint.Address)) { throw "Remote client is not loopback." }
-    $Client.ReceiveTimeout = 1500
-    $Client.SendTimeout = 1500
+    $Client.ReceiveTimeout = 750
+    $Client.SendTimeout = 750
     $stream = $Client.GetStream()
     $headerBytes = New-Object System.Collections.Generic.List[byte]
     $matched = 0
@@ -489,11 +731,11 @@ function Read-LoopbackHttpRequest($Client) {
     }
     $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
     $body = if ($contentLength) { $utf8.GetString($bodyBytes) } else { "" }
-    return [pscustomobject]@{ method=$requestParts[0]; path=$requestParts[1]; headers=$headers; body=$body; stream=$stream }
+    return [pscustomobject]@{ method=$requestParts[0]; path=$requestParts[1]; headers=$headers; body=$body; stream=$stream; client=$Client }
 }
 
 function Write-LoopbackHttpResponse($Stream, [int]$Status, [string]$ContentType, [string]$Body) {
-    $reason = switch ($Status) { 200 { "OK" } 400 { "Bad Request" } 403 { "Forbidden" } 404 { "Not Found" } 405 { "Method Not Allowed" } 409 { "Conflict" } 500 { "Internal Server Error" } default { "Error" } }
+    $reason = switch ($Status) { 200 { "OK" } 202 { "Accepted" } 503 { "Service Unavailable" } 400 { "Bad Request" } 403 { "Forbidden" } 404 { "Not Found" } 405 { "Method Not Allowed" } 409 { "Conflict" } 500 { "Internal Server Error" } default { "Error" } }
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
     $headers = "HTTP/1.1 $Status $reason`r`nContent-Type: $ContentType`r`nContent-Length: $($bytes.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nX-Content-Type-Options: nosniff`r`nReferrer-Policy: no-referrer`r`nX-Frame-Options: DENY`r`nContent-Security-Policy: default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`r`n`r`n"
     $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($headers)
@@ -503,20 +745,23 @@ function Write-LoopbackHttpResponse($Stream, [int]$Status, [string]$ContentType,
 }
 
 function Write-ControlJson($Stream, [int]$Status, $Value) {
-    Write-LoopbackHttpResponse $Stream $Status "application/json; charset=utf-8" ($Value | ConvertTo-Json -Depth 30 -Compress)
+    Write-LoopbackHttpResponse $Stream $Status "application/json; charset=utf-8" (ConvertTo-Json -InputObject $Value -Depth 30 -Compress)
 }
 
 function Invoke-SetupDashboardLaunch {
     $nodePath = [string](Get-WatchdogProperty $script:config "nodePath" "")
     $cliPath = [string](Get-WatchdogProperty $script:config "cliPath" "")
     if (-not $nodePath -or -not [System.IO.File]::Exists($nodePath)) { throw "Configured Node runtime is missing." }
-    if (-not $cliPath -or -not [System.IO.File]::Exists($cliPath)) { throw "Configured DevSpace CLI path is missing." }
-    $packageRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path $cliPath -Parent) ".."))
+    $packageRoot = [string](Get-WatchdogProperty $script:config 'managementPackageRoot' '')
+    if (-not $packageRoot) {
+        if (-not $cliPath -or -not [System.IO.File]::Exists($cliPath)) { throw "Configured DevSpace CLI path is missing." }
+        $packageRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path $cliPath -Parent) ".."))
+    }
     $setupScript = Join-Path $packageRoot "scripts\windows\devspace-stack-setup.cjs"
     if (-not [System.IO.File]::Exists($setupScript)) { throw "This DevSpace package does not include the Setup Dashboard. Update the npm/GitHub package first." }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $nodePath
-    $psi.Arguments = ConvertTo-WatchdogNativeArgument $setupScript
+    $psi.Arguments = ((@($setupScript, "--install-dir", (Split-Path $ConfigPath -Parent)) | ForEach-Object { ConvertTo-WatchdogNativeArgument $_ }) -join " ")
     $psi.WorkingDirectory = $packageRoot
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -548,9 +793,20 @@ function Invoke-ControlHttpRequest($Request) {
     if ($Request.method -eq "GET" -and $Request.path -eq "/api/status") { Write-ControlJson $Request.stream 200 (Get-ControlStatusPayload); return }
     if ($Request.method -eq "GET" -and $Request.path -eq "/api/history") { Write-ControlJson $Request.stream 200 @(Get-WatchdogEventHistory $script:stateDir $script:config 250); return }
     if ($Request.method -eq "GET" -and $Request.path -eq "/api/backups") { Write-ControlJson $Request.stream 200 @(Get-WatchdogConfigurationBackups $script:stateDir); return }
+    if ($Request.method -eq "GET" -and $Request.path -eq "/api/ngrok/profiles") { Write-ControlJson $Request.stream 200 @(Get-WatchdogNgrokProfiles $script:config); return }
+    if ($Request.method -eq "GET" -and ($Request.path -eq "/api/components" -or $Request.path -match '^/api/job\?id=[a-f0-9]{24}$')) { return (Start-StackManagementProxy $Request) }
     if ($Request.method -ne "POST") { Write-ControlJson $Request.stream 404 @{ error="Not found." }; return }
     try {
         Assert-ControlMutation $Request
+        if ($Request.path -in @("/api/components/refresh", "/api/components/action")) {
+            if ($script:mutationInProgress -or $script:shutdownRequested) { Write-ControlJson $Request.stream 409 @{error="Watchdog is busy or stopping."}; return }
+            return (Start-StackManagementProxy $Request)
+        }
+        $requestLease = if ($Request.path -ne "/api/setup/launch") { Enter-StackOperation -InstallDir $script:stackInstallDir } else { $null }
+        if ($script:mutationInProgress -or $script:shutdownRequested) {
+            Write-ControlJson $Request.stream 409 @{ error="Watchdog is busy or stopping. Wait for the current operation to finish." }
+            return
+        }
         $payload = if ($Request.body) { $Request.body | ConvertFrom-Json } else { [pscustomobject]@{} }
         switch ($Request.path) {
             "/api/action" {
@@ -567,6 +823,23 @@ function Invoke-ControlHttpRequest($Request) {
             }
             "/api/setup/launch" {
                 Write-ControlJson $Request.stream 200 (Invoke-SetupDashboardLaunch)
+            }
+            "/api/ngrok/switch" {
+                Start-ControlNgrokSwitch $Request.client $payload
+                $script:stackMutationLease = $requestLease; $requestLease = $null
+                return $true
+            }
+            "/api/ngrok/profile/save" {
+                Write-ControlJson $Request.stream 200 (Save-WatchdogNgrokProfile $script:config $payload)
+            }
+            "/api/ngrok/profile/delete" {
+                if ([string](Get-WatchdogProperty $payload "confirmation" "") -ne "DELETE NGROK PROFILE") { throw "DELETE NGROK PROFILE confirmation is required." }
+                Write-ControlJson $Request.stream 200 (Remove-WatchdogNgrokProfile $script:config ([string](Get-WatchdogProperty $payload "id" "")))
+            }
+            "/api/ngrok/profile/switch" {
+                Start-ControlNgrokSwitch $Request.client $payload -SavedProfile
+                $script:stackMutationLease = $requestLease; $requestLease = $null
+                return $true
             }
             "/api/config/preview" {
                 $editable = ConvertTo-WatchdogEditableConfig (Get-WatchdogProperty $payload "config" $null) $script:config
@@ -586,16 +859,17 @@ function Invoke-ControlHttpRequest($Request) {
         }
     } catch {
         Write-ControlJson $Request.stream 400 @{ error=(Protect-WatchdogText $_.Exception.Message) }
-    }
+    } finally { Exit-StackOperation $requestLease }
 }
 
 function Invoke-PendingDashboardRequest {
     if (-not $script:listener.Pending()) { return }
     $client = $script:listener.AcceptTcpClient()
+    $deferred = $false
     try {
-        try { $request = Read-LoopbackHttpRequest $client; Invoke-ControlHttpRequest $request }
+        try { $request = Read-LoopbackHttpRequest $client; $deferred = [bool](Invoke-ControlHttpRequest $request) }
         catch { try { Write-ControlJson $client.GetStream() 400 @{ error=(Protect-WatchdogText $_.Exception.Message) } } catch { } }
-    } finally { $client.Dispose() }
+    } finally { if (-not $deferred) { $client.Dispose() } }
 }
 
 function Start-ControlShellTarget([string]$Executable, [string[]]$Arguments) {
@@ -621,7 +895,60 @@ function Open-ControlLogs {
 if (-not [System.IO.File]::Exists($script:templatePath)) { throw "Dashboard template is missing: $($script:templatePath)" }
 $script:dashboardHtml = ([System.IO.File]::ReadAllText($script:templatePath, [System.Text.Encoding]::UTF8)).Replace("{{CONTROL_TOKEN}}", $script:controlToken).Replace("{{DASHBOARD_PORT}}", [string]$script:settings.dashboardPort)
 $script:listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $script:settings.dashboardPort)
-$script:listener.Start(8)
+$script:listener.Start(16)
+if (-not [DevSpaceTrayNative]::SetHandleInformation($script:listener.Server.Handle, 1, 0)) {
+    throw "Dashboard listener handle could not be marked non-inheritable."
+}
+
+if ($Mode -eq "Host") {
+    Write-WatchdogEvent $script:stateDir $script:config "host" "start" "Windows login or launcher" "monitor" "dashboard 127.0.0.1:$($script:settings.dashboardPort)"
+    try {
+        Start-HealthRunspace -IncludePublic:(Test-PublicProbeDue ([DateTimeOffset]::UtcNow))
+        while ($true) {
+            if ($stopEvent.WaitOne(100)) { $script:shutdownRequested = $true }
+            try {
+                Complete-ControlNgrokSwitch
+                Complete-StackManagementProxies
+                if ($script:shutdownRequested -and -not $script:mutationInProgress) { break }
+                $handled = 0
+                while ($handled -lt 8 -and $script:listener.Pending()) {
+                    Invoke-PendingDashboardRequest
+                    $handled++
+                }
+                if ($script:healthAsync -and -not $script:healthAsync.IsCompleted -and ([DateTimeOffset]::UtcNow - $script:lastHealthStarted).TotalSeconds -ge 45) {
+                    $timedOutPublic = [bool]$script:healthIncludedPublic
+                    Stop-HealthRunspace
+                    if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }
+                    Write-WatchdogEvent $script:stateDir $script:config "host" "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe" $(if ($timedOutPublic) { "public backoff scheduled" } else { "monitoring retained" })
+                }
+                Complete-HealthRunspace
+                $now = [DateTimeOffset]::UtcNow
+                if (-not $script:healthAsync -and ($now - $script:lastHealthStarted).TotalSeconds -ge $script:settings.localProbeSeconds) {
+                    $includePublic = Test-PublicProbeDue $now
+                    Start-HealthRunspace -IncludePublic:$includePublic
+                }
+                Write-ControlHeartbeat
+            } catch {
+                $timerError = Protect-WatchdogText $_.Exception.Message
+                if ($timerError -ne $script:lastTimerError -or ([DateTimeOffset]::UtcNow - $script:lastTimerErrorAt).TotalSeconds -ge 30) {
+                    try { Write-WatchdogEvent $script:stateDir $script:config "host" "loop_error" $timerError "continue" "monitoring retained" } catch { }
+                    $script:lastTimerError = $timerError
+                    $script:lastTimerErrorAt = [DateTimeOffset]::UtcNow
+                }
+            }
+        }
+    } finally {
+        Wait-ControlMutationDrain
+        Write-WatchdogEvent $script:stateDir $script:config "host" "exit" "stop event" "stop monitoring host" "managed services left unchanged"
+        Stop-HealthRunspace
+        try { $script:listener.Stop() } catch { }
+        if ([System.IO.File]::Exists($script:heartbeatPath)) { [System.IO.File]::Delete($script:heartbeatPath) }
+        try { $mutex.ReleaseMutex() } catch { }
+        $mutex.Dispose()
+        $stopEvent.Dispose()
+    }
+    exit 0
+}
 
 $script:icons = @{
     GREEN = New-TrayCircleIcon ([System.Drawing.Color]::FromArgb(40, 180, 99))
@@ -703,15 +1030,19 @@ $repairOpenCodexTrayItem.add_Click({
 $maintenanceItem.add_Click({ [void](Invoke-ManualServiceAction "maintenance" "all") })
 $resumeItem.add_Click({ [void](Invoke-ManualServiceAction "resume" "all") })
 $logsItem.add_Click({ Open-ControlLogs })
-$exitItem.add_Click({ [System.Windows.Forms.Application]::Exit() })
+$exitItem.add_Click({ $script:shutdownRequested = $true })
 
 function Update-TrayPresentation {
     $overall = Get-OverallTrayState
     $notify.Icon = $script:icons[$overall.color]
     $notify.Text = "DevSpace Watchdog - $($overall.label)"
     $statusItem.Text = "Status: $($overall.label)"
-    $maintenanceItem.Enabled = -not $script:state.maintenanceMode
-    $resumeItem.Enabled = [bool]$script:state.maintenanceMode
+    $available = -not $script:mutationInProgress -and -not $script:shutdownRequested
+    $maintenanceItem.Enabled = $available -and -not $script:state.maintenanceMode
+    $resumeItem.Enabled = $available -and [bool]$script:state.maintenanceMode
+    $startAllItem.Enabled = $available
+    $stopAllItem.Enabled = $available
+    $restartAllItem.Enabled = $available
     $tools = Get-WatchdogProperty $script:lastHealth "optionalTools" $null
     $codex = Get-WatchdogProperty $tools "codex" $null
     $openCodex = Get-WatchdogProperty $tools "openCodex" $null
@@ -735,7 +1066,7 @@ function Update-TrayPresentation {
         $proxyText = if ([bool](Get-WatchdogProperty $openCodex "proxyHealthy" $false)) { "Proxy OK" } elseif ([bool](Get-WatchdogProperty $openCodex "proxyRunning" $false)) { "Proxy degraded" } else { "Proxy stopped" }
         $trayText = if ([bool](Get-WatchdogProperty $openCodex "trayRunning" $false)) { "Tray OK" } elseif ([bool](Get-WatchdogProperty $openCodex "trayInstalled" $false)) { "Tray stopped" } else { "No Tray" }
         $openCodexStateItem.Text = "OpenCodex: $proxyText / $trayText"
-        $repairOpenCodexTrayItem.Enabled = [bool](Get-WatchdogProperty $openCodex "repairTrayAvailable" $false)
+        $repairOpenCodexTrayItem.Enabled = $available -and [bool](Get-WatchdogProperty $openCodex "repairTrayAvailable" $false)
     }
     foreach ($service in $script:WatchdogServiceNames) {
         $item = $script:serviceMenuItems[$service]
@@ -743,7 +1074,7 @@ function Update-TrayPresentation {
         $desired = [string](Get-WatchdogProperty $script:state.desired $service "running")
         $health = Get-ServiceFromSnapshot $service
         $record = Get-WatchdogProperty $script:state.recovery $service $null
-        $item.menu.Enabled = $enabled
+        $item.menu.Enabled = $available -and $enabled
         $item.state.Text = if (-not $enabled) { "Disabled" } elseif ($desired -eq "stopped_by_user") { "Stopped by user" } elseif ($health -and $health.healthy) { "Healthy" } else { [string](Get-WatchdogProperty $record "phase" "Checking") }
         $item.start.Enabled = $enabled -and $desired -eq "stopped_by_user"
         $item.stop.Enabled = $enabled -and $desired -eq "running"
@@ -755,22 +1086,24 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500
 $timer.add_Tick({
     try {
-        if ($stopEvent.WaitOne(0)) { [System.Windows.Forms.Application]::Exit(); return }
+        if ($stopEvent.WaitOne(0)) { $script:shutdownRequested = $true }
+        Complete-ControlNgrokSwitch
+        Complete-StackManagementProxies
+        if ($script:shutdownRequested -and -not $script:mutationInProgress) { [System.Windows.Forms.Application]::Exit(); return }
         if ($script:listener.Pending()) { Invoke-PendingDashboardRequest }
         if ($script:healthAsync -and -not $script:healthAsync.IsCompleted -and ([DateTimeOffset]::UtcNow - $script:lastHealthStarted).TotalSeconds -ge 45) {
+            $timedOutPublic = [bool]$script:healthIncludedPublic
             Stop-HealthRunspace
-            Write-WatchdogEvent $script:stateDir $script:config "tray" "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe" "monitoring retained"
+            if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }
+            Write-WatchdogEvent $script:stateDir $script:config "tray" "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe" $(if ($timedOutPublic) { "public backoff scheduled" } else { "monitoring retained" })
         }
         Complete-HealthRunspace
         $now = [DateTimeOffset]::UtcNow
         if (-not $script:healthAsync -and ($now - $script:lastHealthStarted).TotalSeconds -ge $script:settings.localProbeSeconds) {
-            $includePublic = ($now - $script:lastPublicStarted).TotalSeconds -ge $script:settings.publicProbeSeconds
+            $includePublic = Test-PublicProbeDue $now
             Start-HealthRunspace -IncludePublic:$includePublic
         }
-        if (($now - $script:lastHeartbeat).TotalSeconds -ge 3) {
-            Write-WatchdogAtomicJson $script:heartbeatPath ([pscustomobject]@{ pid=$PID; timestamp=(ConvertTo-WatchdogIso $now); dashboard="http://127.0.0.1:$($script:settings.dashboardPort)/"; status=(Get-OverallTrayState).label }) 5
-            $script:lastHeartbeat = $now
-        }
+        Write-ControlHeartbeat
         Update-TrayPresentation
     } catch {
         $timerError = Protect-WatchdogText $_.Exception.Message
@@ -789,10 +1122,11 @@ $notify.Text = "DevSpace Watchdog - Checking"
 Write-WatchdogEvent $script:stateDir $script:config "tray" "start" "Windows login or manual launch" "monitor" "dashboard 127.0.0.1:$($script:settings.dashboardPort)"
 
 try {
-    Start-HealthRunspace -IncludePublic
+    Start-HealthRunspace -IncludePublic:(Test-PublicProbeDue ([DateTimeOffset]::UtcNow))
     $timer.Start()
     [System.Windows.Forms.Application]::Run()
 } finally {
+    Wait-ControlMutationDrain
     Write-WatchdogEvent $script:stateDir $script:config "tray" "exit" "Exit Tray" "stop monitoring UI" "managed services left unchanged"
     $timer.Stop(); $timer.Dispose()
     Stop-HealthRunspace

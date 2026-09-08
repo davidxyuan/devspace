@@ -7,15 +7,18 @@ function New-DevSpaceCapabilityConfig(
     [string]$ToolMode,
     [string]$Widgets,
     [string]$Skills,
-    [string]$Subagents
+    [string]$Subagents,
+    [string]$McpTransport = "stateful"
 ) {
     if ($ToolMode -notin @("minimal", "full", "codex")) { throw "Invalid DevSpace tool mode: $ToolMode" }
     if ($Widgets -notin @("off", "changes", "full")) { throw "Invalid DevSpace widgets mode: $Widgets" }
+    if ($McpTransport -notin @("stateful", "stateless-json")) { throw "Invalid DevSpace MCP transport: $McpTransport" }
     [ordered]@{
         toolMode = $ToolMode
         widgets = $Widgets
         skills = Convert-CapabilitySwitch $Skills
         subagents = Convert-CapabilitySwitch $Subagents
+        mcpTransport = $McpTransport
     }
 }
 
@@ -72,6 +75,7 @@ function ConvertFrom-CapabilitySelection([string]$Selection) {
         DevSpaceToolMode = @("minimal", "full", "codex")
         DevSpaceWidgets = @("off", "changes", "full")
         DevSpaceSkills = @("On", "Off"); DevSpaceSubagents = @("On", "Off")
+        DevSpaceMcpTransport = @("stateful", "stateless-json")
         HermesBridge = @("On", "Off"); HermesReadOnlyTools = @("On", "Off")
         HermesVision = @("On", "Off"); HermesWeb = @("On", "Off")
         HermesDiagnostics = @("On", "Off"); HermesRunner = @("On", "Off")
@@ -124,8 +128,8 @@ function Get-TestedStackPlan(
     [bool]$Recognized,
     [version]$DevSpaceVersion,
     [version]$HermesVersion,
-    [version]$PinnedDevSpace = [version]"1.0.4",
-    [version]$PinnedHermes = [version]"0.5.0",
+    [version]$PinnedDevSpace = $null,
+    [version]$PinnedHermes = $null,
     [string]$DevSpaceCommit = "",
     [string]$HermesCommit = "",
     [string]$PinnedDevSpaceCommit = "",
@@ -133,6 +137,12 @@ function Get-TestedStackPlan(
 ) {
     if (-not $Recognized) {
         return [pscustomobject]@{ action="Fresh"; devspaceState="Fresh"; hermesState="Fresh" }
+    }
+    if ($null -eq $PinnedDevSpace -or $null -eq $PinnedHermes) {
+        $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tested-stack-manifest.json') -Raw | ConvertFrom-Json
+        if ($manifest.schemaVersion -ne 1 -or -not $manifest.devspace.version -or -not $manifest.'hermes-gpt'.version) { throw 'Historical tested stack manifest is invalid.' }
+        if ($null -eq $PinnedDevSpace) { $PinnedDevSpace = [version]$manifest.devspace.version }
+        if ($null -eq $PinnedHermes) { $PinnedHermes = [version]$manifest.'hermes-gpt'.version }
     }
     $dev = Get-TestedComponentState "DevSpace" $DevSpaceVersion $PinnedDevSpace $DevSpaceCommit $PinnedDevSpaceCommit
     $hermes = Get-TestedComponentState "Hermes-GPT" $HermesVersion $PinnedHermes $HermesCommit $PinnedHermesCommit
@@ -152,8 +162,8 @@ function Get-TestedStackAction(
     [bool]$Recognized,
     [version]$DevSpaceVersion,
     [version]$HermesVersion,
-    [version]$PinnedDevSpace = [version]"1.0.4",
-    [version]$PinnedHermes = [version]"0.5.0",
+    [version]$PinnedDevSpace = $null,
+    [version]$PinnedHermes = $null,
     [string]$DevSpaceCommit = "",
     [string]$HermesCommit = "",
     [string]$PinnedDevSpaceCommit = "",

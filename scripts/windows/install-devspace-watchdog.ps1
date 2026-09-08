@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "$env:USERPROFILE\.devspace",
+    [string]$ManagementPackageRoot,
     [string]$AllowedRoots,
     [string]$PublicBaseUrl,
     [ValidateSet("AgentEndpoint", "CloudEndpoint")]
@@ -41,6 +42,7 @@ param(
     [ValidateSet("off", "changes", "full")][string]$DevSpaceWidgets = "off",
     [ValidateSet("On", "Off")][string]$DevSpaceSkills = "Off",
     [ValidateSet("On", "Off")][string]$DevSpaceSubagents = "Off",
+    [ValidateSet("stateful", "stateless-json")][string]$DevSpaceMcpTransport = "stateful",
     [ValidateSet("On", "Off")][string]$HermesBridge = "On",
     [ValidateSet("On", "Off")][string]$HermesReadOnlyTools = "On",
     [ValidateSet("On", "Off")][string]$HermesVision = "Off",
@@ -67,17 +69,8 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "watchdog-task-action.ps1")
 . (Join-Path $PSScriptRoot "ngrok-install.ps1")
 . (Join-Path $PSScriptRoot "capability-config.ps1")
+. (Join-Path $PSScriptRoot "watchdog-install-transaction.ps1")
 $script:InstallDocsPath = Join-Path ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))) "docs\windows-watchdog.md"
-
-trap {
-    Write-Host ""
-    Write-Host "DevSpace watchdog install failed." -ForegroundColor Red
-    Write-Host $_.Exception.Message
-    if (Test-Path -LiteralPath $script:InstallDocsPath) {
-        Write-Host "Troubleshooting: $script:InstallDocsPath"
-    }
-    exit 1
-}
 
 function Fail([string]$message, [string]$fix = "") {
     if ($fix) {
@@ -231,7 +224,7 @@ function Read-JsonFile([string]$path) {
     return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 }
 
-function Write-JsonFile([string]$path, $value, [int]$depth = 4) {
+function Write-JsonFile([string]$path, $value, [int]$depth = 40) {
     $json = ($value | ConvertTo-Json -Depth $depth) + [Environment]::NewLine
     [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
 }
@@ -428,22 +421,66 @@ if ($NoLegacyPoller -and -not ($UserMode -or $NoElevate)) {
     Fail "-NoLegacyPoller is intended for UserMode/NoElevate installs." "Use -UserMode -InstallWatchdogTray -NoLegacyPoller on standard-user company PCs."
 }
 $HermesDir = [System.IO.Path]::GetFullPath($HermesDir)
-$componentList = Get-ComponentList
-$installDevSpace = Test-Component "DevSpace"
-$installHermes = Test-Component "Hermes"
-$useRouter = $installDevSpace -or $installHermes
-$MachineName = if ($MachineName) { $MachineName } else { [System.Net.Dns]::GetHostName() }
-$machineSlug = ConvertTo-Slug $MachineName
-if (-not $machineSlug) {
-    Fail "Missing machine name." 'Pass -MachineName with a URL-safe name, for example -MachineName "david-pc".'
-}
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+. (Join-Path $PSScriptRoot 'stack-operation.ps1')
+$installLease = Enter-StackOperation -InstallDir $InstallDir
+$installTransaction = $null
+$priorControlRunning = $false
+try {
 $configPath = Join-Path $InstallDir "config.json"
 $authPath = Join-Path $InstallDir "auth.json"
 $watchdogConfigPath = Join-Path $InstallDir "devspace-watchdog.config.json"
 $existingConfig = Read-JsonFile $configPath
 $existingAuth = Read-JsonFile $authPath
 $existingWatchdogConfig = Read-JsonFile $watchdogConfigPath
+# Parameters omitted by the caller retain the effective installed value. Keep
+# installed components even when only an additional component was selected.
+$componentList = @(Get-ComponentList)
+if ($existingWatchdogConfig.devspaceEnabled) { $componentList += 'DevSpace' }
+if ($existingWatchdogConfig.hermesEnabled) { $componentList += 'Hermes' }
+$componentList = @($componentList | Select-Object -Unique)
+$installDevSpace = Test-Component 'DevSpace'
+$installHermes = Test-Component 'Hermes'
+$useRouter = $installDevSpace -or $installHermes
+$installedParameters = @{
+    Port='port'; HermesPort='hermesPort'; RouterPort='routerPort'; NodePath='nodePath'; CliPath='cliPath';
+    HermesDir='hermesWorkingDirectory'; PythonPath='hermesPython'; NgrokPath='ngrokPath';
+    MachineName='machineSlug'; McpNameSuffix='mcpNameSuffix'; RouteAliasMachineNames='routeAliasMachineNames';
+    NgrokEndpointMode='ngrokEndpointMode'; NgrokAgentBaseUrl='ngrokAgentBaseUrl'; NgrokBinding='ngrokBinding';
+    CloudEndpointPolicyPath='cloudEndpointPolicyPath'; FullAccess='fullAccess'
+}
+foreach ($entry in $installedParameters.GetEnumerator()) {
+    $property = if ($existingWatchdogConfig) { $existingWatchdogConfig.PSObject.Properties[$entry.Value] } else { $null }
+    if (-not $PSBoundParameters.ContainsKey($entry.Key) -and $property -and $null -ne $property.Value -and [string]$property.Value -ne '') {
+        Set-Variable -Name $entry.Key -Value $property.Value
+    }
+}
+if (-not $PSBoundParameters.ContainsKey('SkipNgrok') -and $existingWatchdogConfig -and $existingWatchdogConfig.manageNgrok -eq $false) { $SkipNgrok = $true }
+if ($existingWatchdogConfig.hermesEnabled -and [IO.File]::Exists([string]$existingWatchdogConfig.hermesServer) -and [IO.File]::Exists([string]$existingWatchdogConfig.hermesPython) -and -not $PSBoundParameters.ContainsKey('HermesDir')) { $SkipHermesInstall = $true }
+$MachineName = if ($MachineName) { $MachineName } else { [System.Net.Dns]::GetHostName() }
+$machineSlug = ConvertTo-Slug $MachineName
+if (-not $machineSlug) { Fail 'Missing machine name.' 'Pass a URL-safe MachineName.' }
+$capabilityParameters = @{
+    DevSpaceToolMode='toolMode'; DevSpaceWidgets='widgets'; DevSpaceSkills='skills'; DevSpaceSubagents='subagents'; DevSpaceMcpTransport='mcpTransport';
+    HermesBridge='bridge'; HermesReadOnlyTools='readOnlyTools'; HermesVision='vision'; HermesWeb='web'; HermesDiagnostics='diagnostics';
+    HermesRunner='runner'; HermesRunnerWrite='runnerWrite'; HermesWorkspaceWrite='workspaceWrite'; HermesMemoryWrite='memoryWrite'; HermesTerminal='terminal';
+    HermesOperator='operator'; HermesOperatorDirect='operatorDirect'; HermesOwnerMode='ownerMode'; HermesCron='cron'; HermesCronWrite='cronWrite';
+    HermesSkillWrite='skillWrite'; HermesPrivateNetwork='privateNetwork'; HermesFilesystemScope='filesystemScope'; HermesAllowedRoots='allowedRoots'
+}
+foreach ($entry in $capabilityParameters.GetEnumerator()) {
+    $group = if ($entry.Key.StartsWith('DevSpace')) { $existingWatchdogConfig.capabilities.devspace } else { $existingWatchdogConfig.capabilities.hermes }
+    $property = if ($group) { $group.PSObject.Properties[$entry.Value] } else { $null }
+    if (-not $PSBoundParameters.ContainsKey($entry.Key) -and $property) {
+        $value = if ($property.Value -is [bool]) { if ($property.Value) { 'On' } else { 'Off' } } else { $property.Value }
+        Set-Variable -Name $entry.Key -Value $value
+    }
+}
+if (-not $PSBoundParameters.ContainsKey("DevSpaceMcpTransport")) {
+    $existingTransport = [string]$existingWatchdogConfig.capabilities.devspace.mcpTransport
+    if ($existingTransport -in @("stateful", "stateless-json")) {
+        $DevSpaceMcpTransport = $existingTransport
+    }
+}
 if (($installDevSpace -and $Port -eq $RouterPort) -or ($installHermes -and $HermesPort -eq $RouterPort) -or
     ($installDevSpace -and $installHermes -and $Port -eq $HermesPort)) {
     Fail "DevSpace, Hermes-GPT, and router ports must be distinct." "Choose three fixed, non-overlapping ports and update their dependent routes and clients explicitly."
@@ -460,7 +497,7 @@ if ($useRouter) {
 foreach ($entry in (ConvertFrom-CapabilitySelection $CapabilitySelection).GetEnumerator()) {
     Set-Variable -Name $entry.Key -Value $entry.Value
 }
-$devspaceCapabilities = New-DevSpaceCapabilityConfig $DevSpaceToolMode $DevSpaceWidgets $DevSpaceSkills $DevSpaceSubagents
+$devspaceCapabilities = New-DevSpaceCapabilityConfig $DevSpaceToolMode $DevSpaceWidgets $DevSpaceSkills $DevSpaceSubagents $DevSpaceMcpTransport
 $hermesCapabilities = New-HermesCapabilityConfig `
     $HermesBridge $HermesReadOnlyTools $HermesVision $HermesWeb $HermesDiagnostics `
     $HermesRunner $HermesRunnerWrite $HermesWorkspaceWrite $HermesMemoryWrite $HermesTerminal `
@@ -472,14 +509,22 @@ $needsNode = $installDevSpace -or $useRouter
 if ($needsNode -and -not $NodePath) {
     $NodePath = Ensure-Command "node.exe" "OpenJS.NodeJS.LTS" "Node.js LTS"
 }
-if ($installDevSpace) {
+if ($needsNode) {
+    if (-not [IO.File]::Exists($NodePath)) { Fail "Configured Node.js was not found: $NodePath" }
+    $nodeVersion = [version](& $NodePath -p 'process.versions.node')
+    if ($LASTEXITCODE -ne 0 -or $nodeVersion -lt [version]'22.19' -or $nodeVersion -ge [version]'27.0') { Fail 'Node.js must be >=22.19 and <27.' 'Select a compatible Node installation; the existing runtime was not replaced.' }
+}
+if ($installDevSpace -and -not $CliPath) {
     $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
 }
-$hermesAgentPath = Install-HermesAgentIfNeeded
+if ($installHermes -and [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
+    ([IO.File]::Exists((Join-Path $HermesDir '.venv\Scripts\python.exe')) -or ($PythonPath -and [IO.File]::Exists($PythonPath)))) { $SkipHermesInstall = $true }
+$hermesAgentPath = if ($SkipHermesInstall) { Find-HermesAgentExe } else { Install-HermesAgentIfNeeded }
 
 $ngrokWebAddrSupported = $false
 if (-not $SkipNgrok) {
-    if (-not $NgrokPath -and $InstallTools) {
+    if (-not $NgrokPath) { $NgrokPath = Find-CommandPath 'ngrok.exe' }
+    if ((-not $NgrokPath -or -not (Test-NgrokEndpointFlagSupport $NgrokPath)) -and $InstallTools) {
         try {
             $NgrokPath = Install-LatestNgrokAgent -InstallRoot $InstallDir
         } catch {
@@ -502,10 +547,6 @@ if (-not $SkipNgrok) {
     }
     $ngrokWebAddrSupported = Test-NgrokWebAddrSupport $NgrokPath
     $effectiveNgrokAuthtoken = if ($NgrokAuthtoken) { $NgrokAuthtoken } elseif ($env:NGROK_AUTHTOKEN) { $env:NGROK_AUTHTOKEN } else { "" }
-    if ($effectiveNgrokAuthtoken) {
-        Write-Host "Configuring ngrok authtoken..."
-        Invoke-Checked { & $NgrokPath config add-authtoken $effectiveNgrokAuthtoken } "ngrok authtoken setup failed."
-    }
 }
 
 if ($installDevSpace) {
@@ -610,23 +651,23 @@ if ($installDevSpace) {
         $allowedRootList = @($repoRoot)
     }
 
-    $devspaceConfig = [ordered]@{
+    $devspaceConfig = Merge-InstallDefaults $existingConfig ([ordered]@{
         host = "127.0.0.1"
         port = $Port
         allowedRoots = $allowedRootList
         publicBaseUrl = $PublicBaseUrl
-    }
-    Write-JsonFile $configPath $devspaceConfig 4
+    })
+    $devspaceConfig['port'] = $Port
+    if ($PSBoundParameters.ContainsKey('AllowedRoots') -or $PSBoundParameters.ContainsKey('FullAccess')) { $devspaceConfig['allowedRoots'] = $allowedRootList }
+    if ($PSBoundParameters.ContainsKey('PublicBaseUrl') -or $PSBoundParameters.ContainsKey('MachineName')) { $devspaceConfig['publicBaseUrl'] = $PublicBaseUrl }
 
     $ownerToken = if ($env:DEVSPACE_OWNER_TOKEN) { [string]$env:DEVSPACE_OWNER_TOKEN } else { [string]$existingAuth.ownerToken }
     if (-not $ownerToken) {
         $ownerToken = New-OwnerToken
     }
-    Write-JsonFile $authPath @{ ownerToken = $ownerToken } 2
+    $authConfig = ConvertTo-InstallMap $existingAuth
+    $authConfig['ownerToken'] = $ownerToken
 }
-
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Destination (Join-Path $InstallDir "devspace-watchdog.ps1") -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run-devspace-watchdog-hidden.vbs") -Destination (Join-Path $InstallDir "run-devspace-watchdog-hidden.vbs") -Force
 
 $hermesCommandPath = ""
 if ($installHermes) {
@@ -635,7 +676,7 @@ if ($installHermes) {
             Write-Host "Cloning hermes-gpt..."
             $gitPath = Find-GitForClone
             Invoke-Checked { & $gitPath clone $HermesRepo $HermesDir } "git clone hermes-gpt failed."
-        }
+        } elseif (-not (Test-Path -LiteralPath (Join-Path $HermesDir 'server.py'))) { Fail "Existing Hermes directory is not a recognized Hermes-GPT installation: $HermesDir" }
 
         $venvPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $venvPython)) {
@@ -653,8 +694,12 @@ if ($installHermes) {
 
     $hermesPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $hermesPython)) {
+        if (-not $PythonPath) { Fail 'No compatible existing Hermes-GPT Python runtime was found.' }
         $hermesPython = [System.IO.Path]::GetFullPath($PythonPath)
     }
+    if (-not [IO.File]::Exists($hermesPython)) { Fail "Hermes-GPT Python was not found: $hermesPython" }
+    $pythonVersion = [version](& $hermesPython -c 'import platform; print(platform.python_version())')
+    if ($LASTEXITCODE -ne 0 -or $pythonVersion -lt [version]'3.10') { Fail 'Hermes-GPT requires Python >=3.10.' }
     $hermesServer = Join-Path $HermesDir "server.py"
     if (-not (Test-Path -LiteralPath $hermesServer)) {
         Fail "hermes-gpt server.py was not found: $hermesServer" "Remove -SkipHermesInstall so the installer can clone hermes-gpt, or pass -HermesDir to the correct repo folder."
@@ -695,19 +740,19 @@ if ($installHermes) {
     }
     if ($hermesCapabilities.ownerMode) { $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACK=I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"' }
     $hermesFullAccessEnv = $hermesCapabilityEnv -join [Environment]::NewLine
-    @"
+    $hermesCommandContent = @"
 @echo off
 set "HERMES_HOME=%LOCALAPPDATA%\hermes"
 $hermesFullAccessEnv
 cd /d "$HermesDir"
 "$hermesPython" "$hermesServer" --http --host 127.0.0.1 --port $HermesPort
-"@ | Set-Content -LiteralPath $hermesCommandPath -Encoding ASCII
+"@
 }
 
 $routerPath = ""
 if ($useRouter) {
     $routerPath = Join-Path $InstallDir "mcp-router.cjs"
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "mcp-router.cjs") -Destination $routerPath -Force
+    if ($existingWatchdogConfig.routerPath) { $routerPath = [IO.Path]::GetFullPath([string]$existingWatchdogConfig.routerPath) }
 }
 
 $mcpRoutes = @()
@@ -771,7 +816,8 @@ $watchdogConfig = [ordered]@{
     controlCenter = if ($existingWatchdogConfig.controlCenter) { $existingWatchdogConfig.controlCenter } else { [ordered]@{
         dashboardPort = 8777
         localProbeSeconds = 5
-        publicProbeSeconds = 45
+        publicProbeSeconds = 21600
+        publicProbeBackoffSeconds = @(300, 1800, 7200, 21600)
         failureThreshold = 2
         maxRecoveryAttempts = 5
         backoffSeconds = @(0, 10, 30, 60, 120)
@@ -782,7 +828,80 @@ $watchdogConfig = [ordered]@{
     cloudEndpointPolicyPath = ""
 }
 
-if ($NgrokEndpointMode -eq "CloudEndpoint") {
+if ($existingWatchdogConfig) {
+    $candidate = $watchdogConfig
+    $watchdogConfig = Merge-InstallDefaults $existingWatchdogConfig $candidate
+    $watchdogConfig['devspaceEnabled'] = $installDevSpace
+    $watchdogConfig['hermesEnabled'] = $installHermes
+    $fieldParameters = @{
+        port='Port'; hermesPort='HermesPort'; routerPort='RouterPort'; publicUpstreamPort='RouterPort'; nodePath='NodePath'; cliPath='CliPath';
+        fullAccess='FullAccess'; machineSlug='MachineName'; mcpNameSuffix='McpNameSuffix'; ngrokEndpointMode='NgrokEndpointMode';
+        ngrokAgentBaseUrl='NgrokAgentBaseUrl'; ngrokBinding='NgrokBinding'; ngrokPath='NgrokPath'; publicBaseUrl='PublicBaseUrl'; manageNgrok='SkipNgrok'
+    }
+    foreach ($entry in $fieldParameters.GetEnumerator()) {
+        if ($PSBoundParameters.ContainsKey($entry.Value)) { $watchdogConfig[$entry.Key] = $candidate[$entry.Key] }
+    }
+    foreach ($field in @('cliPath','nodePath','ngrokPath','routerPath','routerPort','hermesCommand','hermesPython','hermesServer','hermesWorkingDirectory','hermesPort')) {
+        if (-not $watchdogConfig[$field]) { $watchdogConfig[$field] = $candidate[$field] }
+    }
+    if ($PSBoundParameters.ContainsKey('HermesDir') -or $PSBoundParameters.ContainsKey('PythonPath')) {
+        foreach ($field in @('hermesPython','hermesServer','hermesWorkingDirectory')) { $watchdogConfig[$field] = $candidate[$field] }
+    }
+    $existingRoutes = @($existingWatchdogConfig.mcpRoutes)
+    foreach ($route in $mcpRoutes) {
+        if (@($existingRoutes | Where-Object { [string]$_.prefix -eq [string]$route.prefix }).Count -eq 0) { $existingRoutes += $route }
+    }
+    $watchdogConfig['mcpRoutes'] = @($existingRoutes | ForEach-Object {
+        $route = ConvertTo-InstallMap $_
+        if ($route.service -eq 'devspace' -and $PSBoundParameters.ContainsKey('Port')) { $route['targetPort'] = $Port }
+        if ($route.service -eq 'hermes' -and $PSBoundParameters.ContainsKey('HermesPort')) { $route['targetPort'] = $HermesPort }
+        $route
+    })
+    if ($PSBoundParameters.ContainsKey('RouteAliasMachineNames')) { $watchdogConfig['routeAliasMachineNames'] = $candidate.routeAliasMachineNames }
+    $preservedCapabilities = ConvertTo-InstallMap $existingWatchdogConfig.capabilities
+    foreach ($group in @('devspace','hermes')) {
+        $capabilities = ConvertTo-InstallMap $preservedCapabilities[$group]
+        foreach ($key in $candidate.capabilities[$group].Keys) { $capabilities[$key] = $candidate.capabilities[$group][$key] }
+        $preservedCapabilities[$group] = $capabilities
+    }
+    $watchdogConfig['capabilities'] = $preservedCapabilities
+}
+$ManagementPackageRoot = if ($ManagementPackageRoot) { [IO.Path]::GetFullPath($ManagementPackageRoot) } elseif ($existingWatchdogConfig.managementPackageRoot) { [IO.Path]::GetFullPath([string]$existingWatchdogConfig.managementPackageRoot) } else { $repoRoot }
+if (-not [IO.File]::Exists((Join-Path $ManagementPackageRoot 'scripts\windows\devspace-stack-setup.cjs'))) { throw 'ManagementPackageRoot does not contain the Setup manager.' }
+$watchdogConfig['managementPackageRoot'] = $ManagementPackageRoot
+
+# Everything needed by the new configuration is prepared before activation.
+$taskSnapshots = @(Get-InstallTaskSnapshots $InstallDir)
+$legacyProcessSnapshots = @(Get-InstallLegacyProcessSnapshots $InstallDir)
+$transactionNames = @('config.json','auth.json','ngrok-auth.dpapi.json','devspace-watchdog.config.json','devspace-watchdog.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs','run-hermes-gpt.cmd','mcp-router.cjs','restart-devspace.flag','legacy-watchdog-poller.disabled','watchdog-tray-state.json')
+$transactionPaths = @($transactionNames | ForEach-Object { Join-Path $InstallDir $_ })
+if ($NgrokEndpointMode -eq 'CloudEndpoint') {
+    if (-not $CloudEndpointPolicyPath) { $CloudEndpointPolicyPath = Join-Path $InstallDir "ngrok-cloud-endpoint-$machineSlug.policy.yml" }
+    $transactionPaths += [IO.Path]::GetFullPath($CloudEndpointPolicyPath)
+    $transactionPaths += Join-Path (Split-Path $CloudEndpointPolicyPath -Parent) "ngrok-cloud-endpoint-$machineSlug.rule.yml"
+}
+$installTransaction = Start-InstallTransaction $InstallDir $transactionPaths $taskSnapshots $legacyProcessSnapshots
+Disable-InstallLegacyTasks $installTransaction
+Stop-InstallLegacyProcesses $installTransaction
+if ($existingWatchdogConfig -and $InstallWatchdogTray) {
+    try { & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir }
+    catch { $priorControlRunning = $true }
+    & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode Stop -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir
+    & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir
+}
+if ($installDevSpace) { Write-JsonFile $configPath $devspaceConfig; Write-JsonFile $authPath $authConfig }
+foreach ($name in @('devspace-watchdog.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $InstallDir $name) -Force }
+if ($installHermes -and (-not $SkipHermesInstall -or -not [IO.File]::Exists([string]$existingWatchdogConfig.hermesCommand))) {
+    [IO.File]::WriteAllText($hermesCommandPath, $hermesCommandContent, [Text.Encoding]::ASCII)
+}
+if ($useRouter -and -not [IO.File]::Exists($routerPath)) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'mcp-router.cjs') -Destination $routerPath }
+if ($effectiveNgrokAuthtoken) {
+    . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
+    [void](Set-WatchdogNgrokCredential $watchdogConfig $effectiveNgrokAuthtoken)
+    $effectiveNgrokAuthtoken = $null
+}
+
+if ($NgrokEndpointMode -eq "CloudEndpoint" -and (-not $existingWatchdogConfig.cloudEndpointPolicyPath -or $PSBoundParameters.ContainsKey('CloudEndpointPolicyPath') -or $PSBoundParameters.ContainsKey('NgrokAgentBaseUrl') -or $PSBoundParameters.ContainsKey('MachineName'))) {
     if (-not $CloudEndpointPolicyPath) {
         $CloudEndpointPolicyPath = Join-Path $InstallDir "ngrok-cloud-endpoint-$machineSlug.policy.yml"
     }
@@ -795,7 +914,7 @@ if ($NgrokEndpointMode -eq "CloudEndpoint") {
     $watchdogConfig["cloudEndpointPolicyPath"] = $CloudEndpointPolicyPath
     $watchdogConfig["cloudEndpointRulePath"] = [System.IO.Path]::GetFullPath($CloudEndpointRulePath)
 }
-Write-JsonFile $watchdogConfigPath $watchdogConfig 6
+Write-JsonFile $watchdogConfigPath $watchdogConfig
 $restartFlagPath = Join-Path $InstallDir "restart-devspace.flag"
 [System.IO.File]::WriteAllText($restartFlagPath, "installer updated config at $(Get-Date -Format o)" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
 
@@ -808,22 +927,16 @@ $taskCommand = $taskActionSpec.TaskCommand
 
 if ($NoLegacyPoller) {
     $legacyPollerDisableMarker = Join-Path $InstallDir "legacy-watchdog-poller.disabled"
-    foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
-        Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    }
-    Remove-Item -LiteralPath $legacyPollerDisableMarker -Force -ErrorAction SilentlyContinue
-    if (-not $SkipStart) {
-        & (Join-Path $InstallDir "devspace-watchdog.ps1") -Once -ConfigPath $watchdogConfigPath
-        if ($LASTEXITCODE -ne 0) { Fail "Initial Tray-only service start failed." "Review devspace-watchdog.log, then rerun the installer." }
-    }
     [System.IO.File]::WriteAllText($legacyPollerDisableMarker, "Tray-only install at $([DateTimeOffset]::UtcNow.ToString('o'))" + [Environment]::NewLine, [System.Text.Encoding]::ASCII)
 } else {
     Remove-Item -LiteralPath (Join-Path $InstallDir "legacy-watchdog-poller.disabled") -Force -ErrorAction SilentlyContinue
-    foreach ($oldTaskName in @($legacyTaskName, "DevSpaceNgrokWatchdogPoller", "DevSpaceNgrokWatchdogUserPoller", "DevSpace Serve Watchdog")) {
-        Stop-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    }
+    if ($taskSnapshots.Count) {
+        # Reuse the exact existing task definition and its enabled/running state.
+        foreach ($snapshot in $taskSnapshots) {
+            if ($snapshot.enabled) { Enable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null }
+            if ($snapshot.running -and $snapshot.enabled -and -not $SkipStart) { Start-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop }
+        }
+    } else {
     $action = New-ScheduledTaskAction -Execute $taskActionSpec.Execute -Argument $taskActionSpec.Arguments
     $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
     $pollTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -831,14 +944,16 @@ if ($NoLegacyPoller) {
     $settings.Hidden = $true
     $useSchtasks = $UserMode -or $NoElevate
     if ($useSchtasks) {
-        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand /F | Out-Null
+        & schtasks.exe /Create /TN $taskName /SC MINUTE /MO 1 /TR $taskCommand | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Fail "schtasks.exe failed to register $taskName." "Use -UserMode -InstallWatchdogTray -NoLegacyPoller on PCs where an old elevated task cannot be replaced."
         }
+        $installTransaction.createdTasks += [pscustomobject]@{name=$taskName;path='\'}
     } else {
         $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel ($runLevel)
         try {
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $pollTrigger) -Settings $settings -Principal $principal -Description "Runs the DevSpace watchdog every minute in the background as $modeName." -Force | Out-Null
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $pollTrigger) -Settings $settings -Principal $principal -Description "Runs the DevSpace watchdog every minute in the background as $modeName." | Out-Null
+            $installTransaction.createdTasks += [pscustomobject]@{name=$taskName;path='\'}
         } catch {
             Fail "Register-ScheduledTask failed for ${taskName}: $($_.Exception.Message)" "Approve UAC and rerun, or use -UserMode -InstallWatchdogTray -NoLegacyPoller."
         }
@@ -847,12 +962,14 @@ if ($NoLegacyPoller) {
         try { Start-ScheduledTask -TaskName $taskName }
         catch { Fail "Scheduled task was created but could not be started: $($_.Exception.Message)" "Start it from Task Scheduler, or use Tray-only UserMode." }
     }
+    }
 }
 
 if ($InstallWatchdogTray) {
-    & (Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1") -InstallDir $InstallDir -SkipStart:$SkipStart
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & (Join-Path $PSScriptRoot "install-devspace-watchdog-tray.ps1") -InstallDir $InstallDir -SkipStart:$SkipStart -OriginalTransactionPath (Join-Path $installTransaction.backupPath 'transaction.json') -Confirm:$false
 }
+elseif (-not $SkipStart) { Restart-InstallLegacyProcesses $installTransaction }
+$installTransaction.completed = $true
 
 Write-Host "DevSpace watchdog installed."
 Write-Host "Mode: $modeName"
@@ -867,7 +984,7 @@ Write-Host "DevSpace MCP name: $devspaceRouteName"
 Write-Host "Hermes MCP name: $hermesRouteName"
 if ($installDevSpace) {
     Write-Host "Auth: $authPath"
-    Write-Host "Owner password: $ownerToken"
+    Write-Host 'Owner authentication: configured (preserved in auth.json)'
     Write-Host "Local DevSpace MCP URL: http://127.0.0.1:$Port/mcp"
     Write-Host "Public DevSpace MCP URL: $devspacePublicBaseUrl/mcp"
 }
@@ -890,3 +1007,21 @@ if ($NgrokEndpointMode -eq "CloudEndpoint" -and $CloudEndpointPolicyPath) {
 Write-Host "Watchdog log: $(Join-Path $InstallDir "devspace-watchdog.log")"
 Write-Host "ngrok error log: $(Join-Path $InstallDir "ngrok-watchdog.err.log")"
 Write-Host "Troubleshooting: $script:InstallDocsPath"
+} catch {
+    $failure = $_
+    if ($installTransaction -and -not $installTransaction.completed) {
+        try {
+            if ($InstallWatchdogTray -and [IO.File]::Exists($watchdogConfigPath)) {
+                & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode Stop -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir
+                & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir
+            }
+            Undo-InstallTransaction $installTransaction
+            Restart-InstallLegacyProcesses $installTransaction
+            if ($priorControlRunning -and [IO.File]::Exists((Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1'))) {
+                & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $watchdogConfigPath
+            }
+        } catch { throw "ROLLBACK_FAILED: $($_.Exception.Message). Original failure: $($failure.Exception.Message). Recovery: $($installTransaction.backupPath)" }
+        throw "Installation failed; original configuration and task state restored. $($failure.Exception.Message). Recovery: $($installTransaction.backupPath)"
+    }
+    throw
+} finally { Exit-StackOperation $installLease }

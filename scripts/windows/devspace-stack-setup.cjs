@@ -7,6 +7,9 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const jobsApi = require("./stack-jobs.cjs");
+const management = require("./stack-management.cjs");
+if (!process.argv.includes("--worker")) { delete process.env.DEVSPACE_STACK_OPERATION_TOKEN; delete process.env.DEVSPACE_STACK_JOB_ID; }
 
 if (process.platform !== "win32") {
   console.error("devspace-stack setup currently supports Windows only.");
@@ -14,21 +17,60 @@ if (process.platform !== "win32") {
 }
 
 const scriptDir = __dirname;
-const packageRoot = path.resolve(scriptDir, "..", "..");
+const packageRoot = path.resolve(process.env.DEVSPACE_STACK_PACKAGE_ROOT || path.join(scriptDir, "..", ".."));
 const templatePath = path.join(scriptDir, "devspace-stack-setup.html");
 const installerPath = path.join(scriptDir, "install-devspace-watchdog.ps1");
 const cliPath = path.join(packageRoot, "dist", "cli.js");
 const packageJsonPath = path.join(packageRoot, "package.json");
-const installDir = path.join(os.homedir(), ".devspace");
+const installDirArgument = process.argv.indexOf("--install-dir");
+const installDir = path.resolve(installDirArgument >= 0 ? process.argv[installDirArgument + 1] : (process.env.DEVSPACE_STACK_INSTALL_DIR || path.join(os.homedir(), ".devspace")));
 const hermesDefaultDir = path.join(os.homedir(), "hermes-gpt");
 const controlToken = crypto.randomBytes(24).toString("base64url");
-const jobs = new Map();
-let activeJobId = null;
+const stateDirectory = jobsApi.managementDir(installDir);
+const inventoryPath = path.join(stateDirectory, "inventory.json");
+const terminalPhases = new Set(["completed", "failed"]);
+const pendingRequests = new Map();
+let launching = false;
+function launchWorker(type, input) {
+  const requestId = input.requestId;
+  if (requestId && !/^[A-Za-z0-9_.:-]{8,100}$/.test(requestId)) throw new Error("Invalid request ID.");
+  const key = requestId ? `${type}:${requestId}` : null;
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  if (key && pendingRequests.has(key)) {
+    const existing = pendingRequests.get(key);
+    if (existing.fingerprint !== fingerprint) throw new Error("Request ID was already used for different parameters.");
+    return existing.promise;
+  }
+  if (launching) throw new Error("Another stack operation is acquiring ownership.");
+  launching = true;
+  const promise = jobsApi.startWorker({ installDir, packageRoot, scriptDir, type, input }).finally(() => { launching = false; });
+  if (key) {
+    pendingRequests.set(key, { fingerprint, promise });
+    if (pendingRequests.size > 128) pendingRequests.delete(pendingRequests.keys().next().value);
+  }
+  return promise;
+}
+function activeJob() {
+  try { const job = jobsApi.activeJob(installDir); return job && !terminalPhases.has(job.phase) ? job : null; }
+  catch { return null; }
+}
+function cachedInventory() {
+  return readJson(inventoryPath) || { schemaVersion: 1, revision: "", checkedAt: null, refreshing: false, components: [], blockers: [] };
+}
+function configurationFingerprint() {
+  const hash = crypto.createHash("sha256");
+  for (const name of ["config.json", "devspace-watchdog.config.json", "auth.json"]) {
+    const file = path.join(installDir, name);
+    hash.update(name); hash.update(fs.existsSync(file) ? fs.readFileSync(file) : "missing");
+  }
+  return hash.digest("hex");
+}
 
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "")); }
   catch { return null; }
 }
+const initialManagementRoot = readJson(path.join(installDir, "devspace-watchdog.config.json"))?.managementPackageRoot || "";
 
 function originOf(value) {
   try { return new URL(String(value || "")).origin; }
@@ -46,21 +88,33 @@ function detectInstallState() {
   const auth = readJson(authPath) || {};
   const trayHeartbeat = readJson(path.join(installDir, "watchdog-tray-heartbeat.json"));
   const trayFresh = Boolean(trayHeartbeat && Date.now() - Date.parse(trayHeartbeat.timestamp) < 15000);
-  const state = configExists && watchdogExists ? "Existing" : (!configExists && !watchdogExists ? "Fresh" : "Partial");
+  const trayInstalled = [
+    "devspace-watchdog-bootstrap.ps1",
+    "devspace-watchdog-tray.ps1",
+    "devspace-watchdog-tray-ui.ps1",
+    "run-devspace-watchdog-tray-hidden.vbs",
+  ].every((name) => fs.existsSync(path.join(installDir, name)));
+  const configValid = !configExists || Boolean(readJson(configPath));
+  const watchdogValid = !watchdogExists || Boolean(readJson(watchdogPath));
+  const state = !configValid || !watchdogValid ? "Ambiguous" : configExists && watchdogExists ? "Existing" : (!configExists && !watchdogExists ? "Fresh" : "Partial");
   const publicDomain = originOf(watchdog.ngrokEndpointMode === "AgentEndpoint" ? (watchdog.ngrokAgentBaseUrl || watchdog.publicBaseUrl) : watchdog.publicBaseUrl);
   const existingHermesDir = watchdog.hermesWorkingDirectory || hermesDefaultDir;
   return {
     state,
+    configurationFingerprint: configurationFingerprint(),
+    inventory: cachedInventory(),
+    activeJob: activeJob(),
+    activeJobId: activeJob()?.id || null,
     installDir,
     packageRoot,
     packageVersion: readJson(packageJsonPath)?.version || "unknown",
     packageCliReady: fs.existsSync(cliPath),
     components: {
-      devspace: watchdog.devspaceEnabled !== false && (configExists || Boolean(watchdog.cliPath)),
-      hermes: Boolean(watchdog.hermesEnabled || watchdog.hermesServer),
+      devspace: Boolean(watchdog.cliPath && fs.existsSync(watchdog.cliPath)),
+      hermes: Boolean(watchdog.hermesServer && fs.existsSync(watchdog.hermesServer) && watchdog.hermesPython && fs.existsSync(watchdog.hermesPython)),
     },
     tray: {
-      installed: fs.existsSync(path.join(installDir, "devspace-watchdog-tray-launcher.exe")),
+      installed: trayInstalled,
       running: trayFresh,
       dashboard: trayFresh ? (trayHeartbeat.dashboard || "http://127.0.0.1:8777/") : "",
     },
@@ -74,12 +128,10 @@ function detectInstallState() {
       hermesDir: existingHermesDir,
       installDevspace: state === "Fresh" ? true : Boolean(watchdog.devspaceEnabled !== false),
       installHermes: state === "Fresh" ? true : Boolean(watchdog.hermesEnabled),
-      installTray: state === "Fresh" ? true : fs.existsSync(path.join(installDir, "devspace-watchdog-tray-launcher.exe")),
+      installTray: true,
       installTools: true,
       userMode: true,
       noLegacyPoller: true,
-      updatePackageFromGithub: false,
-      updateHermesSource: false,
       devspaceOwnerTokenConfigured: Boolean(auth.ownerToken),
     },
   };
@@ -88,10 +140,13 @@ function detectInstallState() {
 function validateSetup(input) {
   if (!input || typeof input !== "object") throw new Error("Invalid setup request.");
   const detected = detectInstallState();
-  if (detected.state === "Partial") throw new Error("Partial/unknown existing installation detected. Setup refuses to overwrite it; repair or back it up first.");
+  if (["Partial", "Ambiguous"].includes(detected.state)) throw new Error("Incomplete or invalid configuration detected. Existing files were preserved; repair the reported configuration before applying setup.");
+  if (input.configurationFingerprint !== detected.configurationFingerprint) throw new Error("Configuration changed since this form was loaded. Refresh and review it before applying.");
+  if (input.updatePackageFromGithub || input.updateHermesSource) throw new Error("Use the component Safe Update action after checking its source and latest version.");
+  const watchdog = readJson(path.join(installDir, "devspace-watchdog.config.json")) || {};
   const components = [];
-  if (input.installDevspace) components.push("DevSpace");
-  if (input.installHermes) components.push("Hermes");
+  if (input.installDevspace || watchdog.devspaceEnabled !== false && watchdog.cliPath) components.push("DevSpace");
+  if (input.installHermes || watchdog.hermesEnabled) components.push("Hermes");
   if (!components.length) throw new Error("Select DevSpace and/or Hermes.");
   if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/.test(String(input.machineName || ""))) throw new Error("Machine name is invalid.");
   if (!new Set(["AgentEndpoint", "CloudEndpoint"]).has(input.endpointMode)) throw new Error("Endpoint mode is invalid.");
@@ -106,6 +161,9 @@ function validateSetup(input) {
   if (input.noLegacyPoller && !input.installTray) throw new Error("Tray-only mode requires Install Tray.");
   return {
     components,
+    configurationFingerprint: detected.configurationFingerprint,
+    existing: detected.state === "Existing",
+    changes: Object.keys(input).filter(key => Object.hasOwn(detected.defaults, key) && input[key] !== detected.defaults[key]),
     machineName: String(input.machineName).trim(),
     endpointMode: input.endpointMode,
     publicDomain: domain,
@@ -116,131 +174,71 @@ function validateSetup(input) {
     installTools: Boolean(input.installTools),
     userMode: input.userMode !== false,
     noLegacyPoller: Boolean(input.noLegacyPoller),
-    updatePackageFromGithub: Boolean(input.updatePackageFromGithub),
-    updateHermesSource: Boolean(input.updateHermesSource),
     fullAccess: Boolean(input.fullAccess),
     ngrokAuthToken: String(input.ngrokAuthToken || ""),
     devspaceOwnerToken: String(input.devspaceOwnerToken || ""),
   };
 }
 
-function powershellPath() {
-  return path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
-
-function appendJobOutput(job, source, text, secrets = []) {
-  for (const raw of String(text || "").split(/\r?\n/)) {
-    let line = raw.trimEnd();
-    if (!line) continue;
-    line = line.replace(/^(Owner password:\s*).+$/i, "$1[configured]");
-    for (const secret of secrets.filter(Boolean)) line = line.split(secret).join("[secret]");
-    job.lines.push({ timestamp: new Date().toISOString(), source, text: line });
-    if (job.lines.length > 500) job.lines.splice(0, job.lines.length - 500);
-  }
-}
-
-function runLogged(job, command, args, options = {}, secrets = []) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...options });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { const text = chunk.toString("utf8"); stdout += text; appendJobOutput(job, "stdout", text, secrets); });
-    child.stderr.on("data", (chunk) => { const text = chunk.toString("utf8"); stderr += text; appendJobOutput(job, "stderr", text, secrets); });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${path.basename(command)} exited with code ${code}.`));
-    });
-  });
-}
-
-function resolveNpmCli() {
-  const candidate = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (!fs.existsSync(candidate)) throw new Error("npm CLI was not found beside the active Node runtime. Install Node.js with npm, then rerun.");
-  return candidate;
-}
-
-async function preparePackageRuntime(job, setup, secrets) {
-  if (!setup.updatePackageFromGithub) return { root: packageRoot, installer: installerPath, cli: cliPath };
-  const npmCli = resolveNpmCli();
-  const spec = "github:davidxyuan/devspace#codex/windows-watchdog-tray-control-center";
-  appendJobOutput(job, "setup", "Updating DevSpace package from GitHub before applying stack configuration.");
-  await runLogged(job, process.execPath, [npmCli, "install", "-g", spec, "--no-audit", "--no-fund"], { cwd: packageRoot, env: process.env }, secrets);
-  const rootResult = await runLogged(job, process.execPath, [npmCli, "root", "-g"], { cwd: packageRoot, env: process.env }, secrets);
-  const globalRoot = rootResult.stdout.trim().split(/\r?\n/).filter(Boolean).pop();
-  if (!globalRoot) throw new Error("npm global root could not be resolved after update.");
-  const updatedRoot = path.join(globalRoot, "@waishnav", "devspace");
-  const updatedInstaller = path.join(updatedRoot, "scripts", "windows", "install-devspace-watchdog.ps1");
-  const updatedCli = path.join(updatedRoot, "dist", "cli.js");
-  if (!fs.existsSync(updatedInstaller) || !fs.existsSync(updatedCli)) throw new Error("Updated global DevSpace package is incomplete.");
-  return { root: updatedRoot, installer: updatedInstaller, cli: updatedCli };
-}
-
-async function updateHermesSourceIfRequested(job, setup, secrets) {
-  if (!setup.updateHermesSource || !fs.existsSync(path.join(setup.hermesDir, ".git"))) return;
-  appendJobOutput(job, "setup", "Checking Hermes source before fast-forward update.");
-  const status = await runLogged(job, "git.exe", ["-C", setup.hermesDir, "status", "--porcelain", "--untracked-files=no"], { cwd: setup.hermesDir, env: process.env }, secrets);
-  if (status.stdout.trim()) throw new Error("Hermes has tracked local changes. Source update was refused; commit/stash them or leave 'Update Hermes source' unchecked.");
-  await runLogged(job, "git.exe", ["-C", setup.hermesDir, "pull", "--ff-only"], { cwd: setup.hermesDir, env: process.env }, secrets);
-}
-
-function startSetupJob(input) {
-  if (activeJobId) throw new Error("Another setup/update job is already running.");
+async function startSetupJob(input) {
   const setup = validateSetup(input);
-  if (!fs.existsSync(installerPath)) throw new Error(`Installer is missing: ${installerPath}`);
-  if (setup.components.includes("DevSpace") && !setup.updatePackageFromGithub && !fs.existsSync(cliPath)) {
-    throw new Error("This package does not contain dist/cli.js. Enable the GitHub package update or install a built package first.");
+  const current = activeJob();
+  if (current) {
+    if (input.requestId && current.requestId === input.requestId) return current;
+    throw new Error("Another stack operation is running.");
   }
-  const id = crypto.randomBytes(8).toString("hex");
-  const job = { id, phase: "running", startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, lines: [] };
-  jobs.set(id, job);
-  activeJobId = id;
+  return launchWorker("setup", { ...setup, requestId: input.requestId });
+}
 
-  const secrets = [setup.ngrokAuthToken, setup.devspaceOwnerToken].filter(Boolean);
-  (async () => {
-    try {
-      const runtime = await preparePackageRuntime(job, setup, secrets);
-      await updateHermesSourceIfRequested(job, setup, secrets);
-      const args = ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", runtime.installer,
-    "-InstallDir", installDir,
-    "-Components", setup.components.join(","),
-    "-PublicBaseUrl", setup.publicDomain,
-    "-NgrokEndpointMode", setup.endpointMode,
-    "-MachineName", setup.machineName,
-    "-McpNameSuffix", setup.machineName,
-    "-HermesDir", setup.hermesDir,
-    "-HermesRepo", "https://github.com/davidxyuan/hermes-gpt.git",
-    "-TaskLauncher", "PowerShell",
-  ];
-  if (setup.components.includes("DevSpace")) args.push("-CliPath", runtime.cli, "-SkipNpmInstall");
-  if (setup.allowedRoots) {
-    args.push("-AllowedRoots", setup.allowedRoots);
-    const hermesRoots = setup.allowedRoots.split(/[;,]/).map((value) => value.trim()).filter(Boolean);
-    if (hermesRoots.length) args.push("-HermesAllowedRoots", ...hermesRoots);
+async function refreshInventory(checkLatest = false) {
+  const inventory = await management.collectInventory({ installDir, packageRoot, checkLatest, cache: cachedInventory() });
+  jobsApi.writeJson(inventoryPath, inventory);
+  return inventory;
+}
+
+async function runWorker() {
+  let inputText = "";
+  for await (const chunk of process.stdin) { inputText += chunk; if (inputText.length > 1024 * 1024) throw new Error("Worker input too large."); }
+  const request = JSON.parse(inputText);
+  const job = jobsApi.readJob(installDir, request.id);
+  if (!job) throw new Error("Worker job not found.");
+  jobsApi.writeJson(path.join(stateDirectory, "active.json"), { id: job.id });
+  const context = { installDir, packageRoot, scriptDir, id: job.id };
+  const input = request.input || {};
+  const secrets = [input.ngrokAuthToken, input.devspaceOwnerToken].filter(Boolean);
+  const run = (command, args, options) => jobsApi.runLogged(job, installDir, command, args, options, secrets);
+  const log = text => { jobsApi.appendOutput(job, "setup", text, secrets); jobsApi.saveJob(installDir, job); };
+  try {
+    job.phase = "running"; job.step = request.type; jobsApi.saveJob(installDir, job);
+    const apply = require("./stack-setup-apply.cjs");
+    if (request.type === "refresh") {
+      job.result = { checkedAt: (await refreshInventory(true)).checkedAt };
+    } else if (request.type === "setup") {
+      if (input.configurationFingerprint !== configurationFingerprint()) throw new Error("Configuration changed before installation acquired ownership.");
+      job.result = await apply.applySetup(input, context, run);
+    } else if (request.type === "component") {
+      const inventory = cachedInventory();
+      const plan = management.planComponentAction(input, inventory, context);
+      const status = detectInstallState();
+      job.result = await management.executeComponentAction(plan, { run, log, activate: (candidate, actionPlan) => {
+        let setup = null;
+        if (candidate.kind === "bundled" && status.state === "Existing") {
+          setup = validateSetup({ ...status.defaults, installTray: true, noLegacyPoller: true, installTools: true, configurationFingerprint: status.configurationFingerprint });
+        }
+        return apply.activateCandidate(candidate, actionPlan, context, run, setup);
+      } });
+    } else { throw new Error("Unknown worker operation."); }
+    job.exitCode = 0; job.phase = "completed"; job.step = "Verified";
+  } catch (error) {
+    log(error instanceof Error ? error.message : String(error));
+    job.error = job.lines.at(-1)?.text || "Operation failed.";
+    const failureText = `${job.error}\n${job.lines.map(line => line.text).join("\n")}`;
+    job.exitCode = 1; job.phase = /rollback.*fail|recovery.*required/i.test(failureText) ? "rollback_failed" : "failed";
+  } finally {
+    try { if (request.type !== "refresh") await refreshInventory(false); } catch (error) { log(`Inventory refresh: ${error.message}`); }
+    job.finishedAt = new Date().toISOString(); jobsApi.saveJob(installDir, job);
   }
-  if (setup.fullAccess) args.push("-FullAccess");
-  if (setup.installTools) args.push("-InstallTools");
-  if (setup.endpointMode === "CloudEndpoint") args.push("-NgrokAgentBaseUrl", setup.internalAgentEndpoint);
-  if (setup.userMode) args.push("-UserMode", "-NoElevate");
-  if (setup.installTray) args.push("-InstallWatchdogTray");
-  if (setup.noLegacyPoller) args.push("-NoLegacyPoller");
-
-      const env = { ...process.env };
-      if (setup.ngrokAuthToken) env.NGROK_AUTHTOKEN = setup.ngrokAuthToken;
-      if (setup.devspaceOwnerToken) env.DEVSPACE_OWNER_TOKEN = setup.devspaceOwnerToken;
-      await runLogged(job, powershellPath(), args, { cwd: runtime.root, env }, secrets);
-      job.exitCode = 0;
-      job.phase = "completed";
-    } catch (error) {
-      appendJobOutput(job, "error", error instanceof Error ? error.message : String(error), secrets);
-      job.exitCode = 1;
-      job.phase = "failed";
-    } finally {
-      job.finishedAt = new Date().toISOString();
-      activeJobId = null;
-    }
-  })();
-  return job;
+  process.exitCode = job.exitCode;
 }
 
 function readRequestBody(req, limit = 65536) {
@@ -275,6 +273,9 @@ function safeMutation(req) {
   if (host !== `127.0.0.1:${server.address().port}`) throw new Error("Invalid Host header.");
   if (origin !== expectedOrigin) throw new Error("Invalid Origin header.");
   if (String(req.headers["x-devspace-setup-token"] || "") !== controlToken) throw new Error("Invalid setup token.");
+  if (!/^application\/json(?:;|$)/i.test(String(req.headers["content-type"] || ""))) throw new Error("Mutation requires JSON.");
+  const configuredRoot = readJson(path.join(installDir, "devspace-watchdog.config.json"))?.managementPackageRoot;
+  if (configuredRoot && path.resolve(configuredRoot).toLowerCase() !== packageRoot.toLowerCase() && path.resolve(configuredRoot).toLowerCase() !== (initialManagementRoot ? path.resolve(initialManagementRoot).toLowerCase() : "")) throw new Error("The management package changed after this Setup was opened. Reopen Setup from the current Tray before making changes.");
 }
 
 const template = fs.readFileSync(templatePath, "utf8");
@@ -284,6 +285,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 403, { error: "Loopback only." }); return;
     }
     const url = new URL(req.url || "/", "http://127.0.0.1");
+    if (String(req.headers.host || "") !== `127.0.0.1:${server.address().port}`) { sendJson(res, 403, { error: "Invalid Host header." }); return; }
     if (req.method === "GET" && url.pathname === "/") {
       const body = Buffer.from(template.replaceAll("{{SETUP_TOKEN}}", controlToken), "utf8");
       res.writeHead(200, {
@@ -296,16 +298,30 @@ const server = http.createServer(async (req, res) => {
       res.end(body); return;
     }
     if (req.method === "GET" && url.pathname === "/api/status") {
-      sendJson(res, 200, { ok: true, ...detectInstallState(), activeJobId }); return;
+      sendJson(res, 200, { ok: true, ...detectInstallState() }); return;
     }
     if (req.method === "GET" && url.pathname === "/api/job") {
-      const job = jobs.get(url.searchParams.get("id"));
+      const job = jobsApi.readJob(installDir, url.searchParams.get("id"));
       sendJson(res, job ? 200 : 404, job || { error: "Job not found." }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/components") {
+      sendJson(res, 200, { ...cachedInventory(), refreshing: activeJob()?.type === "refresh" }); return;
+    }
+    if (req.method === "POST" && ["/api/components/refresh", "/api/components/action"].includes(url.pathname)) {
+      safeMutation(req);
+      const payload = JSON.parse(await readRequestBody(req));
+      const current = activeJob();
+      if (current && payload.requestId && current.requestId === payload.requestId) { sendJson(res, 202, { ok: true, jobId: current.id }); return; }
+      if (current) { sendJson(res, 409, { error: "Another stack operation is running.", jobId: current.id }); return; }
+      const type = url.pathname.endsWith("refresh") ? "refresh" : "component";
+      if (type === "component") management.planComponentAction(payload, cachedInventory(), { installDir, packageRoot });
+      const job = await launchWorker(type, payload);
+      sendJson(res, 202, { ok: true, jobId: job.id }); return;
     }
     if (req.method === "POST" && url.pathname === "/api/apply") {
       safeMutation(req);
       const payload = JSON.parse(await readRequestBody(req));
-      const job = startSetupJob(payload);
+      const job = await startSetupJob(payload);
       sendJson(res, 202, { ok: true, jobId: job.id }); return;
     }
     sendJson(res, 404, { error: "Not found." });
@@ -323,6 +339,7 @@ function listen() {
     });
     server.listen(port, "127.0.0.1", () => {
       const url = `http://127.0.0.1:${port}/`;
+      jobsApi.writeJson(path.join(stateDirectory, "endpoint.json"), { installDir, port, token: controlToken, pid: process.pid, startedAt: new Date().toISOString() });
       console.log(`DevSpace Stack Setup: ${url}`);
       console.log("Keep this window open while installation/update is running.");
       if (!process.argv.includes("--no-open")) {
@@ -334,4 +351,8 @@ function listen() {
   tryPort();
 }
 
-listen();
+if (require.main === module) {
+  if (process.argv.includes("--worker")) runWorker().catch(error => { console.error(error.message); process.exitCode = 1; });
+  else { listen(); refreshInventory(false).catch(() => {}); }
+}
+module.exports = { detectInstallState, validateSetup, configurationFingerprint, server, listen };

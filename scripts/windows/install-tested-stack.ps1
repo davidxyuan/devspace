@@ -6,15 +6,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Tested stack manifest: update these values together only after validating a new pair.
-$DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/devspace-v1.0.4-watchdog-fix"
-$DevSpaceCommit = "15fcf9068608e51a56f97609aba32535a0359407"
-$DevSpaceVersion = "1.0.4"
-$HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
-$HermesRef = "codex/upgrade-v0.5.0"
-$HermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"
-$HermesVersion = "0.5.0"
+# Historical tested pair, shared with Setup inventory and the existing updater.
+$testedManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tested-stack-manifest.json') -Raw | ConvertFrom-Json
+$DevSpaceRepo = [string]$testedManifest.devspace.repository
+$DevSpaceRef = [string]$testedManifest.devspace.ref
+$DevSpaceCommit = [string]$testedManifest.devspace.revision
+$DevSpaceVersion = [string]$testedManifest.devspace.version
+$HermesRepo = [string]$testedManifest.'hermes-gpt'.repository
+$HermesRef = [string]$testedManifest.'hermes-gpt'.ref
+$HermesCommit = [string]$testedManifest.'hermes-gpt'.revision
+$HermesVersion = [string]$testedManifest.'hermes-gpt'.version
 
 $devSpaceDir = Join-Path $InstallRoot "devspace"
 $hermesDir = Join-Path $InstallRoot "hermes-gpt"
@@ -46,6 +47,10 @@ function Install-PinnedRepo([string]$repo, [string]$ref, [string]$commit, [strin
     if (Test-Path -LiteralPath $path) {
         if (-not (Test-Path -LiteralPath (Join-Path $path ".git"))) { throw "Install target exists and is not a Git checkout: $path" }
         Assert-Equal "$path remote" (& git -C $path remote get-url origin) $repo
+        $changes = @(& git -C $path status --porcelain --untracked-files=all)
+        if ($LASTEXITCODE -ne 0 -or $changes.Count) { throw "Existing checkout has changes: $path. Use the component updater; no checkout was changed." }
+        Assert-Equal "$path existing commit" (& git -C $path rev-parse HEAD) $commit
+        return
     } else {
         Invoke-Checked { git clone --no-checkout --filter=blob:none $repo $path } "Failed to clone $repo."
     }
@@ -99,6 +104,6 @@ Verify-Stack
 
 Write-Host ""
 Write-Host "Code and dependencies are installed. No OAuth state, secrets, routes, SQLite data, or scheduled tasks were copied or created." -ForegroundColor Yellow
-Write-Host "For a complete fresh/existing auto-detected setup with validated capability choices, use scripts\windows\detect-and-apply-tested-stack.ps1 from codex/windows-fixed-port-conflicts."
+Write-Host "For current one-click setup with existing installation detection, use the bundled Start-DevSpace.cmd."
 Write-Host "Configure this machine next (choose its own URL, roots, token, and task settings):"
 Write-Host "  powershell.exe -ExecutionPolicy Bypass -File `"$devSpaceDir\scripts\windows\install-devspace-watchdog.ps1`" -Components DevSpace,Hermes -HermesDir `"$hermesDir`" -CliPath `"$devSpaceDir\dist\cli.js`" -SkipNpmInstall -SkipHermesInstall -PublicBaseUrl `"https://THIS-MACHINE.example.com`" -AllowedRoots `"C:\path\to\approved\workspaces`" -InstallTools"

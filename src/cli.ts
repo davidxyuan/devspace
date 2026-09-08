@@ -162,6 +162,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       host: files.config.host ?? "127.0.0.1",
       port,
       allowedRoots,
+      shellPath: files.config.shellPath,
       publicBaseUrl,
       subagents: resolveSubagentsFlag(files.config),
     };
@@ -276,18 +277,20 @@ function runConfigCommand(args: string[]): void {
   if (subcommand !== "set") {
     throw new Error(`Unknown config command: ${subcommand}`);
   }
-  if (key !== "publicBaseUrl") {
-    throw new Error("Only `devspace config set publicBaseUrl <url|null>` is supported right now.");
+  if (key !== "publicBaseUrl" && key !== "shellPath") {
+    throw new Error("Supported settings: `devspace config set publicBaseUrl <url|null>` and `devspace config set shellPath <path|null>`.");
   }
 
   const value = rest.join(" ").trim();
   if (!value) {
-    throw new Error("Missing publicBaseUrl value.");
+    throw new Error(`Missing ${key} value.`);
   }
 
   writeDevspaceConfig({
     ...files.config,
-    publicBaseUrl: normalizeOptionalPublicBaseUrl(value),
+    ...(key === "publicBaseUrl"
+      ? { publicBaseUrl: normalizeOptionalPublicBaseUrl(value) }
+      : { shellPath: value.toLowerCase() === "null" ? undefined : value }),
   });
   console.log(`Updated ${files.configPath}`);
 }
@@ -322,6 +325,7 @@ function printHelp(): void {
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
+      "  devspace config set shellPath <path|null>",
       "  devspace agents ls       List subagent sessions",
       "  devspace agents run <profile-or-provider-or-id> [--model <model>] <prompt>",
       "  devspace agents show <id>",

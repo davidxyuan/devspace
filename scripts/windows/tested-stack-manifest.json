@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "description": "Historical tested pair. This is not a claim that current or latest packages were tested.",
+  "devspace": {
+    "repository": "https://github.com/davidxyuan/devspace.git",
+    "ref": "codex/devspace-v1.0.4-watchdog-fix",
+    "revision": "15fcf9068608e51a56f97609aba32535a0359407",
+    "version": "1.0.4"
+  },
+  "hermes-gpt": {
+    "repository": "https://github.com/davidxyuan/hermes-gpt.git",
+    "ref": "codex/upgrade-v0.5.0",
+    "revision": "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3",
+    "version": "0.5.0"
+  }
+}

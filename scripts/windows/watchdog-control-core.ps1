@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot "stack-operation.ps1")
 $script:WatchdogServiceNames = @("devspace", "hermes", "router", "ngrok")
 
 function Get-WatchdogProperty($Object, [string]$Name, $Default = $null) {
@@ -336,7 +337,7 @@ function New-WatchdogConfigImpact($CurrentConfig, $RequestedEditable) {
     $level = if (@($changedFields | Where-Object { $_ -in $redFields }).Count) { "RED" } elseif (@($changedFields | Where-Object { $_ -notin $displayFields }).Count) { "YELLOW" } else { "GREEN" }
     $restarts = @()
     if (@($changedFields | Where-Object { $_ -in @("publicDomain", "devspaceRoutePath", "machineSlug") }).Count) { $restarts += "devspace" }
-    if (@($changedFields | Where-Object { $_ -in @("routerPort", "machineSlug", "mcpNameSuffix", "devspaceRoutePath", "hermesRoutePath") }).Count) { $restarts += "router" }
+    if (@($changedFields | Where-Object { $_ -in @("publicDomain", "routerPort", "machineSlug", "mcpNameSuffix", "devspaceRoutePath", "hermesRoutePath") }).Count) { $restarts += "router" }
     if (@($changedFields | Where-Object { $_ -in @("endpointMode", "publicDomain", "internalAgentEndpoint", "ngrokInspectorPort", "routerPort", "machineSlug") }).Count) { $restarts += "ngrok" }
     $restarts = @($restarts | Select-Object -Unique)
     $dashboardAction = ($changedFields -contains "endpointMode") -or ($changedFields -contains "publicDomain") -or
@@ -360,16 +361,30 @@ function Get-WatchdogControlSettings($Config) {
     $settings = [pscustomobject][ordered]@{
         dashboardPort = Assert-WatchdogPort (Get-WatchdogProperty $control "dashboardPort" 8777) "Dashboard Port"
         localProbeSeconds = [int](Get-WatchdogProperty $control "localProbeSeconds" 5)
-        publicProbeSeconds = [int](Get-WatchdogProperty $control "publicProbeSeconds" 45)
+        publicProbeSeconds = [int](Get-WatchdogProperty $control "publicProbeSeconds" 21600)
+        publicProbeBackoffSeconds = @(Get-WatchdogProperty $control "publicProbeBackoffSeconds" @(300,1800,7200,21600))
         failureThreshold = [int](Get-WatchdogProperty $control "failureThreshold" 2)
+        busyTransportFailureThreshold = [int](Get-WatchdogProperty $control "busyTransportFailureThreshold" 12)
         maxRecoveryAttempts = [int](Get-WatchdogProperty $control "maxRecoveryAttempts" 5)
         backoffSeconds = @(Get-WatchdogProperty $control "backoffSeconds" @(0,10,30,60,120))
         logMaxBytes = [int](Get-WatchdogProperty $control "logMaxBytes" 2097152)
         historyLimit = [int](Get-WatchdogProperty $control "historyLimit" 500)
     }
     if ($settings.localProbeSeconds -lt 3 -or $settings.localProbeSeconds -gt 60) { throw "localProbeSeconds must be from 3 through 60." }
-    if ($settings.publicProbeSeconds -lt 30 -or $settings.publicProbeSeconds -gt 600) { throw "publicProbeSeconds must be from 30 through 600." }
+    if ($settings.publicProbeSeconds -lt 30 -or $settings.publicProbeSeconds -gt 86400) { throw "publicProbeSeconds must be from 30 through 86400." }
+    $publicBackoff = @()
+    foreach ($value in $settings.publicProbeBackoffSeconds) {
+        $seconds = 0
+        if (-not [int]::TryParse([string]$value, [ref]$seconds) -or $seconds -lt 30 -or $seconds -gt 86400) { throw "publicProbeBackoffSeconds entries must be from 30 through 86400." }
+        $publicBackoff += $seconds
+    }
+    if ($publicBackoff.Count -eq 0) { throw "publicProbeBackoffSeconds cannot be empty." }
+    for ($i = 1; $i -lt $publicBackoff.Count; $i++) {
+        if ($publicBackoff[$i] -lt $publicBackoff[$i - 1]) { throw "publicProbeBackoffSeconds must be nondecreasing." }
+    }
+    $settings.publicProbeBackoffSeconds = $publicBackoff
     if ($settings.failureThreshold -lt 2 -or $settings.failureThreshold -gt 10) { throw "failureThreshold must be from 2 through 10." }
+    if ($settings.busyTransportFailureThreshold -lt 3 -or $settings.busyTransportFailureThreshold -gt 120) { throw "busyTransportFailureThreshold must be from 3 through 120." }
     if ($settings.maxRecoveryAttempts -lt 1 -or $settings.maxRecoveryAttempts -gt 10) { throw "maxRecoveryAttempts must be from 1 through 10." }
     if ($settings.logMaxBytes -lt 65536 -or $settings.logMaxBytes -gt 16777216) { throw "logMaxBytes must be from 65536 through 16777216." }
     if ($settings.historyLimit -lt 50 -or $settings.historyLimit -gt 5000) { throw "historyLimit must be from 50 through 5000." }
@@ -411,6 +426,12 @@ function New-WatchdogState($Config, [switch]$SafeMode) {
         desired = [pscustomobject]$desired
         maintenanceMode = [bool]$SafeMode
         recovery = [pscustomobject]$recovery
+        publicProbe = [pscustomobject][ordered]@{
+            consecutiveFailures = 0
+            nextProbeUtc = $null
+            lastAttemptUtc = $null
+            lastSuccessUtc = $null
+        }
         updatedUtc = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
         stateLoadError = ""
     }
@@ -435,6 +456,23 @@ function Repair-WatchdogState($State, $Config) {
                 if ($null -eq $record.PSObject.Properties[$property.Name]) { Set-WatchdogProperty $record $property.Name $property.Value }
             }
             if ([int]$record.consecutiveFailures -lt 0 -or [int]$record.attemptCount -lt 0) { throw "Invalid recovery counters for $service." }
+        }
+    }
+    $publicProbe = Get-WatchdogProperty $State "publicProbe" $null
+    if ($null -eq $publicProbe) {
+        $publicProbe = [pscustomobject][ordered]@{ consecutiveFailures=0; nextProbeUtc=$null; lastAttemptUtc=$null; lastSuccessUtc=$null }
+        Set-WatchdogProperty $State "publicProbe" $publicProbe
+    } else {
+        foreach ($property in @("nextProbeUtc","lastAttemptUtc","lastSuccessUtc")) {
+            if ($null -eq $publicProbe.PSObject.Properties[$property]) { Set-WatchdogProperty $publicProbe $property $null }
+        }
+        if ($null -eq $publicProbe.PSObject.Properties["consecutiveFailures"]) { Set-WatchdogProperty $publicProbe "consecutiveFailures" 0 }
+        if ([int](Get-WatchdogProperty $publicProbe "consecutiveFailures" 0) -lt 0) { throw "Invalid public probe failure counter." }
+        foreach ($property in @("nextProbeUtc","lastAttemptUtc","lastSuccessUtc")) {
+            $value = [string](Get-WatchdogProperty $publicProbe $property "")
+            if (-not $value) { continue }
+            $parsed = [DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse($value, [ref]$parsed)) { throw "Invalid public probe timestamp: $property" }
         }
     }
     Set-WatchdogProperty $State "schemaVersion" 1
@@ -507,8 +545,12 @@ function Update-WatchdogRecoveryDecision($State, [string]$Service, $Health, $Set
         return [pscustomobject]@{ action="None"; reason="identity_conflict"; record=$record }
     }
     if ([bool](Get-WatchdogProperty $Health "busyIndeterminate" $false)) {
-        $record.phase = "Confirming"; $record.nextRetryUtc = $null
-        return [pscustomobject]@{ action="None"; reason="busy_indeterminate"; record=$record }
+        $transportUnreachable = -not [bool](Get-WatchdogProperty $Health "httpReachable" $false)
+        $hungTransportConfirmed = $transportUnreachable -and [int]$record.consecutiveFailures -ge [int]$Settings.busyTransportFailureThreshold
+        if (-not $hungTransportConfirmed) {
+            $record.phase = "Confirming"; $record.nextRetryUtc = $null
+            return [pscustomobject]@{ action="None"; reason="busy_indeterminate"; record=$record }
+        }
     }
     if ([int]$record.consecutiveFailures -lt [int]$Settings.failureThreshold) {
         $record.phase = if ([int]$record.consecutiveFailures -eq 1) { "Suspect" } else { "Confirming" }
@@ -716,7 +758,11 @@ function Set-WatchdogConfiguration([string]$ConfigPath, $RequestedInput) {
         $applyError = $_.Exception.Message
         $backupDirectory = Join-Path (Get-WatchdogBackupRoot $stateDir) $backup.id
         try { Restore-WatchdogBackupPayload $ConfigPath $stateDir $backupDirectory $backup }
-        catch { throw "Configuration apply failed, and automatic rollback also failed: $applyError; rollback: $($_.Exception.Message)" }
+        catch {
+            $failure = New-Object System.InvalidOperationException("Configuration apply failed, and automatic rollback also failed: $applyError; rollback: $($_.Exception.Message)")
+            $failure.Data["WatchdogRollbackNeedsAttention"] = $true
+            throw $failure
+        }
         throw "Configuration apply failed; the previous files were restored automatically: $applyError"
     }
     return [pscustomobject]@{ config=$proposed; editable=$editable; impact=$impact; backup=$backup }
@@ -1044,11 +1090,16 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $probeError = if (-not $healthProbe.semanticHealthy) { $healthProbe.error } else { $mcpProbe.error }
             }
             "hermes" {
-                $mcpProbe = Invoke-WatchdogMcpProbe "http://127.0.0.1:$port/mcp" -Local
-                $httpReachable = $mcpProbe.httpReachable
-                $protocolHealthy = $mcpProbe.protocolHealthy
-                $detail = "mcp=$($mcpProbe.behavior)"
-                $probeError = $mcpProbe.error
+                # Hermes has no lightweight /healthz endpoint. A full MCP initialize on every
+                # local 5-second cycle creates and tears down Streamable HTTP sessions, which
+                # can make the health checker itself destabilize a busy Hermes server. Keep
+                # the local layer session-free and let the lower-frequency public probe prove
+                # end-to-end MCP protocol health.
+                $transportProbe = Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS" "" 2 -Local
+                $httpReachable = $transportProbe.reachable
+                $protocolHealthy = $transportProbe.reachable -and $transportProbe.status -gt 0
+                $detail = if ($transportProbe.reachable) { "transport=http_$($transportProbe.status); mcp=public_probe" } else { "transport=unreachable; mcp=public_probe" }
+                $probeError = if ($protocolHealthy) { "" } else { $transportProbe.error }
             }
             "router" {
                 $machineSlug = [string](Get-WatchdogProperty $Config "machineSlug" "")
@@ -1117,9 +1168,13 @@ function Get-WatchdogOptionalToolStatus($Config, $Processes) {
     if (-not $openCodexHome -and $userProfile) { $openCodexHome = Join-Path $userProfile '.opencodex' }
     $openCodexInstalled = [System.IO.Directory]::Exists($openCodexHome)
     $openCodexTrayScript = if ($openCodexInstalled) { Join-Path $openCodexHome 'opencodex-tray.ps1' } else { '' }
-    $openCodexTrayLauncher = if ($openCodexInstalled) { Join-Path $openCodexHome 'opencodex-tray.vbs' } else { '' }
-    $openCodexTrayInstalled = [System.IO.File]::Exists($openCodexTrayScript) -and [System.IO.File]::Exists($openCodexTrayLauncher)
-    $openCodexTrayRunning = @($Processes | Where-Object { ([string]$_.CommandLine) -like '*opencodex-tray.ps1*' }).Count -gt 0
+    $openCodexTrayInstalled = [System.IO.File]::Exists($openCodexTrayScript)
+    $activeConsoleSession = Get-WatchdogActiveConsoleSessionId
+    $openCodexTrayProcesses = @($Processes | Where-Object { ([string]$_.CommandLine) -like '*opencodex-tray.ps1*' })
+    $openCodexTrayRunning = if ($activeConsoleSession -ge 0) {
+        @($openCodexTrayProcesses | Where-Object { [int](Get-WatchdogProperty $_ 'SessionId' -1) -eq $activeConsoleSession }).Count -gt 0
+    } else { $openCodexTrayProcesses.Count -gt 0 }
+    $openCodexTrayBackgroundRunning = @($openCodexTrayProcesses | Where-Object { $activeConsoleSession -ge 0 -and [int](Get-WatchdogProperty $_ 'SessionId' -1) -ne $activeConsoleSession }).Count -gt 0
     $openCodexProxyRunning = @($Processes | Where-Object {
         $commandLine = [string]$_.CommandLine
         $commandLine -like '*opencodex*' -and $commandLine -match '(?i)(^|\s)start(\s|$)'
@@ -1150,7 +1205,8 @@ function Get-WatchdogOptionalToolStatus($Config, $Processes) {
         openCodex = [pscustomobject][ordered]@{
             installed=[bool]$openCodexInstalled; home=$openCodexHome; port=$openCodexPort
             proxyRunning=[bool]$openCodexProxyRunning; proxyHealthy=[bool]$openCodexProxyHealthy
-            trayInstalled=[bool]$openCodexTrayInstalled; trayRunning=[bool]$openCodexTrayRunning
+            trayInstalled=[bool]$openCodexTrayInstalled; trayRunning=[bool]$openCodexTrayRunning; trayBackgroundRunning=[bool]$openCodexTrayBackgroundRunning
+            activeSessionId=$activeConsoleSession
             repairTrayAvailable=([bool]$openCodexTrayInstalled -and -not [bool]$openCodexTrayRunning)
             visible=[bool]$openCodexInstalled
         }
@@ -1163,12 +1219,19 @@ function Repair-WatchdogOptionalTool([string]$Tool, $Status) {
     if (-not [bool](Get-WatchdogProperty $openCodex 'installed' $false)) { return [pscustomobject]@{ success=$false; error='OpenCodex is not installed; automatic installation is intentionally disabled.' } }
     if ([bool](Get-WatchdogProperty $openCodex 'trayRunning' $false)) { return [pscustomobject]@{ success=$true; error='already running' } }
     $home = [string](Get-WatchdogProperty $openCodex 'home' '')
-    $launcher = Join-Path $home 'opencodex-tray.vbs'
-    if (-not [System.IO.File]::Exists($launcher)) { return [pscustomobject]@{ success=$false; error='OpenCodex Tray launcher is missing.' } }
+    $trayScript = Join-Path $home 'opencodex-tray.ps1'
+    if (-not [System.IO.File]::Exists($trayScript)) { return [pscustomobject]@{ success=$false; error='OpenCodex Tray script is missing.' } }
     try {
-        $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
-        [void](Start-Process -FilePath $wscript -ArgumentList @('//B','//NoLogo',$launcher) -WindowStyle Hidden -PassThru)
-        return [pscustomobject]@{ success=$true; error='' }
+        $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $bootstrap = Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'
+        $configPath = Join-Path $PSScriptRoot 'devspace-watchdog.config.json'
+        if (-not [System.IO.File]::Exists($bootstrap) -or -not [System.IO.File]::Exists($configPath)) { throw 'Watchdog bootstrap/config is missing.' }
+        $process = Start-WatchdogHiddenProcess $powershell @('-NoP','-W','Hidden','-File',$bootstrap,'-Mode','RepairOpenCodexTray','-ConfigPath',$configPath) $PSScriptRoot '' ''
+        try {
+            if (-not $process.WaitForExit(12000)) { throw 'OpenCodex Tray bootstrap did not finish within 12 seconds.' }
+            if ($process.ExitCode -ne 0) { throw "OpenCodex Tray bootstrap exited with code $($process.ExitCode)." }
+        } finally { $process.Dispose() }
+        return [pscustomobject]@{ success=$true; sessionId=(Get-WatchdogActiveConsoleSessionId); interactiveBridge=$true; error='' }
     } catch {
         return [pscustomobject]@{ success=$false; error=(Protect-WatchdogText $_.Exception.Message) }
     }
@@ -1201,10 +1264,27 @@ function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic)
 }
 
 function ConvertTo-WatchdogNativeArgument([string]$Value) {
-    if ($Value.Contains('"') -or $Value.Contains("`r") -or $Value.Contains("`n")) { throw "Invalid native process argument." }
-    $match = [regex]::Match($Value, '\\+$')
-    $extra = if ($match.Success) { "\" * $match.Value.Length } else { "" }
-    return '"' + $Value + $extra + '"'
+    if ($null -eq $Value -or $Value.Contains("`r") -or $Value.Contains("`n") -or $Value.Contains([char]0)) { throw "Invalid native process argument." }
+    $builder = New-Object System.Text.StringBuilder
+    $slash = [char]92
+    $quote = [char]34
+    [void]$builder.Append($quote)
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq $slash) { $backslashes++; continue }
+        if ($character -eq $quote) {
+            if ($backslashes -gt 0) { [void]$builder.Append(($slash.ToString() * ($backslashes * 2))) }
+            [void]$builder.Append($slash)
+            [void]$builder.Append($quote)
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) { [void]$builder.Append(($slash.ToString() * $backslashes)); $backslashes = 0 }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append(($slash.ToString() * ($backslashes * 2))) }
+    [void]$builder.Append($quote)
+    return $builder.ToString()
 }
 
 function Start-WatchdogHiddenProcess([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory, [string]$OutPath, [string]$ErrPath) {
@@ -1220,6 +1300,68 @@ function Start-WatchdogHiddenProcess([string]$FilePath, [string[]]$Arguments, [s
     if ($OutPath) { $parameters.RedirectStandardOutput = $OutPath }
     if ($ErrPath) { $parameters.RedirectStandardError = $ErrPath }
     return Start-Process @parameters
+}
+
+if (-not ("DevSpaceWatchdogCoreSessionNative" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class DevSpaceWatchdogCoreSessionNative {
+    [DllImport("kernel32.dll")]
+    public static extern uint WTSGetActiveConsoleSessionId();
+}
+"@
+}
+
+function Get-WatchdogActiveConsoleSessionId {
+    $value = [uint32][DevSpaceWatchdogCoreSessionNative]::WTSGetActiveConsoleSessionId()
+    if ($value -eq [uint32]::MaxValue) { return -1 }
+    return [int]$value
+}
+
+function Invoke-WatchdogNativeAndWait([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds = 10000) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = (@($Arguments) | ForEach-Object { ConvertTo-WatchdogNativeArgument ([string]$_) }) -join " "
+    $psi.WorkingDirectory = $PSScriptRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if (-not $process) { throw "Failed to start $FilePath" }
+    try {
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) { throw "$FilePath did not finish within $TimeoutMilliseconds ms." }
+        return [int]$process.ExitCode
+    } finally { $process.Dispose() }
+}
+
+function Start-WatchdogInteractiveProcess([string]$FilePath, [string[]]$Arguments, [string]$TaskLabel = "Process") {
+    if (-not [System.IO.File]::Exists($FilePath)) { throw "Executable is missing: $FilePath" }
+    $activeSession = Get-WatchdogActiveConsoleSessionId
+    $currentSession = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($activeSession -lt 0 -or $activeSession -eq $currentSession) {
+        $process = Start-WatchdogHiddenProcess $FilePath $Arguments "" "" ""
+        $pidValue = if ($process) { $process.Id } else { $null }
+        if ($process) { $process.Dispose() }
+        return [pscustomobject]@{ success=$true; sessionId=$currentSession; pid=$pidValue; interactiveBridge=$false; error="" }
+    }
+
+    $schtasks = Join-Path $env:WINDIR "System32\schtasks.exe"
+    if (-not [System.IO.File]::Exists($schtasks)) { throw "Task Scheduler CLI is missing: $schtasks" }
+    $safeLabel = ([regex]::Replace($TaskLabel, '[^A-Za-z0-9_-]', '')).Substring(0, [Math]::Min(24, ([regex]::Replace($TaskLabel, '[^A-Za-z0-9_-]', '')).Length))
+    if (-not $safeLabel) { $safeLabel = "Process" }
+    $taskName = "DevSpaceWatchdogInteractive-$safeLabel-" + [Guid]::NewGuid().ToString("N")
+    $taskCommand = (ConvertTo-WatchdogNativeArgument $FilePath) + " " + ((@($Arguments) | ForEach-Object { ConvertTo-WatchdogNativeArgument ([string]$_) }) -join " ")
+    $startAt = (Get-Date).AddMinutes(2).ToString("HH:mm")
+    try {
+        $create = Invoke-WatchdogNativeAndWait $schtasks @("/Create","/TN",$taskName,"/TR",$taskCommand,"/SC","ONCE","/ST",$startAt,"/RL","LIMITED","/IT","/F") 10000
+        if ($create -ne 0) { throw "Could not create interactive launch task (exit $create)." }
+        $run = Invoke-WatchdogNativeAndWait $schtasks @("/Run","/TN",$taskName) 10000
+        if ($run -ne 0) { throw "Could not run interactive launch task (exit $run)." }
+        return [pscustomobject]@{ success=$true; sessionId=$activeSession; pid=$null; interactiveBridge=$true; error="" }
+    } finally {
+        try { [void](Invoke-WatchdogNativeAndWait $schtasks @("/Delete","/TN",$taskName,"/F") 5000) } catch { }
+    }
 }
 
 function New-WatchdogServiceLogPath([string]$StateDir, [string]$Service, [string]$Kind) {
@@ -1241,6 +1383,11 @@ function Invoke-WithWatchdogEnvironment($Variables, [scriptblock]$Action) {
 function Get-WatchdogHermesEnvironment($Config) {
     $values = @{
         HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
+    }
+    $agentExecutable = [string](Get-WatchdogProperty $Config 'hermesAgentExe' '')
+    if ($agentExecutable) {
+        if (-not [IO.File]::Exists($agentExecutable)) { throw 'The configured Hermes Agent executable is missing.' }
+        $values['PATH'] = (Split-Path $agentExecutable -Parent) + [IO.Path]::PathSeparator + $env:PATH
     }
     $caps = Get-WatchdogProperty (Get-WatchdogProperty $Config "capabilities" $null) "hermes" $null
     if ($caps) {
@@ -1267,8 +1414,315 @@ function Get-WatchdogHermesEnvironment($Config) {
     return $values
 }
 
-function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) {
+function Get-WatchdogNgrokCredentialPath($Config) {
+    $stateDir = [System.IO.Path]::GetFullPath([string](Get-WatchdogProperty $Config "stateDir" ""))
+    if (-not $stateDir) { throw "Watchdog configuration has no stateDir." }
+    return Join-Path $stateDir "ngrok-auth.dpapi.json"
+}
+
+function Set-WatchdogNgrokCredential($Config, [string]$Token) {
+    if ([string]::IsNullOrWhiteSpace($Token)) { throw "ngrok Auth Token is required." }
+    if ($Token.Length -gt 4096 -or $Token.Contains("`r") -or $Token.Contains("`n") -or $Token.Contains([char]0)) {
+        throw "ngrok Auth Token contains unsupported characters or is too long."
+    }
+    Add-Type -AssemblyName System.Security
+    $plain = [System.Text.Encoding]::UTF8.GetBytes($Token)
+    $entropy = [System.Text.Encoding]::UTF8.GetBytes("DevSpaceWatchdogNgrokAuthV1")
     try {
+        $protected = [System.Security.Cryptography.ProtectedData]::Protect($plain, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $value = [pscustomobject][ordered]@{
+            schemaVersion = 1
+            scope = "CurrentUser"
+            updatedUtc = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
+            protected = [Convert]::ToBase64String($protected)
+        }
+        $path = Get-WatchdogNgrokCredentialPath $Config
+        Write-WatchdogAtomicJson $path $value 5
+        return $path
+    } finally {
+        if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
+    }
+}
+
+function Get-WatchdogNgrokCredential($Config) {
+    $path = Get-WatchdogNgrokCredentialPath $Config
+    if (-not [System.IO.File]::Exists($path)) { return "" }
+    Add-Type -AssemblyName System.Security
+    try {
+        $record = Read-WatchdogJson $path
+        if ([int](Get-WatchdogProperty $record "schemaVersion" 0) -ne 1 -or [string](Get-WatchdogProperty $record "scope" "") -ne "CurrentUser") {
+            throw "Unsupported ngrok credential record."
+        }
+        $protected = [Convert]::FromBase64String([string](Get-WatchdogProperty $record "protected" ""))
+        $entropy = [System.Text.Encoding]::UTF8.GetBytes("DevSpaceWatchdogNgrokAuthV1")
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        try { return [System.Text.Encoding]::UTF8.GetString($plain) }
+        finally { if ($plain) { [Array]::Clear($plain, 0, $plain.Length) } }
+    } catch {
+        throw "Stored ngrok credential cannot be decrypted for the current Windows user."
+    }
+}
+
+function Get-WatchdogNgrokProfileStorePath($Config) {
+    $stateDir = [System.IO.Path]::GetFullPath([string](Get-WatchdogProperty $Config "stateDir" ""))
+    if (-not $stateDir) { throw "Watchdog configuration has no stateDir." }
+    return Join-Path $stateDir "ngrok-profiles.dpapi.json"
+}
+
+function Read-WatchdogNgrokProfileStore($Config) {
+    $path = Get-WatchdogNgrokProfileStorePath $Config
+    if (-not [System.IO.File]::Exists($path)) {
+        return [pscustomobject][ordered]@{ schemaVersion=1; activeProfileId=""; profiles=@() }
+    }
+    $store = Read-WatchdogJson $path
+    if ([int](Get-WatchdogProperty $store "schemaVersion" 0) -ne 1) { throw "Unsupported ngrok profile store." }
+    $profiles = @(Get-WatchdogProperty $store "profiles" @())
+    if ($profiles.Count -gt 20) { throw "ngrok profile store exceeds the supported profile count." }
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        activeProfileId = [string](Get-WatchdogProperty $store "activeProfileId" "")
+        profiles = $profiles
+    }
+}
+
+function Write-WatchdogNgrokProfileStore($Config, $Store) {
+    $path = Get-WatchdogNgrokProfileStorePath $Config
+    Write-WatchdogAtomicJson $path ([pscustomobject][ordered]@{
+        schemaVersion = 1
+        activeProfileId = [string](Get-WatchdogProperty $Store "activeProfileId" "")
+        profiles = @(Get-WatchdogProperty $Store "profiles" @())
+    }) 5
+    return $path
+}
+
+function Protect-WatchdogNgrokProfileToken([string]$Token) {
+    if ([string]::IsNullOrWhiteSpace($Token)) { throw "ngrok Auth Token is required." }
+    if ($Token.Length -gt 4096 -or $Token.Contains("`r") -or $Token.Contains("`n") -or $Token.Contains([char]0)) { throw "ngrok Auth Token contains unsupported characters or is too long." }
+    Add-Type -AssemblyName System.Security
+    $plain = [System.Text.Encoding]::UTF8.GetBytes($Token)
+    $entropy = [System.Text.Encoding]::UTF8.GetBytes("DevSpaceWatchdogNgrokProfileV1")
+    try {
+        $protected = [System.Security.Cryptography.ProtectedData]::Protect($plain, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Convert]::ToBase64String($protected)
+    } finally { if ($plain) { [Array]::Clear($plain, 0, $plain.Length) } }
+}
+
+function Unprotect-WatchdogNgrokProfileToken([string]$ProtectedText) {
+    Add-Type -AssemblyName System.Security
+    try {
+        $protected = [Convert]::FromBase64String($ProtectedText)
+        $entropy = [System.Text.Encoding]::UTF8.GetBytes("DevSpaceWatchdogNgrokProfileV1")
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        try { return [System.Text.Encoding]::UTF8.GetString($plain) }
+        finally { if ($plain) { [Array]::Clear($plain, 0, $plain.Length) } }
+    } catch { throw "Stored ngrok profile token cannot be decrypted for the current Windows user." }
+}
+
+function Get-WatchdogNgrokProfiles($Config) {
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $activeId = [string]$store.activeProfileId
+    return @($store.profiles | ForEach-Object {
+        [pscustomobject][ordered]@{
+            id = [string](Get-WatchdogProperty $_ "id" "")
+            name = [string](Get-WatchdogProperty $_ "name" "")
+            endpointMode = [string](Get-WatchdogProperty $_ "endpointMode" "AgentEndpoint")
+            publicDomain = [string](Get-WatchdogProperty $_ "publicDomain" "")
+            internalAgentEndpoint = [string](Get-WatchdogProperty $_ "internalAgentEndpoint" "")
+            updatedUtc = [string](Get-WatchdogProperty $_ "updatedUtc" "")
+            active = ([string](Get-WatchdogProperty $_ "id" "") -eq $activeId -and -not [string]::IsNullOrWhiteSpace($activeId))
+        }
+    })
+}
+
+function Save-WatchdogNgrokProfile($Config, $Payload) {
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $id = [string](Get-WatchdogProperty $Payload "id" "")
+    if ($id -and $id -notmatch '^[a-f0-9]{32}$') { throw "Invalid ngrok profile id." }
+    $name = ([string](Get-WatchdogProperty $Payload "name" "")).Trim()
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 64 -or $name.Contains("`r") -or $name.Contains("`n") -or $name.Contains([char]0)) { throw "ngrok profile name must be 1-64 characters without control characters." }
+    $existing = $null
+    if ($id) { $existing = @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -eq $id } | Select-Object -First 1)[0] }
+    if ($id -and -not $existing) { throw "ngrok profile was not found." }
+    if (-not $id -and @($store.profiles).Count -ge 20) { throw "At most 20 ngrok profiles are supported." }
+    $duplicateName = @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -ne $id -and [string](Get-WatchdogProperty $_ "name" "") -ieq $name }).Count -gt 0
+    if ($duplicateName) { throw "Another ngrok profile already uses this name." }
+
+    $editable = Get-WatchdogEditableConfig $Config
+    $editable.endpointMode = [string](Get-WatchdogProperty $Payload "endpointMode" $editable.endpointMode)
+    $editable.publicDomain = [string](Get-WatchdogProperty $Payload "publicDomain" $editable.publicDomain)
+    $editable.internalAgentEndpoint = [string](Get-WatchdogProperty $Payload "internalAgentEndpoint" $editable.internalAgentEndpoint)
+    $validated = ConvertTo-WatchdogEditableConfig $editable $Config
+    $token = [string](Get-WatchdogProperty $Payload "authToken" "")
+    $protectedToken = if (-not [string]::IsNullOrWhiteSpace($token)) { Protect-WatchdogNgrokProfileToken $token } elseif ($existing) { [string](Get-WatchdogProperty $existing "protectedToken" "") } else { throw "ngrok Auth Token is required for a new profile." }
+    $token = $null
+    if ([string]::IsNullOrWhiteSpace($protectedToken)) { throw "ngrok profile has no stored Auth Token." }
+    if (-not $id) { $id = [Guid]::NewGuid().ToString("N") }
+    $record = [pscustomobject][ordered]@{
+        id=$id; name=$name; endpointMode=$validated.endpointMode; publicDomain=$validated.publicDomain
+        internalAgentEndpoint=$validated.internalAgentEndpoint; protectedToken=$protectedToken
+        updatedUtc=(ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow))
+    }
+    $profiles = New-Object System.Collections.Generic.List[object]
+    foreach ($profile in @($store.profiles)) {
+        if ([string](Get-WatchdogProperty $profile "id" "") -eq $id) { [void]$profiles.Add($record) } else { [void]$profiles.Add($profile) }
+    }
+    if (-not $existing) { [void]$profiles.Add($record) }
+    $store.profiles = $profiles.ToArray()
+    if ([string]$store.activeProfileId -eq $id -and $existing) { $store.activeProfileId = "" }
+    [void](Write-WatchdogNgrokProfileStore $Config $store)
+    return [pscustomobject]@{ success=$true; id=$id; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+}
+
+function Remove-WatchdogNgrokProfile($Config, [string]$Id) {
+    if ($Id -notmatch '^[a-f0-9]{32}$') { throw "Invalid ngrok profile id." }
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $before = @($store.profiles).Count
+    $store.profiles = @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -ne $Id })
+    if (@($store.profiles).Count -eq $before) { throw "ngrok profile was not found." }
+    if ([string]$store.activeProfileId -eq $Id) { $store.activeProfileId = "" }
+    [void](Write-WatchdogNgrokProfileStore $Config $store)
+    return [pscustomobject]@{ success=$true; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+}
+
+function Get-WatchdogNgrokProfileForSwitch($Config, [string]$Id) {
+    if ($Id -notmatch '^[a-f0-9]{32}$') { throw "Invalid ngrok profile id." }
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $profile = @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -eq $Id } | Select-Object -First 1)[0]
+    if (-not $profile) { throw "ngrok profile was not found." }
+    return [pscustomobject]@{
+        id=$Id; name=[string](Get-WatchdogProperty $profile "name" "")
+        endpointMode=[string](Get-WatchdogProperty $profile "endpointMode" "AgentEndpoint")
+        publicDomain=[string](Get-WatchdogProperty $profile "publicDomain" "")
+        internalAgentEndpoint=[string](Get-WatchdogProperty $profile "internalAgentEndpoint" "")
+        authToken=(Unprotect-WatchdogNgrokProfileToken ([string](Get-WatchdogProperty $profile "protectedToken" "")))
+    }
+}
+
+function Set-WatchdogNgrokActiveProfile($Config, [string]$Id) {
+    $store = Read-WatchdogNgrokProfileStore $Config
+    if ($Id -and -not @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -eq $Id }).Count) { throw "ngrok profile was not found." }
+    $store.activeProfileId = $Id
+    [void](Write-WatchdogNgrokProfileStore $Config $store)
+}
+
+function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desired, [string]$ActiveProfileId = "") {
+    if ([string](Get-WatchdogProperty $Payload "confirmation" "") -ne "SWITCH NGROK") { throw "SWITCH NGROK confirmation is required." }
+    $oldConfig = Read-WatchdogJson $ConfigPath
+    $editable = Get-WatchdogEditableConfig $oldConfig
+    foreach ($field in @("publicDomain", "endpointMode", "internalAgentEndpoint")) {
+        $editable.$field = [string](Get-WatchdogProperty $Payload $field $editable.$field)
+    }
+    $editable = ConvertTo-WatchdogEditableConfig $editable $oldConfig
+    $impact = New-WatchdogConfigImpact $oldConfig $editable
+    $credentialPath = Get-WatchdogNgrokCredentialPath $oldConfig
+    $oldCredential = if ([System.IO.File]::Exists($credentialPath)) { [System.IO.File]::ReadAllText($credentialPath, [System.Text.Encoding]::UTF8) } else { $null }
+    $applied = $null
+    $activeConfig = $oldConfig
+    $stopped = @()
+    $started = @()
+    try {
+        [void](Set-WatchdogNgrokCredential $oldConfig ([string](Get-WatchdogProperty $Payload "authToken" "")))
+        # Credential rotation is also valid when all editable fields are unchanged.
+        if (@($impact.changes).Count) {
+            $applied = Set-WatchdogConfiguration $ConfigPath $editable
+            $activeConfig = $applied.config
+        }
+        $targets = @(@($impact.requiresServiceRestart) + "ngrok" | Select-Object -Unique)
+        foreach ($service in @("ngrok", "router", "devspace", "hermes")) {
+            if ($service -notin $targets -or -not (Test-WatchdogServiceEnabled $service $oldConfig)) { continue }
+            $result = Stop-WatchdogManagedService $service $oldConfig
+            if (-not $result.success) { throw "Could not stop $service for account switch: $($result.error)" }
+            $stopped += $service
+        }
+        foreach ($service in @("devspace", "hermes", "router", "ngrok")) {
+            if ($service -notin $stopped -or [string](Get-WatchdogProperty $Desired $service "running") -ne "running") { continue }
+            $result = Start-WatchdogManagedService $service $ConfigPath $activeConfig
+            if (-not $result.success) { throw "Could not start $service for account switch: $($result.error)" }
+            $started += $service
+        }
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        do {
+            Start-Sleep -Seconds 2
+            $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath -IncludePublic
+            $verified = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
+            foreach ($service in @("devspace", "hermes")) {
+                if (Test-WatchdogServiceEnabled $service $activeConfig) {
+                    $verified = $verified -and [bool](Get-WatchdogProperty (Get-WatchdogProperty $snapshot.public $service $null) "protocolHealthy" $false)
+                }
+            }
+        } while (-not $verified -and [DateTimeOffset]::UtcNow -lt $deadline)
+        if (-not $verified) { throw "New ngrok account/domain did not become healthy within 30 seconds." }
+        Write-WatchdogEvent ([string]$activeConfig.stateDir) $activeConfig "ngrok" "account_switch" "user request" "credential/domain switch" "verified; token redacted"
+        Set-WatchdogNgrokActiveProfile $activeConfig $ActiveProfileId
+        return [pscustomobject]@{
+            config=$activeConfig; snapshot=$snapshot
+            result=[pscustomobject]@{
+                success=$true; backupId=$(if ($applied) { $applied.backup.id } else { $null }); impact=$impact
+                credentialStorage="Windows DPAPI CurrentUser"
+                devspaceUrl=$editable.publicDomain.TrimEnd("/") + $editable.devspaceRoutePath + "/mcp"
+                hermesUrl=$editable.publicDomain.TrimEnd("/") + $editable.hermesRoutePath + "/mcp"
+                requiresChatGptReconnect=[bool]$impact.requiresChatGptReconnect
+            }
+        }
+    } catch {
+        $switchError = Protect-WatchdogText $_.Exception.Message
+        $rollbackErrors = @()
+        $filesRestored = -not [bool]$_.Exception.Data["WatchdogRollbackNeedsAttention"]
+        if (-not $filesRestored) { $rollbackErrors += "configuration apply rollback did not complete" }
+        $blockedStarts = @()
+        foreach ($service in @("ngrok", "router", "devspace", "hermes")) {
+            if ($service -notin $started) { continue }
+            $result = Stop-WatchdogManagedService $service $activeConfig
+            if (-not $result.success) { $rollbackErrors += "stop new $service`: $($result.error)"; $blockedStarts += $service }
+        }
+        try {
+            if ($null -ne $oldCredential) { Write-WatchdogAtomicText $credentialPath $oldCredential }
+            elseif ([System.IO.File]::Exists($credentialPath)) { [System.IO.File]::Delete($credentialPath) }
+        } catch { $rollbackErrors += "restore credential: $($_.Exception.Message)"; $filesRestored = $false }
+        if ($applied) {
+            try { [void](Restore-WatchdogConfigurationBackup $ConfigPath ([string]$applied.backup.id)) }
+            catch { $rollbackErrors += "restore configuration: $($_.Exception.Message)"; $filesRestored = $false }
+        }
+        if ($filesRestored) {
+            foreach ($service in @("devspace", "hermes", "router", "ngrok")) {
+                if ($service -notin $stopped -or $service -in $blockedStarts -or [string](Get-WatchdogProperty $Desired $service "running") -ne "running") { continue }
+                $result = Start-WatchdogManagedService $service $ConfigPath $oldConfig
+                if (-not $result.success) { $rollbackErrors += "restart old $service`: $($result.error)" }
+            }
+        }
+        if ($rollbackErrors.Count) {
+            $failure = New-Object System.InvalidOperationException("ngrok switch failed and rollback needs operator attention: $switchError; $($rollbackErrors -join '; ')")
+            $failure.Data["WatchdogRollbackNeedsAttention"] = $true
+            throw $failure
+        }
+        throw "ngrok account/domain switch was rolled back: $switchError"
+    }
+}
+
+function Invoke-WatchdogNgrokSwitch([string]$ConfigPath, $Payload, $Desired, [switch]$SavedProfile) {
+    if (-not $SavedProfile) { return Invoke-WatchdogNgrokAccountSwitch $ConfigPath $Payload $Desired }
+    if ([string](Get-WatchdogProperty $Payload "confirmation" "") -ne "SWITCH NGROK PROFILE") { throw "SWITCH NGROK PROFILE confirmation is required." }
+    $config = Read-WatchdogJson $ConfigPath
+    $profile = Get-WatchdogNgrokProfileForSwitch $config ([string](Get-WatchdogProperty $Payload "id" ""))
+    try {
+        $switchPayload = [pscustomobject]@{
+            confirmation="SWITCH NGROK"; authToken=$profile.authToken
+            publicDomain=$profile.publicDomain; endpointMode=$profile.endpointMode; internalAgentEndpoint=$profile.internalAgentEndpoint
+        }
+        $outcome = Invoke-WatchdogNgrokAccountSwitch $ConfigPath $switchPayload $Desired $profile.id
+        Set-WatchdogProperty $outcome.result "profileId" $profile.id
+        Set-WatchdogProperty $outcome.result "profileName" $profile.name
+        return $outcome
+    } finally {
+        $profile.authToken = $null
+        if ($switchPayload) { $switchPayload.authToken = $null }
+    }
+}
+
+function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) {
+    $serviceLease = $null
+    try {
+        $serviceLease = Enter-StackOperation -InstallDir (Split-Path $ConfigPath -Parent)
         if (-not (Test-WatchdogServiceEnabled $Service $Config)) { throw "$Service is disabled in configuration." }
         $stateDir = [System.IO.Path]::GetFullPath([string]$Config.stateDir)
         $outPath = New-WatchdogServiceLogPath $stateDir $Service "out"
@@ -1285,6 +1739,7 @@ function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Co
                     DEVSPACE_PUBLIC_BASE_URL = [string]$Config.publicBaseUrl
                     DEVSPACE_TOOL_MODE = [string](Get-WatchdogProperty $caps "toolMode" "minimal")
                     DEVSPACE_WIDGETS = [string](Get-WatchdogProperty $caps "widgets" "off")
+                    DEVSPACE_MCP_TRANSPORT = [string](Get-WatchdogProperty $caps "mcpTransport" "stateful")
                     DEVSPACE_SKILLS = if ([bool](Get-WatchdogProperty $caps "skills" $false)) { "1" } else { "0" }
                     DEVSPACE_SUBAGENTS = if ([bool](Get-WatchdogProperty $caps "subagents" $false)) { "1" } else { "0" }
                 }
@@ -1310,14 +1765,18 @@ function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Co
                 if ($webSupported) { $arguments += @("--web-addr", "127.0.0.1:$([int]$Config.ngrokInspectorPort)") }
                 if ([string](Get-WatchdogProperty $Config "ngrokBinding" "")) { $arguments += @("--binding", [string]$Config.ngrokBinding) }
                 $arguments += @("--log", "stdout")
-                $process = Start-WatchdogHiddenProcess $ngrok $arguments (Split-Path -Parent $ngrok) $outPath $errPath
+                $storedToken = Get-WatchdogNgrokCredential $Config
+                $environment = @{}
+                if ($storedToken) { $environment["NGROK_AUTHTOKEN"] = $storedToken }
+                $process = Invoke-WithWatchdogEnvironment $environment { Start-WatchdogHiddenProcess $ngrok $arguments (Split-Path -Parent $ngrok) $outPath $errPath }
+                $storedToken = $null
             }
             default { throw "Unknown service: $Service" }
         }
         return [pscustomobject]@{ success=$true; pid=if ($process) { $process.Id } else { $null }; error="" }
     } catch {
         return [pscustomobject]@{ success=$false; pid=$null; error=(Protect-WatchdogText $_.Exception.Message) }
-    }
+    } finally { Exit-StackOperation $serviceLease }
 }
 
 function Get-WatchdogProcessTreeOrder([int[]]$RootPids, $Processes) {
@@ -1339,7 +1798,10 @@ function Get-WatchdogProcessTreeOrder([int[]]$RootPids, $Processes) {
 }
 
 function Stop-WatchdogManagedService([string]$Service, $Config) {
+    $serviceLease = $null
     try {
+        $serviceInstallDir = if ([string](Get-WatchdogProperty $Config 'configPath' '')) { Split-Path ([string]$Config.configPath) -Parent } else { [string]$Config.stateDir }
+        $serviceLease = Enter-StackOperation -InstallDir $serviceInstallDir
         $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
         $layer = Get-WatchdogProcessLayer $Service $Config $processes
         if ($layer.identityConflict) { throw "Configured port is owned by an unrecognized process; refusing to stop it." }
@@ -1353,19 +1815,30 @@ function Stop-WatchdogManagedService([string]$Service, $Config) {
         return [pscustomobject]@{ success=$true; stopped=$roots; error="" }
     } catch {
         return [pscustomobject]@{ success=$false; stopped=@(); error=(Protect-WatchdogText $_.Exception.Message) }
-    }
+    } finally { Exit-StackOperation $serviceLease }
 }
 
 function Restart-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) {
+    $restartLease = Enter-StackOperation -InstallDir (Split-Path $ConfigPath -Parent)
+    try {
     $stopped = Stop-WatchdogManagedService $Service $Config
     if (-not $stopped.success) { return $stopped }
     return Start-WatchdogManagedService $Service $ConfigPath $Config
+    } finally { Exit-StackOperation $restartLease }
 }
 
 function Invoke-WatchdogServiceRecovery([string]$Service, [string]$ConfigPath, $Config, $Health) {
     if ([bool](Get-WatchdogProperty $Health "identityConflict" $false)) { return [pscustomobject]@{ success=$false; error="Identity conflict blocks automatic recovery." } }
-    if ([bool](Get-WatchdogProperty $Health "busyIndeterminate" $false)) { return [pscustomobject]@{ success=$false; error="Busy or indeterminate service blocks automatic recovery." } }
+    $recoveryLease = $null
+    try {
+    $recoveryLease = Enter-StackOperation -InstallDir (Split-Path $ConfigPath -Parent)
+    # busyIndeterminate is intentionally not blocked here. The recovery decision layer
+    # is the single gate: normal busy/indeterminate states return None, while a service
+    # whose HTTP transport remains unreachable past busyTransportFailureThreshold may
+    # return Recover. Once that decision is made, the executor must actually stop/start.
     $stopped = Stop-WatchdogManagedService $Service $Config
     if (-not $stopped.success) { return $stopped }
     return Start-WatchdogManagedService $Service $ConfigPath $Config
+    } catch { return [pscustomobject]@{ success=$false; error=(Protect-WatchdogText $_.Exception.Message) } }
+    finally { Exit-StackOperation $recoveryLease }
 }

@@ -72,7 +72,7 @@ export async function listDirectoryTool(input, context) {
     return runTool((params) => tool.execute("list_directory", params), input, context);
 }
 export async function runShellTool(input, context) {
-    const tool = createBashTool(context.cwd);
+    const tool = createBashTool(context.cwd, context.shellPath ? { shellPath: context.shellPath } : undefined);
     const timeout = input.timeout === undefined ? 30 : Math.min(input.timeout, 300);
     return runTool((params) => tool.execute("run_shell", params), {
         command: input.command,

@@ -1200,6 +1200,7 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
             const response = await runShellTool(input, {
                 cwd,
                 root: workspace.root,
+                shellPath: config.shellPath,
             });
             if (response.isError) {
                 logFailedToolResponse(config, {
@@ -1352,6 +1353,24 @@ export function createServer(config = loadConfig()) {
             isInitialize: initializeRequest,
         });
         try {
+            if (config.mcpTransport === "stateless-json") {
+                if (req.method !== "POST") {
+                    sendJsonRpcError(res, 405, -32000, "Method not allowed in stateless MCP mode");
+                    return;
+                }
+                const transport = new StreamableHTTPServerTransport({
+                    sessionIdGenerator: undefined,
+                    enableJsonResponse: true,
+                });
+                const server = createMcpServer(config, workspaces, reviewCheckpoints, processSessions, localAgentProviders);
+                await server.connect(transport);
+                res.once("close", () => {
+                    void transport.close();
+                    void server.close();
+                });
+                await transport.handleRequest(req, res, req.body);
+                return;
+            }
             let transport;
             if (sessionId) {
                 transport = transports.get(sessionId);

@@ -13,6 +13,7 @@ export interface DevspaceUserConfig {
   host?: string;
   port?: number;
   allowedRoots?: string[];
+  shellPath?: string;
   publicBaseUrl?: string | null;
   allowedHosts?: string[];
   stateDir?: string;

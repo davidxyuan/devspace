@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+. (Join-Path $PSScriptRoot 'stack-operation.ps1')
 
 function Get-TrayFileSha256([string]$Path) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -19,11 +21,27 @@ function Test-TrayCommandToken([string]$CommandLine, [string]$Value) {
 }
 
 function Test-TrayProcessRunning([string]$Directory) {
-    $trayPath = Join-Path $Directory "devspace-watchdog-tray.ps1"
+    $bootstrap = Join-Path $Directory "devspace-watchdog-bootstrap.ps1"
+    if ([System.IO.File]::Exists($bootstrap)) {
+        & $bootstrap -Mode CheckStopped -ConfigPath (Join-Path $Directory "devspace-watchdog.config.json")
+        return $false
+    }
     $configPath = Join-Path $Directory "devspace-watchdog.config.json"
-    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop)) {
         $command = [string]$process.CommandLine
-        if ((Test-TrayCommandToken $command $trayPath) -and (Test-TrayCommandToken $command $configPath)) { return $true }
+        if (-not $command) { throw "Cannot verify PowerShell process $($process.ProcessId)." }
+        if ((Test-TrayCommandToken $command $configPath) -and
+            ((Test-TrayCommandToken $command (Join-Path $Directory "devspace-watchdog-tray.ps1")) -or
+             (Test-TrayCommandToken $command (Join-Path $Directory "devspace-watchdog-tray-ui.ps1")))) { return $true }
+    }
+    foreach ($heartbeatName in @("watchdog-tray-heartbeat.json", "watchdog-host-heartbeat.json")) {
+        $heartbeatPath = Join-Path $Directory $heartbeatName
+        if (-not [System.IO.File]::Exists($heartbeatPath)) { continue }
+        try {
+            $heartbeat = [System.IO.File]::ReadAllText($heartbeatPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $heartbeatPid = 0
+            if ([int]::TryParse([string]$heartbeat.pid, [ref]$heartbeatPid) -and $heartbeatPid -gt 0 -and (Get-Process -Id $heartbeatPid -ErrorAction SilentlyContinue)) { return $true }
+        } catch { }
     }
     return $false
 }
@@ -34,7 +52,8 @@ if (-not [System.IO.File]::Exists($recordPath)) { throw "Tray install record is 
 $record = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 if ([System.IO.Path]::GetFullPath([string]$record.installDir) -ne $InstallDir) { throw "Tray install record targets another directory." }
 if ([string]$record.runName -notmatch '^DevSpaceWatchdogTray-[a-f0-9]{12}$') { throw "Tray install record has an invalid Run value name." }
-$allowedFiles = @("watchdog-control-core.ps1","devspace-watchdog-tray.ps1","devspace-control-center.html","devspace-watchdog-tray-launcher.exe","run-devspace-watchdog-tray-hidden.vbs","uninstall-devspace-watchdog-tray.ps1","restore-old-watchdog.ps1")
+$allowedFiles = @("watchdog-control-core.ps1","devspace-watchdog-tray.ps1","devspace-watchdog-tray-ui.ps1","devspace-watchdog-bootstrap.ps1","devspace-control-center.html","devspace-watchdog-tray-launcher.exe","devspace-watchdog-tray-launcher.cs","run-devspace-watchdog-tray-hidden.vbs","run-devspace-watchdog-tray-ui-hidden.vbs","uninstall-devspace-watchdog-tray.ps1","restore-old-watchdog.ps1")
+$allowedFiles += @('stack-operation.ps1','stack-host-management.ps1','watchdog-install-transaction.ps1')
 foreach ($item in @($record.installedFiles) + @($record.overwrittenFiles)) {
     if ([string]$item.name -notin $allowedFiles -or [System.IO.Path]::GetFileName([string]$item.name) -ne [string]$item.name) { throw "Tray install record contains an unsupported file target." }
 }
@@ -45,11 +64,24 @@ foreach ($item in @($record.overwrittenFiles)) {
     $source = Join-Path (Join-Path $backupPath "payload") ([string]$item.name)
     if (-not [System.IO.File]::Exists($source) -or (Get-TrayFileSha256 $source) -ne [string]$item.sha256) { throw "Original tray file backup is missing or corrupt: $($item.name)" }
 }
+$installedNames = @($record.installedFiles | ForEach-Object { [string]$_.name })
+$retiredBackups = @($record.overwrittenFiles | Where-Object { [string]$_.name -notin $installedNames })
+foreach ($original in $retiredBackups) {
+    $target = Join-Path $InstallDir ([string]$original.name)
+    if ([System.IO.File]::Exists($target) -and (Get-TrayFileSha256 $target) -ne [string]$original.sha256) { throw "Retired file was replaced after installation; refusing to overwrite $target." }
+}
 
 if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray without stopping managed services")) {
-    $launcher = Join-Path $InstallDir "run-devspace-watchdog-tray-hidden.vbs"
-    if ([System.IO.File]::Exists($launcher)) {
-        Start-Process -FilePath "C:\Windows\System32\wscript.exe" -ArgumentList @("//B", "//NoLogo", "`"$launcher`"", "-Stop") -WindowStyle Hidden | Out-Null
+    $uninstallLease = Enter-StackOperation $InstallDir
+    try {
+    $bootstrap = Join-Path $InstallDir "devspace-watchdog-bootstrap.ps1"
+    if ([System.IO.File]::Exists($bootstrap)) {
+        & $bootstrap -Mode Stop -ConfigPath (Join-Path $InstallDir "devspace-watchdog.config.json")
+    } else {
+        $launcher = Join-Path $InstallDir "run-devspace-watchdog-tray-hidden.vbs"
+        if ([System.IO.File]::Exists($launcher)) {
+            Start-Process -FilePath "C:\Windows\System32\wscript.exe" -ArgumentList @("//B", "//NoLogo", "`"$launcher`"", "-Stop") -WindowStyle Hidden | Out-Null
+        }
     }
     $deadline = [DateTimeOffset]::Now.AddSeconds(10)
     do { $trayStillRunning = Test-TrayProcessRunning $InstallDir; if ($trayStillRunning) { Start-Sleep -Milliseconds 250 } } while ($trayStillRunning -and [DateTimeOffset]::Now -lt $deadline)
@@ -78,13 +110,30 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray witho
         }
     }
 
-    if (-not $KeepLegacyTaskDisabled -and [bool]$record.legacyTaskWasEnabled -and [string]$record.legacyTaskName) {
+    # Retired files were backed up but are not part of the new installed payload.
+    foreach ($original in $retiredBackups) {
+        $target = Join-Path $InstallDir ([string]$original.name)
+        $source = Join-Path (Join-Path $backupPath "payload") ([string]$original.name)
+        if (-not [System.IO.File]::Exists($source) -or (Get-TrayFileSha256 $source) -ne [string]$original.sha256) { throw "Retired file backup is missing or corrupt: $source" }
+        if ([System.IO.File]::Exists($target)) {
+            if ((Get-TrayFileSha256 $target) -ne [string]$original.sha256) { throw "Retired file was replaced after installation; refusing to overwrite $target." }
+        } else { [System.IO.File]::Copy($source, $target, $false) }
+    }
+
+    if (-not $KeepLegacyTaskDisabled -and @($record.legacyTasks).Count) {
+        Restore-InstallLegacyTaskBackups $record $backupPath $InstallDir
+        Remove-Item -LiteralPath (Join-Path $InstallDir 'legacy-watchdog-poller.disabled') -Force -ErrorAction SilentlyContinue
+    } elseif (-not $KeepLegacyTaskDisabled -and [bool]$record.legacyTaskWasEnabled -and [string]$record.legacyTaskName) {
         Remove-Item -LiteralPath (Join-Path $InstallDir "legacy-watchdog-poller.disabled") -Force -ErrorAction SilentlyContinue
         $task = Get-ScheduledTask -TaskName ([string]$record.legacyTaskName) -ErrorAction SilentlyContinue
         if ($task) { Enable-ScheduledTask -TaskName ([string]$record.legacyTaskName) | Out-Null }
+    }
+    if (-not $KeepLegacyTaskDisabled -and @($record.legacyProcesses).Count) {
+        Restart-InstallLegacyProcesses ([pscustomobject]@{installDir=$InstallDir;stoppedLegacyProcesses=@($record.legacyProcesses)})
     }
     if ($filesRemaining.Count -eq 0 -and [System.IO.File]::Exists($recordPath)) { [System.IO.File]::Delete($recordPath) }
     elseif ($filesRemaining.Count) { Write-Warning "Install record retained because modified files remain: $($filesRemaining -join ', ')" }
     Write-Host "DevSpace Watchdog Tray uninstalled."
     Write-Host "DevSpace, Hermes, Router, and ngrok were not stopped."
+    } finally { Exit-StackOperation $uninstallLease }
 }

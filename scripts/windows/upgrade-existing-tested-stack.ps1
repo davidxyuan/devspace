@@ -14,14 +14,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$DevSpaceRepo = "https://github.com/davidxyuan/devspace.git"
-$DevSpaceRef = "codex/devspace-v1.0.4-watchdog-fix"
-$PinnedDevSpaceCommit = "15fcf9068608e51a56f97609aba32535a0359407"
-$PinnedDevSpaceVersion = [version]"1.0.4"
-$HermesRepo = "https://github.com/davidxyuan/hermes-gpt.git"
-$HermesRef = "codex/upgrade-v0.5.0"
-$PinnedHermesCommit = "db5ffa1bd2e4fcfecdebb2bcf479334144e1cbe3"
-$PinnedHermesVersion = [version]"0.5.0"
+$testedManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tested-stack-manifest.json') -Raw | ConvertFrom-Json
+$DevSpaceRepo = [string]$testedManifest.devspace.repository
+$DevSpaceRef = [string]$testedManifest.devspace.ref
+$PinnedDevSpaceCommit = [string]$testedManifest.devspace.revision
+$PinnedDevSpaceVersion = [version]$testedManifest.devspace.version
+$HermesRepo = [string]$testedManifest.'hermes-gpt'.repository
+$HermesRef = [string]$testedManifest.'hermes-gpt'.ref
+$PinnedHermesCommit = [string]$testedManifest.'hermes-gpt'.revision
+$PinnedHermesVersion = [version]$testedManifest.'hermes-gpt'.version
 $MigrationSource = Join-Path (Split-Path $PSScriptRoot -Parent) "migrate-oauth-json-to-sqlite.mjs"
 $WatchdogSource = Join-Path $PSScriptRoot "devspace-watchdog.ps1"
 $CapabilityHelper = Join-Path $PSScriptRoot "capability-config.ps1"
@@ -57,7 +58,7 @@ function Resolve-RepoRemote([string]$path, [string]$expectedRemote) {
     Fail "No Git remote in $path points to expected repository: $expectedRemote"
 }
 function Assert-RepoClean([string]$path, [string]$component) {
-    $changes = @(& git -C $path status --porcelain --untracked-files=no)
+    $changes = @(& git -C $path status --porcelain --untracked-files=all)
     if ($changes.Count) { Fail "$component has tracked changes in $path; no source upgrade was attempted." }
 }
 function Get-HermesRepoVersion([string]$path) {

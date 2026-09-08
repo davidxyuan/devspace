@@ -5,6 +5,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 
 function request(url, options = {}, body = "") {
   return new Promise((resolve, reject) => {
@@ -37,7 +38,21 @@ async function main() {
   assert.match(cliHelp.stdout, /devspace stack\s+Open the Windows Stack Setup \/ Update Dashboard/);
 
   const script = path.join(__dirname, "devspace-stack-setup.cjs");
-  const child = spawn(process.execPath, [script, "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
+  const setupSource = fs.readFileSync(script, "utf8");
+  assert.doesNotMatch(setupSource, /devspace-watchdog-tray-launcher\.exe/);
+  for (const requiredTrayFile of [
+    "devspace-watchdog-bootstrap.ps1",
+    "devspace-watchdog-tray.ps1",
+    "devspace-watchdog-tray-ui.ps1",
+    "run-devspace-watchdog-tray-hidden.vbs",
+  ]) assert.match(setupSource, new RegExp(requiredTrayFile.replaceAll(".", "\\.")));
+  assert.doesNotMatch(setupSource, /-ExecutionPolicy["', ]+Bypass/);
+
+  const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "devspace-setup-http-"));
+  const watchdogConfig = path.join(isolated, "devspace-watchdog.config.json");
+  fs.writeFileSync(watchdogConfig, JSON.stringify({ managementPackageRoot: path.join(isolated, "previous-package") }));
+  fs.writeFileSync(path.join(isolated, "config.json"), "{}");
+  const child = spawn(process.execPath, [script, "--no-open", "--install-dir", isolated], { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
   const baseUrl = await new Promise((resolve, reject) => {
@@ -83,9 +98,21 @@ async function main() {
     assert.equal(badToken.status, 400);
     assert.match(badToken.body, /Invalid setup token/);
 
+    const token = htmlResponse.body.match(/const setupToken="([^"]+)"/)[1];
+    const mutationOptions = { method: "POST", headers: { "content-type": "application/json", origin: baseUrl.replace(/\/$/, ""), "x-devspace-setup-token": token } };
+    const currentInstaller = await request(`${baseUrl}api/components/action`, mutationOptions, "{}");
+    assert.equal(currentInstaller.status, 400);
+    assert.doesNotMatch(currentInstaller.body, /management package changed/, "A newly opened installer may replace the previous management package");
+    fs.writeFileSync(watchdogConfig, JSON.stringify({ managementPackageRoot: path.join(isolated, "newer-package") }));
+    const staleInstaller = await request(`${baseUrl}api/components/action`, mutationOptions, "{}");
+    assert.equal(staleInstaller.status, 400);
+    assert.match(staleInstaller.body, /management package changed/, "An older tab cannot change an installation updated after the tab opened");
+
     console.log("PASS: Stack Setup exposes npm/CLI entry points, supports User Mode/Tray-only, is loopback-readable, and rejects unauthorized mutations.");
   } finally {
     child.kill();
+    await new Promise(resolve => child.once("exit", resolve));
+    fs.rmSync(isolated, {recursive:true,force:true});
   }
 }
 

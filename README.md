@@ -57,6 +57,15 @@ DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and r
 
 ## Installation
 
+### Windows one-click stack installer
+
+Extract the `DevSpace-OneClick-*.zip` package and double-click `Install-DevSpace.cmd`.
+The launcher reuses compatible Node.js or installs Node.js LTS through Windows
+App Installer (winget), then opens Stack Setup. Existing DevSpace, Hermes,
+Router, ngrok and Tray settings are detected; install only the missing parts.
+On a new computer, enter your ngrok token/domain and approved workspace folders.
+See [installation, migration and safe updates](docs/windows-oneclick.md).
+
 ### Optional Windows Watchdog Control Center
 
 Windows installations that already use the DevSpace/Hermes/ngrok watchdog can

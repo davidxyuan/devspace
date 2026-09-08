@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+. (Join-Path $PSScriptRoot 'stack-operation.ps1')
+. (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot "devspace-watchdog.config.json"
@@ -61,6 +63,7 @@ $env:DEVSPACE_PUBLIC_BASE_URL = $publicBaseUrl
 if ($config.capabilities.devspace) {
     $env:DEVSPACE_TOOL_MODE = [string]$config.capabilities.devspace.toolMode
     $env:DEVSPACE_WIDGETS = [string]$config.capabilities.devspace.widgets
+    $env:DEVSPACE_MCP_TRANSPORT = if ($config.capabilities.devspace.mcpTransport) { [string]$config.capabilities.devspace.mcpTransport } else { "stateful" }
     $env:DEVSPACE_SKILLS = if ([bool]$config.capabilities.devspace.skills) { "1" } else { "0" }
     $env:DEVSPACE_SUBAGENTS = if ([bool]$config.capabilities.devspace.subagents) { "1" } else { "0" }
 }
@@ -576,6 +579,10 @@ function Start-Ngrok {
     $ngrokArgs += @("--log", "stdout")
 
     Write-WatchdogLog "starting ngrok agent endpoint $ngrokAgentBaseUrl for public $publicBaseUrl -> $upstream; inspector=$ngrokInspectorUrl"
+    $storedToken = Get-WatchdogNgrokCredential $config
+    $ngrokEnvironment = @{}
+    if ($storedToken) { $ngrokEnvironment['NGROK_AUTHTOKEN'] = $storedToken }
+    try { Invoke-WithWatchdogEnvironment $ngrokEnvironment {
     Start-Process `
         -FilePath $ngrokPath `
         -ArgumentList $ngrokArgs `
@@ -583,6 +590,7 @@ function Start-Ngrok {
         -WindowStyle Hidden `
         -RedirectStandardOutput $ngrokOutPath `
         -RedirectStandardError $ngrokErrPath | Out-Null
+    } } finally { $storedToken = $null; $ngrokEnvironment.Clear() }
 }
 
 function Ensure-Ngrok {
@@ -624,7 +632,9 @@ function Ensure-Ngrok {
 function Invoke-WatchdogCycle {
     $mutex = New-Object System.Threading.Mutex($false, $mutexName)
     $hasLock = $false
+    $operationLease = $null
     try {
+        $operationLease = Enter-StackOperation -InstallDir (Split-Path $ConfigPath -Parent)
         $hasLock = $mutex.WaitOne(0)
         if (-not $hasLock) {
             return
@@ -649,6 +659,7 @@ function Invoke-WatchdogCycle {
             $mutex.ReleaseMutex()
         }
         $mutex.Dispose()
+        Exit-StackOperation $operationLease
     }
 }
 
