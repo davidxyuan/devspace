@@ -30,8 +30,11 @@ const stateDirectory = jobsApi.managementDir(installDir);
 const inventoryPath = path.join(stateDirectory, "inventory.json");
 const terminalPhases = new Set(["completed", "failed"]);
 const pendingRequests = new Map();
+let cloudPolicy;
+let cloudBusy = false;
 let launching = false;
 function launchWorker(type, input) {
+  if (cloudBusy) throw new Error('Cloud policy operation is running. Retry when it completes.');
   const requestId = input.requestId;
   if (requestId && !/^[A-Za-z0-9_.:-]{8,100}$/.test(requestId)) throw new Error("Invalid request ID.");
   const key = requestId ? `${type}:${requestId}` : null;
@@ -121,6 +124,7 @@ function detectInstallState() {
     legacyPollerQuiesced: fs.existsSync(path.join(installDir, "legacy-watchdog-poller.disabled")),
     defaults: {
       machineName: watchdog.machineSlug || os.hostname(),
+      mcpNameSuffix: watchdog.mcpNameSuffix ?? watchdog.machineSlug ?? os.hostname(),
       endpointMode: watchdog.ngrokEndpointMode || "AgentEndpoint",
       publicDomain,
       internalAgentEndpoint: watchdog.ngrokEndpointMode === "CloudEndpoint" ? (watchdog.ngrokAgentBaseUrl || "") : "",
@@ -149,6 +153,7 @@ function validateSetup(input) {
   if (input.installHermes || watchdog.hermesEnabled) components.push("Hermes");
   if (!components.length) throw new Error("Select DevSpace and/or Hermes.");
   if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/.test(String(input.machineName || ""))) throw new Error("Machine name is invalid.");
+  if (input.mcpNameSuffix !== undefined && !/^[A-Za-z0-9_-]{0,64}$/.test(String(input.mcpNameSuffix))) throw new Error("MCP name suffix must use letters, digits, underscore or hyphen (maximum 64).");
   if (!new Set(["AgentEndpoint", "CloudEndpoint"]).has(input.endpointMode)) throw new Error("Endpoint mode is invalid.");
   const domain = originOf(input.publicDomain);
   if (!domain || !domain.startsWith("https://")) throw new Error("ngrok/public domain must be a valid https:// origin.");
@@ -165,6 +170,7 @@ function validateSetup(input) {
     existing: detected.state === "Existing",
     changes: Object.keys(input).filter(key => Object.hasOwn(detected.defaults, key) && input[key] !== detected.defaults[key]),
     machineName: String(input.machineName).trim(),
+    mcpNameSuffix: String(input.mcpNameSuffix ?? detected.defaults.mcpNameSuffix),
     endpointMode: input.endpointMode,
     publicDomain: domain,
     internalAgentEndpoint: input.endpointMode === "CloudEndpoint" ? originOf(input.internalAgentEndpoint) : "",
@@ -317,6 +323,17 @@ const server = http.createServer(async (req, res) => {
       if (type === "component") management.planComponentAction(payload, cachedInventory(), { installDir, packageRoot });
       const job = await launchWorker(type, payload);
       sendJson(res, 202, { ok: true, jobId: job.id }); return;
+    }
+    if (req.method === 'POST' && ['/api/cloud/preview','/api/cloud/apply'].includes(url.pathname)) {
+      safeMutation(req);
+      const input = JSON.parse(await readRequestBody(req));
+      if (activeJob() || launching || cloudBusy) throw Error('Installation is busy. Retry after it completes.');
+      cloudBusy = true;
+      try {
+        cloudPolicy ||= require('./stack-cloud-policy.cjs').createCloudPolicy(installDir);
+        sendJson(res,200,await cloudPolicy(input,url.pathname.endsWith('/apply')));
+      } finally { cloudBusy = false; }
+      return;
     }
     if (req.method === "POST" && url.pathname === "/api/apply") {
       safeMutation(req);

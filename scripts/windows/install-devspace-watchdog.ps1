@@ -395,7 +395,6 @@ function New-NgrokCloudEndpointRule([string]$MachineSlug, [string]$InternalUrl) 
     - type: forward-internal
       config:
         url: $InternalUrl
-        binding: internal
 "@
 }
 

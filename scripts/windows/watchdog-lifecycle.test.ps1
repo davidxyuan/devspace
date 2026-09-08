@@ -149,6 +149,14 @@ try {
     Assert-True "proven exit removes heartbeat" (-not $script:alive -and -not [IO.File]::Exists($hostHeartbeatPath))
 
     $script:alive = $true
+    $beforeKills = $script:kills
+    Assert-Throws "missing heartbeat does not authorize a kill" { Stop-RoleFromHeartbeat $hostHeartbeatPath } 'without a valid heartbeat'
+    $script:fakeProcess | Add-Member ScriptMethod WaitForExit { param($Timeout) $script:alive=$false; return $true } -Force
+    Stop-RoleFromHeartbeat $hostHeartbeatPath
+    Assert-True "heartbeat teardown race waits for exit without kill" (-not $script:alive -and $script:kills -eq $beforeKills)
+    $script:fakeProcess | Add-Member ScriptMethod WaitForExit { param($Timeout) return -not $script:alive } -Force
+
+    $script:alive = $true
     Write-TestHeartbeat
     $beforeKills = $script:kills
     Assert-True "wrong-session quoted Host is recovered" (-not (Recover-StaleRole $hostHeartbeatPath 99))
@@ -299,7 +307,7 @@ End Class
     $output = & cscript.exe //NoLogo $vbsPath -Stop
     Assert-True "VBS Stop reaches bootstrap and propagates exit" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Stop -ConfigPath ')
     $output = & cscript.exe //NoLogo $vbsPath
-    Assert-True "VBS default Run is preserved" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Run -ConfigPath ')
+    Assert-True "VBS starts persistent supervisor" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Watch -ConfigPath ')
     $output = & cscript.exe //NoLogo $vbsPath -Invalid
     Assert-True "VBS rejects invalid mode without launch" ($LASTEXITCODE -eq 5 -and -not $output)
     $global:LASTEXITCODE = 0

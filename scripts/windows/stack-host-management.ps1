@@ -38,14 +38,19 @@ try {
             $identity=Invoke-RestMethod -Uri ($origin+'/api/status') -TimeoutSec 3
             $expectedRoot=[IO.Path]::GetFullPath((Join-Path (Split-Path $SetupPath -Parent) '..\..'))
             if ([IO.Path]::GetFullPath([string]$identity.installDir) -ine [IO.Path]::GetFullPath($InstallDir) -or [IO.Path]::GetFullPath([string]$identity.packageRoot) -ine $expectedRoot) { throw 'Connected manager belongs to another installation or package.' }
-            $response=Invoke-WebRequest -UseBasicParsing -Uri ($origin+$Route) -Method $Method -Headers $headers -ContentType 'application/json' -Body $(if($Method -eq 'POST'){$Body}else{$null}) -TimeoutSec 8
+            $response=Invoke-WebRequest -UseBasicParsing -Uri ($origin+$Route) -Method $Method -Headers $headers -ContentType 'application/json' -Body $(if($Method -eq 'POST'){$Body}else{$null}) -TimeoutSec $(if($Route -like '/api/cloud/*'){55}else{8})
             @{status=[int]$response.StatusCode;body=[string]$response.Content}|ConvertTo-Json -Compress
             return
         } catch {
             if ($_.Exception.Response) {
                 $stream=$_.Exception.Response.GetResponseStream()
                 $reader=New-Object IO.StreamReader($stream)
-                try { @{status=[int]$_.Exception.Response.StatusCode;body=$reader.ReadToEnd()}|ConvertTo-Json -Compress } finally {$reader.Dispose()}
+                try {
+                    $errorBody = $reader.ReadToEnd()
+                    if (-not $errorBody) { $errorBody = [string]$_.ErrorDetails.Message }
+                    if (-not $errorBody) { $errorBody = '{"error":"Management request failed."}' }
+                    @{status=[int]$_.Exception.Response.StatusCode;body=$errorBody}|ConvertTo-Json -Compress
+                } finally {$reader.Dispose()}
                 return
             }
             if($launched){throw}

@@ -2,7 +2,7 @@
 param(
     [string]$ConfigPath,
     [string]$RuntimeDirectory,
-    [ValidateSet("Run", "Stop", "CheckStopped", "RepairHost", "RepairOpenCodexTray")]
+    [ValidateSet("Run", "Watch", "Stop", "CheckStopped", "RepairHost", "RepairOpenCodexTray")]
     [string]$Mode = "Run"
 )
 
@@ -239,7 +239,20 @@ function Recover-StaleRole([string]$HeartbeatPath, [int]$ExpectedSessionId = -1)
 
 function Stop-RoleFromHeartbeat([string]$HeartbeatPath) {
     $heartbeat = Read-RoleHeartbeat $HeartbeatPath
-    if (-not $heartbeat) { throw "Cannot force-stop watchdog without a valid heartbeat: $HeartbeatPath" }
+    if (-not $heartbeat) {
+        # A graceful exit removes the heartbeat before PowerShell finishes teardown.
+        # Wait for the identity-checked process; never force-kill without its heartbeat.
+        foreach ($observed in @(Get-RoleProcesses $HeartbeatPath)) {
+            $exiting = Get-Process -Id ([int]$observed.ProcessId) -ErrorAction SilentlyContinue
+            if (-not $exiting) { continue }
+            try {
+                if ([Math]::Abs(($exiting.StartTime.ToUniversalTime() - ([datetime]$observed.CreationDate).ToUniversalTime()).Ticks) -ge 10) { throw 'Watchdog PID was reused; refusing exit proof.' }
+                if (-not $exiting.WaitForExit(3000)) { throw "Cannot force-stop watchdog without a valid heartbeat: $HeartbeatPath" }
+            } finally { $exiting.Dispose() }
+        }
+        Assert-RoleStopped $HeartbeatPath
+        return
+    }
     if ($heartbeat.mutationInProgress) { throw "Watchdog mutation is still draining; retaining $HeartbeatPath." }
     $matches = @(Get-RoleProcesses $HeartbeatPath | Where-Object { [int]$_.ProcessId -eq [int]$heartbeat.pid })
     if ($matches.Count -ne 1) { throw "Cannot prove watchdog heartbeat process identity: $HeartbeatPath" }
@@ -279,6 +292,8 @@ if ($Mode -eq "Stop") {
     $lease = $null
     try {
         $lease = Enter-StackOperation -InstallDir (Split-Path $ConfigPath -Parent)
+        [IO.File]::WriteAllText((Join-Path $stateDir 'watchdog-manual-stop.flag'), 'Stopped explicitly or for maintenance')
+        [IO.File]::WriteAllText((Join-Path $stateDir 'watchdog-supervisor-generation'), [guid]::NewGuid().ToString('N'))
         # Stop the Thin Tray first and prove it is gone before touching the Host.
         # Otherwise a still-running Tray can auto-repair the Host in the middle of an upgrade.
         $stopScript = if ([System.IO.File]::Exists($trayScript)) { $trayScript } else { $hostScript }
@@ -311,4 +326,30 @@ function Invoke-BootstrapRun([string]$RequestedMode) {
     } finally { Exit-StackOperation $lease }
 }
 
-Invoke-BootstrapRun $Mode
+$pausePath = Join-Path $stateDir 'watchdog-manual-stop.flag'
+if ($Mode -in @('Run','Watch')) { [IO.File]::Delete($pausePath) }
+if ($Mode -ne 'Watch') { Invoke-BootstrapRun $Mode; return }
+$hasher = [Security.Cryptography.SHA256]::Create()
+try { $guardName = 'Local\DevSpaceWatchdogSupervisor-' + [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($ConfigPath.ToLowerInvariant()))).Replace('-', '') }
+finally { $hasher.Dispose() }
+$guard = New-Object Threading.Mutex($false, $guardName)
+$ownsGuard = $false
+$generationPath = Join-Path $stateDir 'watchdog-supervisor-generation'
+$generation = if ([IO.File]::Exists($generationPath)) { [IO.File]::ReadAllText($generationPath) } else { '' }
+try {
+    try { $ownsGuard = $guard.WaitOne(20000) } catch [Threading.AbandonedMutexException] { $ownsGuard = $true }
+    if (-not $ownsGuard) { return }
+    while ($true) {
+        try {
+            $currentGeneration = if ([IO.File]::Exists($generationPath)) { [IO.File]::ReadAllText($generationPath) } else { '' }
+            if ($currentGeneration -ne $generation) { break }
+            Write-WatchdogAtomicJson (Join-Path $stateDir 'watchdog-supervisor-heartbeat.json') ([pscustomobject]@{pid=$PID;role='supervisor';timestamp=[DateTimeOffset]::UtcNow.ToString('o')})
+            if (-not [IO.File]::Exists($pausePath) -and -not (Test-StackOperationBusy -InstallDir (Split-Path $ConfigPath -Parent))) {
+                Invoke-BootstrapRun 'Run'
+            }
+        } catch {
+            try { Write-WatchdogEvent $stateDir $config 'supervisor' 'recovery_failed' (Protect-WatchdogText $_.Exception.Message) 'retry later' 'roles preserved' } catch { }
+        }
+        Start-Sleep -Seconds 15
+    }
+} finally { if ($ownsGuard) { $guard.ReleaseMutex() }; $guard.Dispose() }

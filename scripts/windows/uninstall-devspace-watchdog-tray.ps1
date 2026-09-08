@@ -95,6 +95,10 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray witho
     else { Remove-ItemProperty -LiteralPath $runPath -Name ([string]$record.runName) -ErrorAction SilentlyContinue }
 
     $overwrittenNames = @($record.overwrittenFiles | ForEach-Object { [string]$_.name })
+    $shortcutPaths = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs')) | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'DevSpace Tray.lnk' }
+    foreach ($shortcut in @(Get-WatchdogProperty $record 'createdShortcuts' @())) {
+        if ($shortcut.path -in $shortcutPaths -and [IO.File]::Exists($shortcut.path) -and (Get-TrayFileSha256 $shortcut.path) -eq $shortcut.sha256) { [IO.File]::Delete($shortcut.path) }
+    }
     $filesRemaining = @()
     foreach ($installed in @($record.installedFiles)) {
         $name = [string]$installed.name

@@ -22,7 +22,7 @@ function harness(name) {
     return nodes.get(selector);
   };
   const sandbox={ console, URL, Date, Math, encodeURIComponent,
-    document:{querySelector:query,querySelectorAll:()=>[],createElement:tag=>new Node(tag)},
+    document:{querySelector:query,getElementById:id=>query('#'+id),querySelectorAll:()=>[],createElement:tag=>new Node(tag)},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},
     sessionStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value),removeItem:key=>saved.delete(key)},
     confirm:()=>true,alert(){},prompt:()=>null, navigator:{},window:{open(){}},

@@ -798,7 +798,7 @@ function Invoke-ControlHttpRequest($Request) {
     if ($Request.method -ne "POST") { Write-ControlJson $Request.stream 404 @{ error="Not found." }; return }
     try {
         Assert-ControlMutation $Request
-        if ($Request.path -in @("/api/components/refresh", "/api/components/action")) {
+        if ($Request.path -in @("/api/components/refresh", "/api/components/action", "/api/cloud/preview", "/api/cloud/apply")) {
             if ($script:mutationInProgress -or $script:shutdownRequested) { Write-ControlJson $Request.stream 409 @{error="Watchdog is busy or stopping."}; return }
             return (Start-StackManagementProxy $Request)
         }

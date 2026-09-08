@@ -34,7 +34,7 @@ $required = @(
     "devspace-stack-setup.html",
     "devspace-stack-setup.test.cjs",
     "install-devspace-stack.ps1", "install-devspace-stack.cmd", "build-oneclick-package.ps1",
-    "stack-jobs.cjs", "stack-management.cjs", "stack-setup-apply.cjs", "stack-apply-parameters.ps1",
+    "stack-jobs.cjs", "stack-management.cjs", "stack-setup-apply.cjs", "stack-cloud-policy.cjs", "stack-apply-parameters.ps1",
     "stack-operation.ps1", "stack-host-management.ps1", "stack-activate.ps1",
     "watchdog-install-transaction.ps1", "tested-stack-manifest.json"
 )

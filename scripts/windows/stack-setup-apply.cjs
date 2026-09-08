@@ -11,7 +11,7 @@ function installerParameters(setup, { installDir, packageRoot }) {
   const change = key => !setup.existing || setup.changes.includes(key);
   const mapping = { publicDomain: "PublicBaseUrl", endpointMode: "NgrokEndpointMode", machineName: "MachineName", allowedRoots: "AllowedRoots", hermesDir: "HermesDir" };
   for (const [key, parameter] of Object.entries(mapping)) if (change(key) && setup[key]) result[parameter] = setup[key];
-  if (change("machineName")) result.McpNameSuffix = setup.machineName;
+  if (change("mcpNameSuffix")) result.McpNameSuffix = setup.mcpNameSuffix ?? setup.machineName;
   if (setup.components.includes("DevSpace") && !(watchdog.cliPath && fs.existsSync(watchdog.cliPath))) {
     result.CliPath = path.join(packageRoot, "dist", "cli.js");
     result.NodePath = process.execPath;

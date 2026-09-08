@@ -107,6 +107,7 @@ try {
       fakeRequests.push({method:req.method,path:req.url});
       const send=value=>{res.writeHead(200,{"content-type":"application/json; charset=utf-8"});res.end(JSON.stringify(value))};
       if(req.url==="/api/status")send({installDir,packageRoot:fakeMode==="mismatch"?path.join(root,"wrong-package"):packageRoot});
+      else if(fakeMode==="error"){res.writeHead(400,{"content-type":"application/json"});res.end(JSON.stringify({error:"Preview requires Cloud Endpoint"}));}
       else if(fakeMode==="delay")heldResponse=()=>send({schemaVersion:1,revision:"delayed-fixture",components:[]});
       else send({wrongManager:true});
     });
@@ -124,6 +125,9 @@ try {
     heldResponse();heldResponse=null;
     response=await delayed;assert.equal(response.status,200,response.text);assert.equal(response.data.revision,"delayed-fixture");
     console.log(`PASS: real async proxy GET and cached Host loop response in ${cachedMs}ms during blocked remote response.`);
+    fakeMode="error";
+    response=await request(proxyBase,"/api/components");
+    assert.equal(response.status,400);assert.equal(response.data.error,"Preview requires Cloud Endpoint","manager rejection body survives PowerShell error stream consumption");
 
     await stopManager(manager.pid);
     fakeMode="mismatch";fakeRequests=[];

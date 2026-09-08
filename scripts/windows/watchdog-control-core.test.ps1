@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -404,7 +404,7 @@ try {
     Assert-Contains "installer retires native Tray launcher exe" $installerSource 'devspace-watchdog-tray-launcher.exe'
     Assert-True "installer avoids WMI/CIM role discovery" (-not $installerSource.Contains('Get-CimInstance'))
     Assert-Contains "Hermes local health uses session-free OPTIONS transport probe" $coreSource 'Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS"'
-    Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=public_probe'
+    Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=checked_separately'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
     Assert-True "recovery executor no longer re-blocks confirmed busy transport" (-not $coreSource.Contains('Busy or indeterminate service blocks automatic recovery.'))
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'

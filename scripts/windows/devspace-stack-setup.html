@@ -39,6 +39,7 @@
     <h2>2. Machine & access</h2>
     <div class="grid">
       <label>Computer / Station Name<input name="machineName" required></label>
+      <label>MCP name suffix<input name="mcpNameSuffix" maxlength="64" pattern="[A-Za-z0-9_-]*" placeholder="Example: nt1 (devspace_chatgpt_nt1 / hermes_chatgpt_nt1)"></label>
       <label>Allowed project roots<input name="allowedRoots" placeholder="D:\\;H:\\project or D:\\projects;H:\\data"></label>
       <label>Hermes directory<input name="hermesDir"></label>
       <label class="check"><input name="fullAccess" type="checkbox"> Full filesystem access (advanced)</label>
@@ -57,6 +58,7 @@
     <div class="actions"><button id="apply" class="primary" type="submit">Install / Update</button><button id="refresh" type="button">Refresh detection</button></div>
   </form>
   <section class="panel"><h2>Installation / update progress</h2><div id="job-state" class="muted">No active job.</div><pre id="job-log">—</pre></section>
+<section class="panel"><h2>Cloud Traffic Policy</h2><p>Cloud Endpoint only. Enter its ep_ ID and API Key, preview the merged policy, then apply. Other station rules are preserved. API Key is not saved.</p><label>Endpoint ID<input id="cloud-endpoint-id" placeholder="ep_..."></label><label>ngrok API Key<input id="cloud-api-key" type="password" autocomplete="off"></label><button id="cloud-preview" type="button">Preview</button><button id="cloud-apply" type="button" disabled>Apply preview</button><pre id="cloud-policy-output"></pre></section>
 </main>
 <script>
 "use strict";
@@ -70,7 +72,7 @@ function toggleCloud(){const cloud=$("[name=endpointMode]").value==="CloudEndpoi
 function fill(status){
   detected=status;const d=status.defaults||{}, f=$("#setup-form").elements;
   if(formFingerprint===null||editedFields.size===0)formFingerprint=status.configurationFingerprint;
-  for(const key of ["machineName","publicDomain","internalAgentEndpoint","allowedRoots","hermesDir"])if(f[key]&&!editedFields.has(key))f[key].value=d[key]||"";
+  for(const key of ["machineName","mcpNameSuffix","publicDomain","internalAgentEndpoint","allowedRoots","hermesDir"])if(f[key]&&!editedFields.has(key))f[key].value=d[key]||"";
   for(const key of ["installDevspace","installHermes","installTray","installTools","userMode","noLegacyPoller","fullAccess"])if(f[key]&&!editedFields.has(key))f[key].checked=Boolean(d[key]);
   if(!editedFields.has("endpointMode"))f.endpointMode.value=d.endpointMode||"AgentEndpoint";
   toggleCloud();const state=status.state;$("#state-label").textContent=state;$("#state-dot").className=`dot ${state==="Existing"?"green":state==="Fresh"?"yellow":"red"}`;
@@ -85,7 +87,7 @@ async function refresh(){
 function readForm(){
   const f=$("#setup-form").elements, result={configurationFingerprint:formFingerprint};
   for(const key of ["installDevspace","installHermes","installTray","userMode","noLegacyPoller","installTools","fullAccess"])result[key]=f[key].checked;
-  for(const key of ["machineName","allowedRoots","hermesDir","endpointMode","publicDomain","internalAgentEndpoint"])result[key]=f[key].value.trim();
+  for(const key of ["machineName","mcpNameSuffix","allowedRoots","hermesDir","endpointMode","publicDomain","internalAgentEndpoint"])result[key]=f[key].value.trim();
   for(const key of ["ngrokAuthToken","devspaceOwnerToken"])result[key]=f[key].value;
   return result;
 }
@@ -217,6 +219,17 @@ $("[name=endpointMode]").addEventListener("change",toggleCloud);
 $("[name=installTray]").addEventListener("change",()=>{if(!$("[name=installTray]").checked){$("[name=noLegacyPoller]").checked=false;editedFields.add("noLegacyPoller")}});
 async function statusLoop(){await refresh();setTimeout(statusLoop,5000)}
 initializeComponents();statusLoop();
+
+let cloudPreviewId=null;
+async function cloudRequest(apply){
+ const out=document.getElementById('cloud-policy-output'),button=document.getElementById('cloud-apply');
+ if(apply&&!confirm('Apply this preview to the ngrok Cloud Endpoint?'))return;
+ button.disabled=true;
+ try{const r=await api('/api/cloud/'+(apply?'apply':'preview'),{method:'POST',body:JSON.stringify({apiKey:document.getElementById('cloud-api-key').value,endpointId:document.getElementById('cloud-endpoint-id').value.trim(),previewId:cloudPreviewId})});cloudPreviewId=r.previewId||null;out.textContent=r.policy||('Applied and verified. Backup: '+r.backup);button.disabled=!cloudPreviewId;if(apply)document.getElementById('cloud-api-key').value='';}catch(e){out.textContent=e.message;cloudPreviewId=null;}
+}
+document.getElementById('cloud-preview').addEventListener('click',()=>cloudRequest(false));
+document.getElementById('cloud-apply').addEventListener('click',()=>cloudRequest(true));
+
 </script>
 </body>
 </html>

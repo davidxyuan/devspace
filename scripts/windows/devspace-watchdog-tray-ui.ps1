@@ -307,7 +307,10 @@ $openItem.add_Click({ $script:trayShared.OpenDashboard = $true })
 $notify.add_DoubleClick({ $script:trayShared.OpenDashboard = $true })
 $logsItem.add_Click({ $script:trayShared.OpenLogs = $true })
 $repairHostItem.add_Click({ $script:trayShared.RepairRequested = $true })
-$exitItem.add_Click({ $script:trayShared.ExitRequested = $true })
+$exitItem.add_Click({
+    try { [IO.File]::WriteAllText((Join-Path $stateDir 'watchdog-manual-stop.flag'), 'Tray exited by user'); $script:trayShared.ExitRequested = $true }
+    catch { $script:trayShared.WorkerMessage = 'Could not persist exit intent; retry.' }
+})
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500

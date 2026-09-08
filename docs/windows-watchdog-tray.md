@@ -2,12 +2,33 @@
 
 The DevSpace Watchdog is an opt-in Windows lifecycle and control layer for an
 existing DevSpace, Hermes, MCP Router, and ngrok installation. It replaces the
-steady-state, every-minute PowerShell poller with one persistent notification
-area process and an internal timer.
+steady-state, every-minute PowerShell poller with a Host, a thin notification
+area UI, and a persistent supervisor that can recover both roles.
 
 This repository feature does not install itself. Building or testing the
 repository does not register HKCU Run, start the Tray, disable a Scheduled Task,
 or change an endpoint. Deployment requires an explicit installer command.
+
+The installer registers current-user **login** startup and creates a Desktop and
+Start Menu `DevSpace Tray` shortcut when that name is not already present. It
+uses PowerShell with `-WindowStyle Hidden`; the running supervisor starts child
+roles without console windows. Login startup is not a pre-login Windows service.
+The supervisor checks every 15 seconds, respects explicit stop and management
+operations, and exits when an upgrade replaces its generation. Its own process
+must remain alive; login or the shortcut starts it again if it is terminated.
+
+If task permissions prevent disabling the legacy poller, the explicit installer
+option `-AllowLegacyQuiesce` accepts only a legacy script with the known disable
+marker guard. The scheduled task can still create a PowerShell window before the
+script exits. Reboot does not grant permission to disable that task. Older scripts
+without the marker guard still require administrator migration.
+
+Cloud installations can use the Dashboard's Cloud Traffic Policy panel with an
+existing `ep_...` Endpoint ID and an ngrok API Key. Preview precedes apply; the
+previous policy is backed up and the resulting policy is read back. Other rules
+retain their order, including preceding authentication rules. A catch-all rule
+that would shadow a new station requires manual placement. The API Key is not
+saved. This does not create Cloud Endpoints or manage billing/account quotas.
 
 ## 1. Architecture
 

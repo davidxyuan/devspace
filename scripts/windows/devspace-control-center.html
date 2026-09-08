@@ -201,7 +201,8 @@
       <div class="panel"><div class="card-head"><h2>Health, recovery, and manual actions</h2><button id="refresh-history">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Timestamp</th><th>Service</th><th>Event</th><th>Cause</th><th>Action / Result</th></tr></thead><tbody id="history-body"></tbody></table></div></div>
       <div class="panel"><h2>Configuration backups &amp; rollback</h2><div id="backup-list" class="grid"></div></div>
     </section>
-  </main>
+  <section class="panel"><h2>Cloud Traffic Policy</h2><p>Cloud Endpoint only. Enter its ep_ ID and API Key, preview the merged policy, then apply. Other station rules are preserved. API Key is not saved.</p><label>Endpoint ID<input id="cloud-endpoint-id" placeholder="ep_..."></label><label>ngrok API Key<input id="cloud-api-key" type="password" autocomplete="off"></label><button id="cloud-preview" type="button">Preview</button><button id="cloud-apply" type="button" disabled>Apply preview</button><pre id="cloud-policy-output"></pre></section>
+</main>
   <div id="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -752,6 +753,17 @@
 
     async function statusLoop() { await refreshStatus(); setTimeout(statusLoop, 5000); }
     resetNgrokProfileForm(); refreshNgrokProfiles(); initializeComponents(); statusLoop();
-  </script>
+
+let cloudPreviewId=null;
+async function cloudRequest(apply){
+ const out=document.getElementById('cloud-policy-output'),button=document.getElementById('cloud-apply');
+ if(apply&&!confirm('Apply this preview to the ngrok Cloud Endpoint?'))return;
+ button.disabled=true;
+ try{const r=await api('/api/cloud/'+(apply?'apply':'preview'),{method:'POST',body:JSON.stringify({apiKey:document.getElementById('cloud-api-key').value,endpointId:document.getElementById('cloud-endpoint-id').value.trim(),previewId:cloudPreviewId})});cloudPreviewId=r.previewId||null;out.textContent=r.policy||('Applied and verified. Backup: '+r.backup);button.disabled=!cloudPreviewId;if(apply)document.getElementById('cloud-api-key').value='';}catch(e){out.textContent=e.message;cloudPreviewId=null;}
+}
+document.getElementById('cloud-preview').addEventListener('click',()=>cloudRequest(false));
+document.getElementById('cloud-apply').addEventListener('click',()=>cloudRequest(true));
+
+</script>
 </body>
 </html>

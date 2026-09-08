@@ -854,7 +854,12 @@ function Invoke-WatchdogHttpRequest(
         $responseBody = Read-WatchdogLimitedStream $stream 262144 ($TimeoutSeconds * 1000) -StopAtEventMessage:($contentType -match '(?i)text/event-stream')
         return [pscustomobject]@{ reachable=$true; status=[int]$response.StatusCode; body=$responseBody; headers=$headers; error="" }
     } catch {
-        return [pscustomobject]@{ reachable=$false; status=0; body=""; headers=@{}; error=(Protect-WatchdogText $_.Exception.Message) }
+        $failure = $_.Exception
+        while ($failure.InnerException) { $failure = $failure.InnerException }
+        $probeMessage = if ($failure -is [OperationCanceledException] -or $failure -is [TimeoutException]) {
+            "HTTP probe timed out after $TimeoutSeconds seconds; service exit is not established."
+        } else { Protect-WatchdogText $failure.Message }
+        return [pscustomobject]@{ reachable=$false; status=0; body=""; headers=@{}; error=$probeMessage }
     } finally {
         if ($stream) { $stream.Dispose() }
         if ($response) { $response.Dispose() }
@@ -1098,7 +1103,7 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $transportProbe = Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS" "" 2 -Local
                 $httpReachable = $transportProbe.reachable
                 $protocolHealthy = $transportProbe.reachable -and $transportProbe.status -gt 0
-                $detail = if ($transportProbe.reachable) { "transport=http_$($transportProbe.status); mcp=public_probe" } else { "transport=unreachable; mcp=public_probe" }
+                $detail = if ($transportProbe.reachable) { "local_options=http_$($transportProbe.status); mcp=checked_separately" } else { "local_options=no_response; mcp=checked_separately" }
                 $probeError = if ($protocolHealthy) { "" } else { $transportProbe.error }
             }
             "router" {

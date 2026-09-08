@@ -4,7 +4,8 @@ param(
     [string]$LegacyTaskName = "",
     [string]$OriginalTransactionPath = "",
     [int]$StartupTimeoutSeconds = 30,
-    [switch]$SkipStart
+    [switch]$SkipStart,
+    [switch]$AllowLegacyQuiesce
 )
 
 $ErrorActionPreference = "Stop"
@@ -210,7 +211,9 @@ $legacyWasEnabled = if ($legacySnapshots.Count) { [bool]$legacySnapshots[0].enab
 $runName = "DevSpaceWatchdogTray-" + (Get-InstallerStableHash $InstallDir)
 $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $existingRun = (Get-ItemProperty -LiteralPath $runPath -Name $runName -ErrorAction SilentlyContinue).$runName
-$runValue = '"' + (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') + '" -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') + '" -Mode Run'
+$startupExecutable = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$startupArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') + '" -Mode Watch -ConfigPath "' + $configPath + '"'
+$runValue = '"' + $startupExecutable + '" ' + $startupArguments
 $backupRoot = Join-Path $InstallDir "configuration-backups"
 $backupPath = Join-Path $backupRoot ("tray-install-" + (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 $payloadPath = Join-Path $backupPath "payload"
@@ -221,6 +224,10 @@ $configBackups = @()
 $runChanged = $false
 $taskDisabled = $false
 $taskQuiesced = $false
+$changedTasks = @()
+$createdShortcuts = @()
+$quiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
+$markerExisted = [IO.File]::Exists($quiesceMarker)
 $trayInstallLease = $null
 
 try {
@@ -266,9 +273,20 @@ try {
     foreach ($snapshot in $legacySnapshots) {
         $currentTask = Get-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop
         if (-not (Test-InstallTaskIdentity $currentTask $InstallDir)) { throw "Legacy task changed identity: $($snapshot.name)" }
-        Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
-        $taskDisabled = $true
-        if ([string]$currentTask.State -eq 'Running') { Stop-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop }
+        try {
+            Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
+            $changedTasks += $snapshot.name
+            $taskDisabled = $true
+            if ([string]$currentTask.State -eq 'Running') { Stop-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop }
+        } catch {
+            if (-not $AllowLegacyQuiesce) { throw }
+            $legacySource = [IO.File]::ReadAllText((Join-Path $InstallDir 'devspace-watchdog.ps1'))
+            if (-not $legacySource.Contains('$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"') -or
+                -not $legacySource.Contains('if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }')) { throw 'Legacy script does not support logical quiesce; administrator task disable is required.' }
+            if (-not $markerExisted) { [IO.File]::WriteAllText($quiesceMarker, 'Tray owns monitoring; scheduler disable still requires administrator rights.') }
+            $taskQuiesced = $true
+            Write-Warning "Legacy task remains scheduled: $($snapshot.name). Its script is quiesced; console creation may still occur."
+        }
     }
     Stop-InstallLegacyProcesses $legacyProcessTransaction
     try { [void](Invoke-InstalledWatchdogBootstrap "CheckStopped") }
@@ -323,8 +341,9 @@ try {
         foreach ($snapshot in $legacySnapshots) {
             $currentTask = Get-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop
             if (-not (Test-InstallTaskIdentity $currentTask $InstallDir)) { throw "Legacy task changed identity: $($snapshot.name)" }
-            Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
-            $taskDisabled = $true
+            if ($snapshot.name -in $changedTasks) {
+                Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
+            } elseif (-not $taskQuiesced -or -not [IO.File]::Exists($quiesceMarker)) { throw 'Legacy poller quiesce proof was lost.' }
         }
     }
 
@@ -337,7 +356,42 @@ try {
         if (-not [System.IO.File]::Exists($backupFile) -or (Get-WatchdogFileSha256 $backupFile) -ne $original[0].sha256) { throw "Retired Watchdog file backup is missing or corrupt: $retiredName" }
         [System.IO.File]::Delete($retiredPath)
     }
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+        if (-not $folder) { continue }
+        $shortcutPath = Join-Path $folder 'DevSpace Tray.lnk'
+        if ([IO.File]::Exists($shortcutPath)) { continue }
+        $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $startupExecutable
+        $shortcut.Arguments = $startupArguments
+        $shortcut.WindowStyle = 7
+        $shortcut.WorkingDirectory = $InstallDir
+        $shortcut.Save()
+        $createdShortcuts += [pscustomobject]@{path=$shortcutPath;sha256=(Get-WatchdogFileSha256 $shortcutPath)}
+    }
+    $manifest | Add-Member -NotePropertyName createdShortcuts -NotePropertyValue $createdShortcuts
+    Write-InstallerJson (Join-Path $backupPath 'manifest.json') $manifest
     Write-InstallerJson $recordPath $manifest
+    # Start the persistent supervisor only after readiness; it waits for this lease to finish.
+    $supervisorStart = New-Object Diagnostics.ProcessStartInfo
+    $supervisorStart.FileName = $startupExecutable
+    $supervisorStart.Arguments = $startupArguments
+    $supervisorStart.UseShellExecute = $false
+    $supervisorStart.CreateNoWindow = $true
+    [void]$supervisorStart.EnvironmentVariables.Remove('DEVSPACE_STACK_OPERATION_TOKEN')
+    [void]$supervisorStart.EnvironmentVariables.Remove('DEVSPACE_STACK_JOB_ID')
+    $supervisorProcess = [Diagnostics.Process]::Start($supervisorStart)
+    try {
+        $supervisorDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        do {
+            $supervisorHeartbeat = Read-InstallerHeartbeat (Join-Path ([string]$config.stateDir) 'watchdog-supervisor-heartbeat.json')
+            $supervisorReady = (Test-InstallerHeartbeatFresh $supervisorHeartbeat 'supervisor') -and [int]$supervisorHeartbeat.pid -eq $supervisorProcess.Id
+            if ($supervisorReady) { break }
+            if ($supervisorProcess.HasExited) { throw "Supervisor exited before readiness (exit $($supervisorProcess.ExitCode))." }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTimeOffset]::UtcNow -lt $supervisorDeadline)
+        if (-not $supervisorReady) { throw 'Supervisor did not produce its own heartbeat.' }
+    } finally { $supervisorProcess.Dispose() }
     Write-Host "DevSpace Watchdog Tray installed."
     Write-Host "Autostart: $runName"
     Write-Host "Dashboard: http://127.0.0.1:$($settings.dashboardPort)/"
@@ -345,6 +399,9 @@ try {
     if ($legacyTask) { Write-Host "Legacy watchdog task: $(if ($taskDisabled) { 'disabled after tray readiness' } elseif ($taskQuiesced) { 'logically quiesced; ACL prevents disable' } else { 'unchanged' }) ($legacyName)" }
 } catch {
     $failure = $_
+    foreach ($item in $createdShortcuts) {
+        if ([IO.File]::Exists($item.path) -and (Get-WatchdogFileSha256 $item.path) -eq $item.sha256) { [IO.File]::Delete($item.path) }
+    }
     try {
         if (-not (Invoke-InstalledWatchdogStop)) {
             $launcher = Join-Path $InstallDir "run-devspace-watchdog-tray-hidden.vbs"
@@ -372,7 +429,8 @@ try {
             if ([System.IO.File]::Exists($target)) { [System.IO.File]::Delete($target) }
         }
         if (-not $originalTransaction) {
-            foreach ($snapshot in $legacySnapshots) {
+            if ($taskQuiesced -and -not $markerExisted) { [IO.File]::Delete($quiesceMarker) }
+            foreach ($snapshot in @($legacySnapshots | Where-Object { $_.name -in $changedTasks })) {
                 if ($snapshot.enabled) { Enable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null }
                 else { Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null }
             }

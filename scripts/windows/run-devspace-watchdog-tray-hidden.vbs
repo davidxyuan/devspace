@@ -25,7 +25,7 @@ If Not fileSystem.FileExists(bootstrapPath) Then WScript.Quit 2
 If Not fileSystem.FileExists(configPath) Then WScript.Quit 3
 If Not fileSystem.FileExists(powershellPath) Then WScript.Quit 4
 
-mode = "Run"
+mode = "Watch"
 If WScript.Arguments.Count > 1 Then WScript.Quit 5
 If WScript.Arguments.Count = 1 Then
   If LCase(WScript.Arguments(0)) <> "-stop" Then WScript.Quit 5
