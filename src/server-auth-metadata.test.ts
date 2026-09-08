@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { createServer as createDevSpaceServer } from "./server.js";
+
+const serverSource = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+assert.match(
+  serverSource,
+  /if \(config\.widgets !== "off"\) \{\s*registerAppResource\(/,
+  "widgets=off must not advertise the workspace app resource",
+);
 
 const stateDir = mkdtempSync(join(tmpdir(), "devspace-server-auth-test-"));
 const publicBaseUrl = "https://example.ngrok-free.dev/tyo/devspace_chatgpt";

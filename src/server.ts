@@ -693,36 +693,38 @@ function createMcpServer(
     },
   );
 
-  registerAppResource(
-    server,
-    "DevSpace Diff Card",
-    WORKSPACE_APP_URI,
-    {
-      description: "Interactive card for viewing DevSpace file diffs.",
-      _meta: {
-        ui: {
-          csp: appCsp(config),
+  if (config.widgets !== "off") {
+    registerAppResource(
+      server,
+      "DevSpace Diff Card",
+      WORKSPACE_APP_URI,
+      {
+        description: "Interactive card for viewing DevSpace file diffs.",
+        _meta: {
+          ui: {
+            csp: appCsp(config),
+          },
         },
       },
-    },
-    async () => {
-      await assertWorkspaceAppAssets();
-      return {
-        contents: [
-          {
-            uri: WORKSPACE_APP_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: workspaceAppHtml(config),
-            _meta: {
-              ui: {
-                csp: appCsp(config),
+      async () => {
+        await assertWorkspaceAppAssets();
+        return {
+          contents: [
+            {
+              uri: WORKSPACE_APP_URI,
+              mimeType: RESOURCE_MIME_TYPE,
+              text: workspaceAppHtml(config),
+              _meta: {
+                ui: {
+                  csp: appCsp(config),
+                },
               },
             },
-          },
-        ],
-      };
-    },
-  );
+          ],
+        };
+      },
+    );
+  }
 
   registerAppTool(
     server,

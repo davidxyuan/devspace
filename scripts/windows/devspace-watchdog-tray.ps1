@@ -130,10 +130,9 @@ if ($script:publicProbeFailureCount -eq 0) {
         }
     }
 }
-# A restart has no in-memory public snapshot. Probe once immediately instead of
-# leaving the tray at "Checking public MCP" until the persisted six-hour slot.
-$script:forcePublicProbe = $true
-$script:nextPublicProbeAt = [DateTimeOffset]::MinValue
+# Preserve a persisted public schedule across Host restarts. Only a fresh state
+# with no scheduled probe should force an immediate public verification.
+$script:forcePublicProbe = ($script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue)
 $script:lastHeartbeat = [DateTimeOffset]::MinValue
 $script:mutationInProgress = $false
 $script:mutationPowerShell = $null
@@ -301,13 +300,31 @@ function Update-PublicProbeSchedule($PublicSnapshot, [bool]$Completed = $true) {
 }
 
 function Request-ImmediatePublicProbe([string]$Reason = "event") {
-    $script:forcePublicProbe = $true
-    $script:nextPublicProbeAt = [DateTimeOffset]::MinValue
     $record = Get-WatchdogProperty $script:state "publicProbe" $null
     if (-not $record) {
         $record = [pscustomobject][ordered]@{ consecutiveFailures=0; nextProbeUtc=$null; lastAttemptUtc=$null; lastSuccessUtc=$null }
         Set-WatchdogProperty $script:state "publicProbe" $record
     }
+
+    $automaticRecoveryReason = $Reason -like "recovery:*" -or $Reason -like "local_recovered:*"
+    if ($automaticRecoveryReason) {
+        if ($script:forcePublicProbe -or $script:nextPublicProbeAt -eq [DateTimeOffset]::MinValue) {
+            Write-WatchdogEvent $script:stateDir $script:config "public" "verify_suppressed" $Reason "coalesce" "already_pending"
+            return
+        }
+        $lastAttemptText = [string](Get-WatchdogProperty $record "lastAttemptUtc" "")
+        $lastAttempt = [DateTimeOffset]::MinValue
+        if ($lastAttemptText -and [DateTimeOffset]::TryParse($lastAttemptText, [ref]$lastAttempt)) {
+            $cooldownSeconds = 900
+            if (([DateTimeOffset]::UtcNow - $lastAttempt).TotalSeconds -lt $cooldownSeconds) {
+                Write-WatchdogEvent $script:stateDir $script:config "public" "verify_suppressed" $Reason "cooldown" "$cooldownSeconds seconds"
+                return
+            }
+        }
+    }
+
+    $script:forcePublicProbe = $true
+    $script:nextPublicProbeAt = [DateTimeOffset]::MinValue
     $record.nextProbeUtc = $null
     try { Save-WatchdogState $script:statePath $script:state } catch { }
     if ($Reason) {

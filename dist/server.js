@@ -484,30 +484,32 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
     }, {
         instructions: serverInstructions(config),
     });
-    registerAppResource(server, "DevSpace Diff Card", WORKSPACE_APP_URI, {
-        description: "Interactive card for viewing DevSpace file diffs.",
-        _meta: {
-            ui: {
-                csp: appCsp(config),
+    if (config.widgets !== "off") {
+        registerAppResource(server, "DevSpace Diff Card", WORKSPACE_APP_URI, {
+            description: "Interactive card for viewing DevSpace file diffs.",
+            _meta: {
+                ui: {
+                    csp: appCsp(config),
+                },
             },
-        },
-    }, async () => {
-        await assertWorkspaceAppAssets();
-        return {
-            contents: [
-                {
-                    uri: WORKSPACE_APP_URI,
-                    mimeType: RESOURCE_MIME_TYPE,
-                    text: workspaceAppHtml(config),
-                    _meta: {
-                        ui: {
-                            csp: appCsp(config),
+        }, async () => {
+            await assertWorkspaceAppAssets();
+            return {
+                contents: [
+                    {
+                        uri: WORKSPACE_APP_URI,
+                        mimeType: RESOURCE_MIME_TYPE,
+                        text: workspaceAppHtml(config),
+                        _meta: {
+                            ui: {
+                                csp: appCsp(config),
+                            },
                         },
                     },
-                },
-            ],
-        };
-    });
+                ],
+            };
+        });
+    }
     registerAppTool(server, "open_workspace", {
         title: "Open workspace",
         description: "Open a local project directory as a coding workspace. Call this once per project folder or worktree before reading, editing, searching, writing, showing changes, or running commands. Reuse the returned workspaceId for later calls in the same folder; do not call open_workspace again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. By default this opens the actual checkout; set mode=\"worktree\" when the user asks for an isolated or parallel coding session. Returns a workspaceId, loaded root project instructions, and nested instruction file paths the model should read before working in those directories.",
