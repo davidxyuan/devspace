@@ -3,7 +3,8 @@ param(
     [string]$ConfigPath,
     [string]$RuntimeDirectory,
     [ValidateSet("Run", "Watch", "Stop", "CheckStopped", "RepairHost", "RepairOpenCodexTray")]
-    [string]$Mode = "Run"
+    [string]$Mode = "Run",
+    [switch]$ScheduledSupervisor
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,23 @@ if ([string]::IsNullOrWhiteSpace($stateDirValue)) { throw "Watchdog configuratio
 $stateDir = [System.IO.Path]::GetFullPath($stateDirValue)
 $hostHeartbeatPath = Join-Path $stateDir "watchdog-host-heartbeat.json"
 $trayHeartbeatPath = Join-Path $stateDir "watchdog-tray-heartbeat.json"
+
+if ($Mode -eq 'Watch' -and -not $ScheduledSupervisor) {
+    $installRecord = Join-Path $stateDir 'watchdog-tray-install.json'
+    if ([IO.File]::Exists($installRecord)) {
+        $record = [IO.File]::ReadAllText($installRecord) | ConvertFrom-Json
+        if (Get-WatchdogProperty $record 'supervisorTask' '') {
+            . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+            $spec = Get-InstallSupervisorTaskSpec $stateDir
+            if ($record.supervisorTask -ne $spec.name -or [IO.Path]::GetFullPath([string]$record.installDir) -ne $stateDir) { throw 'Supervisor installation identity mismatch.' }
+            $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+            Assert-InstallSupervisorTask $task $spec
+            [IO.File]::Delete((Join-Path $stateDir 'watchdog-manual-stop.flag'))
+            Start-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+            return
+        }
+    }
+}
 
 function Convert-NativeArgument([string]$Value) {
     if ($null -eq $Value -or $Value.Contains("`r") -or $Value.Contains("`n") -or $Value.Contains([char]0)) { throw "Invalid native process argument." }

@@ -1,6 +1,57 @@
 # Installer-only helpers. Keep runtime state and secrets out of public inventory.
 . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 
+function Get-InstallSupervisorTaskSpec([string]$InstallDir) {
+    $root = [IO.Path]::GetFullPath($InstallDir)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))).Replace('-', '').Substring(0,12).ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    return [pscustomobject]@{
+        name = "DevSpaceWatchdogSupervisor-$hash"
+        executable = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $root 'devspace-watchdog-bootstrap.ps1') + '" -Mode Watch -ScheduledSupervisor -ConfigPath "' + (Join-Path $root 'devspace-watchdog.config.json') + '"'
+        user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
+}
+
+function Assert-InstallSupervisorTask($Task, $Spec) {
+    $taskUser = [string]$Task.Principal.UserId
+    if ($taskUser -and $taskUser -notmatch '^S-1-') {
+        try { $taskUser = ([Security.Principal.NTAccount]::new($taskUser)).Translate([Security.Principal.SecurityIdentifier]).Value }
+        catch { throw 'Cannot resolve supervisor task account identity.' }
+    }
+    if (-not $Task -or $Task.TaskPath -ne '\' -or $Task.TaskName -ne $Spec.name -or
+        @($Task.Actions).Count -ne 1 -or $Task.Actions[0].Execute -ne $Spec.executable -or
+        $Task.Actions[0].Arguments -cne $Spec.arguments -or $taskUser -ne $Spec.user -or
+        [string]$Task.Principal.LogonType -ne 'Interactive' -or [string]$Task.Principal.RunLevel -ne 'Limited' -or
+        @($Task.Triggers | Where-Object { $null -ne $_ }).Count -ne 0 -or -not $Task.Settings.Enabled -or
+        [string]$Task.Settings.MultipleInstances -ne 'IgnoreNew' -or [string]$Task.Settings.ExecutionTimeLimit -ne 'PT0S') {
+        throw 'Supervisor scheduled task identity/settings changed; refusing to use or remove it.'
+    }
+}
+
+function Wait-InstallSupervisorTaskStopped([string]$InstallDir) {
+    $spec = Get-InstallSupervisorTaskSpec $InstallDir
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+    do {
+        $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction SilentlyContinue
+        if (-not $task) { return }
+        Assert-InstallSupervisorTask $task $spec
+        if ([string]$task.State -notin @('Running','Queued')) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw 'Supervisor task has not exited after lifecycle stop; retaining task and payload.'
+}
+
+function Remove-InstallSupervisorTask([string]$InstallDir) {
+    Wait-InstallSupervisorTaskStopped $InstallDir
+    $spec = Get-InstallSupervisorTaskSpec $InstallDir
+    $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction SilentlyContinue
+    if (-not $task) { return }
+    Assert-InstallSupervisorTask $task $spec
+    Unregister-ScheduledTask -TaskName $spec.name -TaskPath '\' -Confirm:$false -ErrorAction Stop
+}
+
 function Resolve-InstallApprovedExecutable([string]$Executable) {
     if (-not $Executable) { return '' }
     $name = [IO.Path]::GetFileName($Executable)

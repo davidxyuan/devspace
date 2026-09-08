@@ -405,7 +405,9 @@ try {
     Assert-Contains "installer retries transient file locks" $installerSource 'Copy-InstallerFileWithRetry'
     Assert-Contains "installer retires legacy interactive Tray VBS" $installerSource 'run-devspace-watchdog-tray-ui-hidden.vbs'
     Assert-Contains "installer retires native Tray launcher exe" $installerSource 'devspace-watchdog-tray-launcher.exe'
-    Assert-True "installer avoids WMI/CIM role discovery" (-not $installerSource.Contains('Get-CimInstance'))
+    # Scheduled launch has no Process.Start handle; query only its heartbeat PID for identity.
+    $installerCim = [regex]::Matches($installerSource, 'Get-CimInstance[^\r\n]+')
+    Assert-True "installer uses only targeted supervisor PID identity lookup" ($installerCim.Count -eq 1 -and $installerCim[0].Value -eq 'Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop')
     Assert-Contains "Hermes local health uses session-free OPTIONS transport probe" $coreSource 'Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS"'
     Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=checked_separately'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'

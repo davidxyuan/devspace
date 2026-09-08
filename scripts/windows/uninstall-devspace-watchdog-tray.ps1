@@ -87,6 +87,12 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray witho
     do { $trayStillRunning = Test-TrayProcessRunning $InstallDir; if ($trayStillRunning) { Start-Sleep -Milliseconds 250 } } while ($trayStillRunning -and [DateTimeOffset]::Now -lt $deadline)
     if ($trayStillRunning) { throw "Tray did not stop within 10 seconds; refusing to remove files from a running process." }
 
+    if (Get-WatchdogProperty $record 'supervisorTask' '') {
+        $spec = Get-InstallSupervisorTaskSpec $InstallDir
+        if ($record.supervisorTask -ne $spec.name) { throw 'Supervisor task record mismatch.' }
+        Remove-InstallSupervisorTask $InstallDir
+    }
+
     $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     $runProperties = Get-ItemProperty -LiteralPath $runPath -Name ([string]$record.runName) -ErrorAction SilentlyContinue
     $currentRun = if ($runProperties -and $runProperties.PSObject.Properties[[string]$record.runName]) { [string]$runProperties.PSObject.Properties[[string]$record.runName].Value } else { $null }

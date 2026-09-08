@@ -229,11 +229,18 @@ $createdShortcuts = @()
 $quiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
 $markerExisted = [IO.File]::Exists($quiesceMarker)
 $trayInstallLease = $null
+$supervisorTaskCreated = $false
+$supervisorSpec = Get-InstallSupervisorTaskSpec $InstallDir
+$previousRecord = if ([IO.File]::Exists($recordPath)) { [IO.File]::ReadAllBytes($recordPath) } else { $null }
+$recordChanged = $false
+$supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction SilentlyContinue
+if ($supervisorTask) { Assert-InstallSupervisorTask $supervisorTask $supervisorSpec }
 
 try {
     if (-not $PSCmdlet.ShouldProcess($InstallDir, "install and start DevSpace Watchdog Tray")) { return }
     $trayInstallLease = Enter-StackOperation -InstallDir $InstallDir
     [void][System.IO.Directory]::CreateDirectory($payloadPath)
+    if ($null -ne $previousRecord) { [IO.File]::WriteAllBytes((Join-Path $backupPath 'previous-install-record.json'), $previousRecord) }
     foreach ($name in @($files) + @($retiredFiles)) {
         $target = Join-Path $InstallDir $name
         if ([System.IO.File]::Exists($target)) {
@@ -292,6 +299,10 @@ try {
     try { [void](Invoke-InstalledWatchdogBootstrap "CheckStopped") }
     catch { $existingTrayWasRunning = $true }
     if (-not (Invoke-InstalledWatchdogStop)) { throw "Watchdog lifecycle stop is unavailable; refusing deployment." }
+    if ($supervisorTask) {
+        Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop) $supervisorSpec
+        Wait-InstallSupervisorTaskStopped $InstallDir
+    }
     if (-not (Invoke-InstalledWatchdogBootstrap "CheckStopped")) { throw "Watchdog exit proof is unavailable; refusing deployment." }
 
     foreach ($name in $files) {
@@ -308,7 +319,7 @@ try {
         runName=$runName; runValue=$runValue; previousRunValue=$existingRun; legacyTaskName=$legacyName
         legacyTaskWasEnabled=$legacyWasEnabled; legacyTaskXml=$taskXmlName; legacyTaskXmlSha256=$taskXmlSha256; createdTargets=$createdTargets
         overwrittenFiles=$overwritten; installedFiles=$installed; configBackups=$configBackups; retiredFiles=$retiredFiles; dashboardPort=$settings.dashboardPort
-        originalTransactionPath=$OriginalTransactionPath; legacyTasks=$legacyTaskBackups
+        originalTransactionPath=$OriginalTransactionPath; legacyTasks=$legacyTaskBackups; supervisorTask=$supervisorSpec.name
         legacyProcesses=$(if ($originalTransaction) { @($originalTransaction.legacyProcesses) } else { @($legacyProcessTransaction.stoppedLegacyProcesses) })
     }
     Write-InstallerJson (Join-Path $backupPath "manifest.json") $manifest
@@ -371,27 +382,33 @@ try {
     }
     $manifest | Add-Member -NotePropertyName createdShortcuts -NotePropertyValue $createdShortcuts
     Write-InstallerJson (Join-Path $backupPath 'manifest.json') $manifest
+    if (-not $supervisorTask) {
+        $action = New-ScheduledTaskAction -Execute $supervisorSpec.executable -Argument $supervisorSpec.arguments
+        $principal = New-ScheduledTaskPrincipal -UserId $supervisorSpec.user -LogonType Interactive -RunLevel Limited
+        $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Action $action -Principal $principal -Settings $taskSettings -ErrorAction Stop | Out-Null
+        $supervisorTaskCreated = $true
+    }
+    Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop) $supervisorSpec
     Write-InstallerJson $recordPath $manifest
-    # Start the persistent supervisor only after readiness; it waits for this lease to finish.
-    $supervisorStart = New-Object Diagnostics.ProcessStartInfo
-    $supervisorStart.FileName = $startupExecutable
-    $supervisorStart.Arguments = $startupArguments
-    $supervisorStart.UseShellExecute = $false
-    $supervisorStart.CreateNoWindow = $true
-    [void]$supervisorStart.EnvironmentVariables.Remove('DEVSPACE_STACK_OPERATION_TOKEN')
-    [void]$supervisorStart.EnvironmentVariables.Remove('DEVSPACE_STACK_JOB_ID')
-    $supervisorProcess = [Diagnostics.Process]::Start($supervisorStart)
-    try {
-        $supervisorDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-        do {
-            $supervisorHeartbeat = Read-InstallerHeartbeat (Join-Path ([string]$config.stateDir) 'watchdog-supervisor-heartbeat.json')
-            $supervisorReady = (Test-InstallerHeartbeatFresh $supervisorHeartbeat 'supervisor') -and [int]$supervisorHeartbeat.pid -eq $supervisorProcess.Id
-            if ($supervisorReady) { break }
-            if ($supervisorProcess.HasExited) { throw "Supervisor exited before readiness (exit $($supervisorProcess.ExitCode))." }
-            Start-Sleep -Milliseconds 250
-        } while ([DateTimeOffset]::UtcNow -lt $supervisorDeadline)
-        if (-not $supervisorReady) { throw 'Supervisor did not produce its own heartbeat.' }
-    } finally { $supervisorProcess.Dispose() }
+    $recordChanged = $true
+    $supervisorStartedAt = [DateTimeOffset]::UtcNow
+    Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
+    $supervisorDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    do {
+        $supervisorHeartbeat = Read-InstallerHeartbeat (Join-Path ([string]$config.stateDir) 'watchdog-supervisor-heartbeat.json')
+        $supervisorReady = $false
+        if ((Test-InstallerHeartbeatFresh $supervisorHeartbeat 'supervisor') -and $supervisorHeartbeat.timestamp -ge $supervisorStartedAt) {
+            $supervisorProcess = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop
+            $supervisorReady = $supervisorProcess -and $supervisorProcess.ExecutablePath -eq $supervisorSpec.executable -and
+                (Test-WatchdogCommandToken $supervisorProcess.CommandLine (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1')) -and
+                (Test-WatchdogCommandToken $supervisorProcess.CommandLine $configPath) -and
+                (Test-WatchdogCommandToken $supervisorProcess.CommandLine '-ScheduledSupervisor')
+        }
+        if ($supervisorReady) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $supervisorDeadline)
+    if (-not $supervisorReady) { throw 'Independent supervisor did not produce a verified heartbeat.' }
     Write-Host "DevSpace Watchdog Tray installed."
     Write-Host "Autostart: $runName"
     Write-Host "Dashboard: http://127.0.0.1:$($settings.dashboardPort)/"
@@ -418,6 +435,8 @@ try {
     $rolesStopped = $false
     try { $rolesStopped = Invoke-InstalledWatchdogBootstrap "CheckStopped" } catch { }
     if ($rolesStopped -and -not $trayStillRunning -and -not $hostStillRunning -and -not $remainingDashboardOwners.Count) {
+        if ($supervisorTaskCreated) { Remove-InstallSupervisorTask $InstallDir }
+        elseif ($supervisorTask) { Wait-InstallSupervisorTaskStopped $InstallDir }
         foreach ($item in $overwritten) {
             $source = Join-Path $payloadPath $item.name; $target = Join-Path $InstallDir $item.name
             if (-not [System.IO.File]::Exists($source) -or (Get-WatchdogFileSha256 $source) -ne $item.sha256) { throw "Rollback backup is missing or corrupt: $source" }
@@ -436,10 +455,15 @@ try {
             }
             Restart-InstallLegacyProcesses $legacyProcessTransaction
         }
+        if ($recordChanged) {
+            if ($null -ne $previousRecord) { [IO.File]::WriteAllBytes($recordPath, $previousRecord) }
+            elseif ([IO.File]::Exists($recordPath)) { [IO.File]::Delete($recordPath) }
+        }
         if ($runChanged) {
             if ($null -ne $existingRun) { Set-ItemProperty -LiteralPath $runPath -Name $runName -Value $existingRun -ErrorAction Stop }
             else { Remove-ItemProperty -LiteralPath $runPath -Name $runName -ErrorAction Stop }
         }
+        if ($supervisorTask -and $existingTrayWasRunning) { Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop }
         if ($existingTrayWasRunning) {
             try {
                 if (-not (Invoke-InstalledWatchdogRun)) {

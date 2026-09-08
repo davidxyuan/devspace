@@ -102,6 +102,12 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configurat
         } else { [System.IO.File]::Copy($source, $target, $false) }
     }
 
+    if (Get-WatchdogProperty $manifest 'supervisorTask' '') {
+        $spec = Get-InstallSupervisorTaskSpec $InstallDir
+        if ($manifest.supervisorTask -ne $spec.name) { throw 'Supervisor task record mismatch.' }
+        Remove-InstallSupervisorTask $InstallDir
+    }
+
     $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     $runProperties = Get-ItemProperty -LiteralPath $runPath -Name ([string]$manifest.runName) -ErrorAction SilentlyContinue
     $currentRun = if ($runProperties -and $runProperties.PSObject.Properties[[string]$manifest.runName]) { [string]$runProperties.PSObject.Properties[[string]$manifest.runName].Value } else { $null }
