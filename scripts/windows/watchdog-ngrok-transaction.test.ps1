@@ -37,6 +37,8 @@ try {
     $script:serviceCalls = @()
     $script:failVerification = $false
     $script:failOldRestart = $false
+    $script:failOldVerification = $false
+    $script:publicVerifications = 0
     function Set-WatchdogNgrokCredential($Config, [string]$Token) {
         if ($Token -ne "synthetic-token") { throw "Unexpected test token." }
         [System.IO.File]::WriteAllText((Get-WatchdogNgrokCredentialPath $Config), "new-test-record")
@@ -46,13 +48,18 @@ try {
         return [pscustomobject]@{ success=$true; error="" }
     }
     function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) {
-        $record = [System.IO.File]::ReadAllText((Get-WatchdogNgrokCredentialPath $Config))
+        $path = Get-WatchdogNgrokCredentialPath $Config
+        $record = if ([System.IO.File]::Exists($path)) { [System.IO.File]::ReadAllText($path) } else { "default-test-record" }
         $script:serviceCalls += "start:$Service`:$record"
         if ($script:failOldRestart -and $record -eq "old-test-record") { return [pscustomobject]@{ success=$false; error="synthetic old restart failure" } }
         return [pscustomobject]@{ success=$true; error="" }
     }
     function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic) {
-        if ($script:failVerification) { throw "synthetic verification failure" }
+        if ($IncludePublic) {
+            $script:publicVerifications++
+            $isOld = -not [System.IO.File]::Exists($credentialPath) -or [System.IO.File]::ReadAllText($credentialPath) -eq "old-test-record"
+            if (($script:failVerification -and -not $isOld) -or ($script:failOldVerification -and $isOld)) { throw "synthetic verification failure" }
+        }
         return [pscustomobject]@{
             services=[pscustomobject]@{ ngrok=[pscustomobject]@{ healthy=$true } }
             public=[pscustomobject]@{ devspace=[pscustomobject]@{ protocolHealthy=$true }; hermes=[pscustomobject]@{ protocolHealthy=$true } }
@@ -79,6 +86,14 @@ try {
     Assert-True "failed token-only switch reports rollback" ($errorText -like "*was rolled back*")
     Assert-Equal "failed token-only switch restores previous credential" ([System.IO.File]::ReadAllText($credentialPath)) "old-test-record"
     Assert-Equal "rollback restarts ngrok with restored credential" ($script:serviceCalls -join ",") "stop:ngrok,start:ngrok:new-test-record,stop:ngrok,start:ngrok:old-test-record"
+    Assert-Equal "public verification only once per candidate and rollback" $script:publicVerifications 3
+
+    $script:failOldVerification = $true
+    $needsAttention = $false
+    try { [void](Invoke-WatchdogNgrokAccountSwitch $ConfigPath $payload $desired) }
+    catch { $needsAttention = [bool]$_.Exception.Data["WatchdogRollbackNeedsAttention"] }
+    Assert-True "restored process without public proof requires attention" $needsAttention
+    $script:failOldVerification = $false
 
     $script:failOldRestart = $true
     $needsAttention = $false
@@ -94,6 +109,37 @@ try {
     Assert-Equal "domain failure restores config" (Read-WatchdogJson $ConfigPath).publicBaseUrl $script:config.publicBaseUrl
     Assert-Equal "domain failure restores credential" ([System.IO.File]::ReadAllText($credentialPath)) "old-test-record"
     Assert-True "domain failure restarts router with old credential" ($script:serviceCalls -contains "start:router:old-test-record")
+
+    $script:failVerification = $false
+    [void](Invoke-WatchdogNgrokAccountSwitch $ConfigPath $payload $desired)
+    $previousPath = Join-Path $testRoot "ngrok-previous-account.json"
+    $previousBytes = [System.IO.File]::ReadAllText($previousPath)
+    Assert-True "recovery record never stores submitted plaintext token" (-not $previousBytes.Contains("synthetic-token"))
+    $script:failOldVerification = $true; $errorText = ""
+    try { [void](Invoke-WatchdogNgrokSwitch $ConfigPath ([pscustomobject]@{confirmation="RESTORE PREVIOUS NGROK"}) $desired) } catch { $errorText = $_.Exception.Message }
+    Assert-True "failed restore reports failure" ($errorText -like "*was rolled back*")
+    Assert-Equal "failed restore returns to current credential" ([System.IO.File]::ReadAllText($credentialPath)) "new-test-record"
+    Assert-Equal "failed restore retains recovery point" ([System.IO.File]::ReadAllText($previousPath)) $previousBytes
+    $script:failOldVerification = $false
+    # Read from disk via the dispatcher, with no transaction-local credential available.
+    $restoredAccount = Invoke-WatchdogNgrokSwitch $ConfigPath ([pscustomobject]@{confirmation="RESTORE PREVIOUS NGROK"}) $desired
+    Assert-True "previous account restores and verifies" $restoredAccount.result.success
+    Assert-Equal "restore returns to original domain" (Read-WatchdogJson $ConfigPath).publicBaseUrl $script:config.publicBaseUrl
+    Assert-Equal "restore uses original credential" ([System.IO.File]::ReadAllText($credentialPath)) "old-test-record"
+    Assert-Equal "restore retains recovery point" ([System.IO.File]::ReadAllText($previousPath)) $previousBytes
+    $previous = Read-WatchdogJson $previousPath; $previous.machineSlug = "foreign"
+    Write-WatchdogAtomicJson $previousPath $previous 10
+    $script:serviceCalls = @(); $errorText = ""
+    try { [void](Invoke-WatchdogNgrokSwitch $ConfigPath ([pscustomobject]@{confirmation="RESTORE PREVIOUS NGROK"}) $desired) } catch { $errorText = $_.Exception.Message }
+    Assert-True "foreign recovery point rejected before restart" ($errorText -like "*does not match*" -and $script:serviceCalls.Count -eq 0)
+    Write-WatchdogAtomicText $previousPath $previousBytes
+
+    [System.IO.File]::Delete($credentialPath)
+    [void](Invoke-WatchdogNgrokAccountSwitch $ConfigPath $payload $desired)
+    Assert-True "original default credential absence is recorded" ($null -eq (Read-WatchdogJson $previousPath).credential)
+    [void](Invoke-WatchdogNgrokSwitch $ConfigPath ([pscustomobject]@{confirmation="RESTORE PREVIOUS NGROK"}) $desired)
+    Assert-True "restore removes override to reuse original ngrok configuration" (-not [System.IO.File]::Exists($credentialPath))
+    [System.IO.File]::WriteAllText($credentialPath, "old-test-record")
 
     function Protect-WatchdogNgrokProfileToken([string]$Token) { return "synthetic-protected-profile-token" }
     $profilePayload = [pscustomobject]@{ name="One"; endpointMode="AgentEndpoint"; publicDomain="https://one.example.test"; internalAgentEndpoint=""; authToken="synthetic-token" }

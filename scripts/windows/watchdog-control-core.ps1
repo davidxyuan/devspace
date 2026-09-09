@@ -179,8 +179,8 @@ function ConvertTo-WatchdogEditableConfig($InputObject, $CurrentConfig) {
     $hermesPort = [int](Get-WatchdogProperty $CurrentConfig "hermesPort" 0)
     $control = Get-WatchdogProperty $CurrentConfig "controlCenter" $null
     $dashboardPort = [int](Get-WatchdogProperty $control "dashboardPort" 8777)
-    if (-not [bool](Get-WatchdogProperty $CurrentConfig "ngrokWebAddrSupported" $true) -and $inspectorPort -ne 4040) {
-        throw "This ngrok build does not support --web-addr; ngrok Inspector Port must remain 4040."
+    if (-not [bool](Get-WatchdogProperty $CurrentConfig "ngrokWebAddrSupported" $false) -and $inspectorPort -ne 4040) {
+        throw "ngrok --web-addr support is not confirmed; ngrok Inspector Port must remain 4040."
     }
     $ports = @($devspacePort, $hermesPort, $routerPort, $inspectorPort, $dashboardPort) | Where-Object { $_ -gt 0 }
     if (@($ports | Group-Object | Where-Object { $_.Count -gt 1 }).Count) {
@@ -1013,11 +1013,10 @@ function Test-WatchdogManagedProcess($Process, [string]$Service, $Config) {
             $agentMatches = (Test-WatchdogCommandToken $command $agentUrl) -or (Test-WatchdogCommandToken $command $agentHost)
             $binding = [string](Get-WatchdogProperty $Config "ngrokBinding" "")
             $bindingMatches = -not $binding -or ((Test-WatchdogCommandToken $command "--binding") -and (Test-WatchdogCommandToken $command $binding))
-            $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $true)
             $inspectorPort = [int](Get-WatchdogProperty $Config 'ngrokInspectorPort' 4040)
             $inspector = "127.0.0.1:$inspectorPort"
             $hasExplicitInspector = Test-WatchdogCommandToken $command "--web-addr"
-            $inspectorMatches = -not $webSupported -or (($hasExplicitInspector -and (Test-WatchdogCommandToken $command $inspector)) -or (-not $hasExplicitInspector -and $inspectorPort -eq 4040))
+            $inspectorMatches = ($hasExplicitInspector -and (Test-WatchdogCommandToken $command $inspector)) -or (-not $hasExplicitInspector -and $inspectorPort -eq 4040)
             return (Test-WatchdogCommandToken $command $upstream) -and $agentMatches -and $bindingMatches -and $inspectorMatches
         }
     }
@@ -1427,11 +1426,15 @@ function Get-WatchdogNgrokCredentialPath($Config) {
     return Join-Path $stateDir "ngrok-auth.dpapi.json"
 }
 
-function Set-WatchdogNgrokCredential($Config, [string]$Token) {
+function Assert-WatchdogNgrokToken([string]$Token) {
     if ([string]::IsNullOrWhiteSpace($Token)) { throw "ngrok Auth Token is required." }
     if ($Token.Length -gt 4096 -or $Token.Contains("`r") -or $Token.Contains("`n") -or $Token.Contains([char]0)) {
         throw "ngrok Auth Token contains unsupported characters or is too long."
     }
+}
+
+function Set-WatchdogNgrokCredential($Config, [string]$Token) {
+    Assert-WatchdogNgrokToken $Token
     Add-Type -AssemblyName System.Security
     $plain = [System.Text.Encoding]::UTF8.GetBytes($Token)
     $entropy = [System.Text.Encoding]::UTF8.GetBytes("DevSpaceWatchdogNgrokAuthV1")
@@ -1612,7 +1615,27 @@ function Set-WatchdogNgrokActiveProfile($Config, [string]$Id) {
     [void](Write-WatchdogNgrokProfileStore $Config $store)
 }
 
-function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desired, [string]$ActiveProfileId = "") {
+function Get-WatchdogNgrokSwitchSnapshot([string]$ConfigPath, $Config) {
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    do {
+        Start-Sleep -Seconds 2
+        $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath
+        $ready = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
+    } while (-not $ready -and [DateTimeOffset]::UtcNow -lt $deadline)
+    if (-not $ready) { throw "ngrok did not become locally healthy within 30 seconds." }
+    # Public verification runs once, after the local agent is ready.
+    $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath -IncludePublic
+    $verified = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
+    foreach ($service in @("devspace", "hermes")) {
+        if (Test-WatchdogServiceEnabled $service $Config) {
+            $verified = $verified -and [bool](Get-WatchdogProperty (Get-WatchdogProperty $snapshot.public $service $null) "protocolHealthy" $false)
+        }
+    }
+    if (-not $verified) { throw "ngrok public MCP verification failed." }
+    return $snapshot
+}
+
+function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desired, [string]$ActiveProfileId = "", $PreviousAccount = $null) {
     if ([string](Get-WatchdogProperty $Payload "confirmation" "") -ne "SWITCH NGROK") { throw "SWITCH NGROK confirmation is required." }
     $oldConfig = Read-WatchdogJson $ConfigPath
     $editable = Get-WatchdogEditableConfig $oldConfig
@@ -1628,7 +1651,22 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
     $stopped = @()
     $started = @()
     try {
-        [void](Set-WatchdogNgrokCredential $oldConfig ([string](Get-WatchdogProperty $Payload "authToken" "")))
+        if ($PreviousAccount) {
+            if ($null -ne $PreviousAccount.credential) { Write-WatchdogAtomicText $credentialPath ([string]$PreviousAccount.credential) }
+            elseif ([System.IO.File]::Exists($credentialPath)) { [System.IO.File]::Delete($credentialPath) }
+        } else {
+            Assert-WatchdogNgrokToken ([string](Get-WatchdogProperty $Payload "authToken" ""))
+            # Keep the original DPAPI record (or absence, for ngrok.yml credentials).
+            # Restore attempts never overwrite this recovery point.
+            $previous = [pscustomobject]@{
+                schemaVersion=1; configPath=[System.IO.Path]::GetFullPath($ConfigPath); machineSlug=$oldConfig.machineSlug
+                timestamp=ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
+                config=Get-WatchdogEditableConfig $oldConfig; credential=$oldCredential
+                activeProfileId=(Read-WatchdogNgrokProfileStore $oldConfig).activeProfileId
+            }
+            Write-WatchdogAtomicJson (Join-Path $oldConfig.stateDir "ngrok-previous-account.json") $previous 10
+            [void](Set-WatchdogNgrokCredential $oldConfig ([string](Get-WatchdogProperty $Payload "authToken" "")))
+        }
         # Credential rotation is also valid when all editable fields are unchanged.
         if (@($impact.changes).Count) {
             $applied = Set-WatchdogConfiguration $ConfigPath $editable
@@ -1647,18 +1685,7 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
             if (-not $result.success) { throw "Could not start $service for account switch: $($result.error)" }
             $started += $service
         }
-        $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-        do {
-            Start-Sleep -Seconds 2
-            $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath -IncludePublic
-            $verified = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
-            foreach ($service in @("devspace", "hermes")) {
-                if (Test-WatchdogServiceEnabled $service $activeConfig) {
-                    $verified = $verified -and [bool](Get-WatchdogProperty (Get-WatchdogProperty $snapshot.public $service $null) "protocolHealthy" $false)
-                }
-            }
-        } while (-not $verified -and [DateTimeOffset]::UtcNow -lt $deadline)
-        if (-not $verified) { throw "New ngrok account/domain did not become healthy within 30 seconds." }
+        $snapshot = Get-WatchdogNgrokSwitchSnapshot $ConfigPath $activeConfig
         Write-WatchdogEvent ([string]$activeConfig.stateDir) $activeConfig "ngrok" "account_switch" "user request" "credential/domain switch" "verified; token redacted"
         Set-WatchdogNgrokActiveProfile $activeConfig $ActiveProfileId
         return [pscustomobject]@{
@@ -1697,6 +1724,10 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
                 if (-not $result.success) { $rollbackErrors += "restart old $service`: $($result.error)" }
             }
         }
+        if (-not $rollbackErrors.Count -and "ngrok" -in $stopped -and [string](Get-WatchdogProperty $Desired "ngrok" "running") -eq "running") {
+            try { [void](Get-WatchdogNgrokSwitchSnapshot $ConfigPath $oldConfig) }
+            catch { $rollbackErrors += "verify restored ngrok: $($_.Exception.Message)" }
+        }
         if ($rollbackErrors.Count) {
             $failure = New-Object System.InvalidOperationException("ngrok switch failed and rollback needs operator attention: $switchError; $($rollbackErrors -join '; ')")
             $failure.Data["WatchdogRollbackNeedsAttention"] = $true
@@ -1707,6 +1738,21 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
 }
 
 function Invoke-WatchdogNgrokSwitch([string]$ConfigPath, $Payload, $Desired, [switch]$SavedProfile) {
+    if (-not $SavedProfile -and [string](Get-WatchdogProperty $Payload "confirmation" "") -eq "RESTORE PREVIOUS NGROK") {
+        $config = Read-WatchdogJson $ConfigPath
+        $previousPath = Join-Path $config.stateDir "ngrok-previous-account.json"
+        if (-not [System.IO.File]::Exists($previousPath)) { throw "No previous ngrok account is saved. Enter the previous domain and Auth Token in Quick switch." }
+        $previous = Read-WatchdogJson $previousPath
+        if ([int](Get-WatchdogProperty $previous "schemaVersion" 0) -ne 1 -or
+            [string](Get-WatchdogProperty $previous "configPath" "") -ne [System.IO.Path]::GetFullPath($ConfigPath) -or
+            [string](Get-WatchdogProperty $previous "machineSlug" "") -ne [string]$config.machineSlug -or
+            -not $previous.PSObject.Properties["credential"]) { throw "Previous ngrok account does not match this installation." }
+        $restorePayload = [pscustomobject]@{
+            confirmation="SWITCH NGROK"; publicDomain=$previous.config.publicDomain
+            endpointMode=$previous.config.endpointMode; internalAgentEndpoint=$previous.config.internalAgentEndpoint
+        }
+        return Invoke-WatchdogNgrokAccountSwitch $ConfigPath $restorePayload $Desired ([string]$previous.activeProfileId) $previous
+    }
     if (-not $SavedProfile) { return Invoke-WatchdogNgrokAccountSwitch $ConfigPath $Payload $Desired }
     if ([string](Get-WatchdogProperty $Payload "confirmation" "") -ne "SWITCH NGROK PROFILE") { throw "SWITCH NGROK PROFILE confirmation is required." }
     $config = Read-WatchdogJson $ConfigPath
@@ -1768,7 +1814,8 @@ function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Co
                 $ngrok = [string]$Config.ngrokPath
                 $upstreamPort = [int](Get-WatchdogProperty $Config "publicUpstreamPort" $Config.routerPort)
                 $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$Config.ngrokAgentBaseUrl)
-                $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $true)
+                $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)
+                if (-not $webSupported -and [int](Get-WatchdogProperty $Config "ngrokInspectorPort" 4040) -ne 4040) { throw "ngrok --web-addr support is not confirmed; ngrok Inspector Port must remain 4040." }
                 if ($webSupported) { $arguments += @("--web-addr", "127.0.0.1:$([int]$Config.ngrokInspectorPort)") }
                 if ([string](Get-WatchdogProperty $Config "ngrokBinding" "")) { $arguments += @("--binding", [string]$Config.ngrokBinding) }
                 $arguments += @("--log", "stdout")

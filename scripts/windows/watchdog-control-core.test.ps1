@@ -240,6 +240,25 @@ try {
     Assert-Equal "Cloud ngrok identity requires explicit custom inspector port" (Test-WatchdogManagedProcess $ngrokImplicitDefaultInspector "ngrok" $cloudCustomInspectorConfig) $false
     $ngrokExplicitCustomInspector = Copy-WatchdogObject $ngrokImplicitDefaultInspector; $ngrokExplicitCustomInspector.CommandLine += ' --web-addr 127.0.0.1:14040'
     Assert-Equal "Cloud ngrok identity accepts matching explicit custom inspector port" (Test-WatchdogManagedProcess $ngrokExplicitCustomInspector "ngrok" $cloudCustomInspectorConfig) $true
+    $unknownNgrokConfig = Copy-WatchdogObject $config
+    $unknownNgrokConfig.PSObject.Properties.Remove("ngrokWebAddrSupported")
+    Assert-Equal "unknown capability accepts default inspector" (Test-WatchdogManagedProcess $agentNgrok "ngrok" $unknownNgrokConfig) $true
+    $wrongInspector = Copy-WatchdogObject $agentNgrok; $wrongInspector.CommandLine += ' --web-addr 127.0.0.1:14040'
+    Assert-Equal "unknown capability does not waive inspector identity" (Test-WatchdogManagedProcess $wrongInspector "ngrok" $unknownNgrokConfig) $false
+    $customEditable = Copy-Editable $unknownNgrokConfig; $customEditable.ngrokInspectorPort = 14040
+    Assert-Throws "unknown capability rejects custom inspector" { ConvertTo-WatchdogEditableConfig $customEditable $unknownNgrokConfig } "support is not confirmed"
+    & {
+        function Start-WatchdogHiddenProcess($Executable, $Arguments) { $script:ngrokTestArguments = @($Arguments); return [pscustomobject]@{Id=123} }
+        function Get-WatchdogNgrokCredential { return $null }
+        $startedNgrok = Start-WatchdogManagedService "ngrok" $configPath $unknownNgrokConfig
+        Assert-True "old config can start ngrok" $startedNgrok.success
+        Assert-True "old config omits unsupported flag" ("--web-addr" -notin $script:ngrokTestArguments)
+        $unknownNgrokConfig.ngrokInspectorPort = 14040
+        Assert-True "start also rejects unconfirmed custom inspector" (-not (Start-WatchdogManagedService "ngrok" $configPath $unknownNgrokConfig).success)
+        Set-WatchdogProperty $unknownNgrokConfig "ngrokWebAddrSupported" $true
+        Assert-True "confirmed custom inspector starts" (Start-WatchdogManagedService "ngrok" $configPath $unknownNgrokConfig).success
+        Assert-True "confirmed capability preserves custom flag" ("--web-addr" -in $script:ngrokTestArguments -and "127.0.0.1:14040" -in $script:ngrokTestArguments)
+    }
 
     $disabledConfig = Copy-WatchdogObject $config
     $disabledConfig.devspaceEnabled = $false; $disabledConfig.hermesEnabled = $false; $disabledConfig.routerPort = 0; $disabledConfig.manageNgrok = $false

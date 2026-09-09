@@ -865,6 +865,12 @@ function Invoke-ControlHttpRequest($Request) {
                 $script:stackMutationLease = $requestLease; $requestLease = $null
                 return $true
             }
+            "/api/ngrok/restore" {
+                if ([string](Get-WatchdogProperty $payload "confirmation" "") -ne "RESTORE PREVIOUS NGROK") { throw "RESTORE PREVIOUS NGROK confirmation is required." }
+                Start-ControlNgrokSwitch $Request.client $payload
+                $script:stackMutationLease = $requestLease; $requestLease = $null
+                return $true
+            }
             "/api/ngrok/profile/save" {
                 Write-ControlJson $Request.stream 200 (Save-WatchdogNgrokProfile $script:config $payload)
             }

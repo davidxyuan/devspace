@@ -89,6 +89,19 @@ async function exercise(name) {
 (async()=>{
   await exercise("devspace-stack-setup.html");
   await exercise("devspace-control-center.html");
+  const control = harness("devspace-control-center.html");
+  control.sandbox.usage = { domain:"<img src=x onerror=alert(1)>", persistenceEnabled:true, periods:{today:{devspace:2,hermes:3,watchdog:1,other:4,total:10,localOrUnknown:9}}, error:"History unavailable" };
+  control.run('renderRequestUsage(document.querySelector("#usage-test"), usage)');
+  const usageNodes = control.query("#usage-test").children;
+  assert.equal(usageNodes[1].textContent, control.sandbox.usage.domain, "domain rendered as literal text");
+  assert.equal(usageNodes[2].children[0].children[1].children[0].children[5].textContent, "10", "total is not doubled by local counts");
+  assert.equal(usageNodes.at(-1).textContent, "History unavailable", "persistence errors remain visible");
+  control.run('refreshStatus=async()=>{}; refreshNgrokProfiles=async()=>{}');
+  control.sandbox.response=()=>({devspaceUrl:"https://old.invalid/mcp",hermesUrl:"https://old.invalid/hermes/mcp"});
+  await control.run('restoreNgrokAccount()');
+  assert.equal(JSON.parse(control.requests.find(r=>r.url==="/api/ngrok/restore").options.body).confirmation, "RESTORE PREVIOUS NGROK");
+  assert.match(control.query("#ngrok-switch-urls").textContent, /old.invalid/);
+  assert.equal(control.query("#restore-ngrok-account").disabled, false);
   const h=harness("devspace-stack-setup.html");
   h.sandbox.initial={state:"Existing",configurationFingerprint:"original",defaults:{machineName:"station",allowedRoots:"D:\\projects",endpointMode:"AgentEndpoint",fullAccess:true},packageVersion:"1",tray:{}};
   h.run("fill(initial)");

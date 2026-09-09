@@ -191,7 +191,28 @@ process with an empty tunnel list is reported as reconnecting/degraded, not
 blindly restarted every cycle.
 
 ngrok builds without `--web-addr` are supported. Their Inspector port remains
-4040; the dashboard rejects an unsupported port override.
+4040; missing `ngrokWebAddrSupported` is treated as unconfirmed support, so both
+Host and legacy watchdog omit the flag. A non-4040 port requires confirmed
+support, including direct service starts. Process ownership still checks the
+configured Inspector address.
+
+### Request usage
+
+The MCP connection monitor shows current-domain DevSpace, Hermes, Watchdog,
+Other/OAuth and total request counts for today, the last 24 hours, this month,
+and since Router start. Local/unknown-Host requests are shown separately;
+loopback `/__router/status` polling does not increment usage. Tunnel ingress
+is inferred from matching Host/forwarded-Host headers, not authenticated or
+equivalent to official ngrok account billing. OAuth requests are Other/OAuth,
+and Watchdog requests are excluded from service totals to avoid double counting.
+
+`router-request-usage.json` in the state directory keeps 62 days of minute
+buckets per domain. Calendar periods use the Router's local time; the rolling
+24-hour count can include up to one extra minute. Writes are atomic and batched
+every 10 seconds or on local status refresh. A forced shutdown may lose unsaved
+counts; a write error is shown and retried. Corrupt history is preserved and
+reported as incomplete, with persistence disabled until repaired. History begins
+at installation of this feature; no earlier usage or account-wide quota is inferred.
 
 ### Public MCP
 
@@ -389,6 +410,27 @@ file rollback.
 
 `auth.json`, environment variables, ngrok auth configuration, tokens, and
 credential stores are not copied or rendered.
+
+Quick switch separately saves `ngrok-previous-account.json` before replacing
+the credential. This contains the previous domain/mode, installation identity,
+active profile ID and original encrypted DPAPI credential record. It is never
+returned to the browser. **Restore Previous ngrok Account** reuses that record
+through the existing asynchronous account-switch transaction, including after a
+Host restart. Restore attempts preserve the recovery point. Only the most recent
+switch is retained, and this feature cannot recover credentials from switches
+performed before it was installed. If no DPAPI credential existed, restoration
+removes the new override and relies on the unchanged original ngrok.yml or
+inherited environment credential.
+
+Switch and restore wait for local ngrok readiness, then make one public MCP
+verification per enabled service. Automatic rollback also verifies the restored
+account; process creation alone is not proof of recovery. Failed rollback
+verification sets the existing maintenance/attention state instead of claiming
+success. This does not change the six-hour default for periodic public probes.
+
+**Exit Tray is a manual stop**, not a reload command: it writes
+`watchdog-manual-stop.flag`. Use the installed lifecycle/bootstrap restart path
+for a planned reload; do not expect Supervisor to undo an explicit manual stop.
 
 ## 17. Install
 

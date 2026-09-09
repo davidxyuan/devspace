@@ -41,8 +41,9 @@ $publicHost = ([Uri]$publicBaseUrl).Host
 $ngrokAgentBaseUrl = if ($config.ngrokAgentBaseUrl) { [string]$config.ngrokAgentBaseUrl } else { $publicBaseUrl }
 $ngrokAgentHost = ([Uri]$ngrokAgentBaseUrl).Host
 $ngrokBinding = [string]$config.ngrokBinding
-$ngrokWebAddrSupported = if ($null -eq $config.ngrokWebAddrSupported) { $true } else { [bool]$config.ngrokWebAddrSupported }
-$ngrokInspectorPort = if (-not $ngrokWebAddrSupported) { 4040 } elseif ($config.ngrokInspectorPort) { [int]$config.ngrokInspectorPort } else { 4040 }
+$ngrokWebAddrSupported = if ($null -eq $config.ngrokWebAddrSupported) { $false } else { [bool]$config.ngrokWebAddrSupported }
+$ngrokInspectorPort = if ($config.ngrokInspectorPort) { [int]$config.ngrokInspectorPort } else { 4040 }
+if (-not $ngrokWebAddrSupported -and $ngrokInspectorPort -ne 4040) { throw "ngrok --web-addr support is not confirmed; ngrok Inspector Port must remain 4040." }
 $ngrokInspectorUrl = "http://127.0.0.1:$ngrokInspectorPort"
 $ngrokManagedHosts = @($publicHost, $ngrokAgentHost) | Where-Object { $_ } | Select-Object -Unique
 $manageNgrok = if ($null -eq $config.manageNgrok) { [bool]$ngrokPath } else { [bool]$config.manageNgrok }
@@ -550,7 +551,7 @@ function Is-GoodNgrok($process) {
     $cmd = [string]$process.CommandLine
     $bindingMatches = -not $ngrokBinding -or ($cmd -like "*--binding*" -and $cmd -like "*$ngrokBinding*")
     $hasExplicitInspector = $cmd -like "*--web-addr*"
-    $inspectorMatches = -not $ngrokWebAddrSupported -or (($hasExplicitInspector -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*") -or (-not $hasExplicitInspector -and $ngrokInspectorPort -eq 4040))
+    $inspectorMatches = ($hasExplicitInspector -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*") -or (-not $hasExplicitInspector -and $ngrokInspectorPort -eq 4040)
     return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and $bindingMatches -and $inspectorMatches
 }
 

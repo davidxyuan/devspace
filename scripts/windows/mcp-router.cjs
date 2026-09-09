@@ -1,6 +1,7 @@
 const fs = require("fs");
 const http = require("http");
 const os = require("os");
+const path = require("node:path");
 
 const configPath = process.argv[2];
 const config = configPath ? JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, "")) : {};
@@ -53,6 +54,96 @@ const connectionCounters = {
   idleClientSocketsDestroyed: 0,
   lastCleanupAt: null,
 };
+
+const usageKeys = ["devspace", "hermes", "watchdog", "other", "localOrUnknown"];
+const emptyUsage = () => Object.fromEntries(usageKeys.map(key => [key, 0]));
+const usageDomain = config.publicBaseUrl ? new URL(config.publicBaseUrl).origin : "unconfigured";
+const usageHost = config.publicBaseUrl ? new URL(config.publicBaseUrl).host.toLowerCase() : "";
+const usageFile = configPath ? path.join(config.stateDir || path.dirname(path.resolve(configPath)), "router-request-usage.json") : null;
+const usageStartedAt = new Date().toISOString();
+const usageSinceStart = emptyUsage();
+let usageBuckets = new Map(), usageDirty = false, usageError = null, usageWritable = Boolean(usageFile), usageSavedAt = null, usageIncomplete = false;
+const usageRetentionMs = 62 * 86400000;
+function usageDay(time) {
+  const date = new Date(time);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+try {
+  if (usageFile && fs.existsSync(usageFile)) {
+    const saved = JSON.parse(fs.readFileSync(usageFile, "utf8").replace(/^\uFEFF/, ""));
+    if (saved.schemaVersion !== 1 || !Array.isArray(saved.buckets) || saved.buckets.length > 100000) throw Error("Invalid usage history.");
+    const loaded = new Map();
+    for (const bucket of saved.buckets) {
+      if (!Number.isSafeInteger(bucket.minute) || bucket.minute < 0 || typeof bucket.domain !== "string" || bucket.domain.length > 2048 ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(bucket.day) || !usageKeys.every(key => Number.isSafeInteger(bucket.counts?.[key]) && bucket.counts[key] >= 0)) throw Error("Invalid usage bucket.");
+      const key = `${bucket.minute}|${bucket.domain}`;
+      if (loaded.has(key)) throw Error("Duplicate usage bucket.");
+      loaded.set(key, bucket);
+    }
+    usageBuckets = loaded;
+    usageSavedAt = saved.savedAt || null;
+    usageIncomplete = saved.incomplete === true;
+  }
+} catch {
+  usageError = "Stored request history could not be read. Original file preserved; current totals are incomplete and will not be saved.";
+  usageWritable = false;
+}
+function pruneUsage(now) {
+  for (const [key, bucket] of usageBuckets) {
+    if (bucket.minute * 60000 < now - usageRetentionMs) { usageBuckets.delete(key); usageDirty = true; }
+  }
+}
+pruneUsage(Date.now());
+
+function recordUsage(req, route, requestPath) {
+  const hosts = [req.headers.host, req.headers["x-forwarded-host"]].flatMap(value => String(value || "").toLowerCase().split(",").map(host => host.trim()));
+  // Host headers infer tunnel ingress for accounting only; never use this as authentication.
+  const ingress = Boolean(usageHost && hosts.includes(usageHost));
+  if (requestPath === "/__router/status" && !ingress) return;
+  const category = !ingress ? "localOrUnknown"
+    : /^DevSpace-Watchdog\//i.test(String(req.headers["user-agent"] || "")) ? "watchdog"
+    : requestPath.split("?")[0] === "/mcp" && ["devspace", "hermes"].includes(routeService(route)) ? routeService(route) : "other";
+  const now = Date.now(), minute = Math.floor(now / 60000), key = `${minute}|${usageDomain}`;
+  let bucket = usageBuckets.get(key);
+  if (!bucket) {
+    pruneUsage(now);
+    // ponytail: minute buckets retained for 62 days; use a database if this single-router history exceeds 100k buckets.
+    if (usageBuckets.size >= 100000) { usageIncomplete = true; usageDirty = true; return; }
+    bucket = { minute, day: usageDay(now), domain: usageDomain, counts: emptyUsage() };
+    usageBuckets.set(key, bucket);
+  }
+  bucket.counts[category]++; usageSinceStart[category]++; usageDirty = true;
+}
+function flushUsage() {
+  if (!usageWritable || !usageDirty) return;
+  const temporary = `${usageFile}.${process.pid}.tmp`;
+  try {
+    const savedAt = new Date().toISOString();
+    fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+    fs.writeFileSync(temporary, JSON.stringify({ schemaVersion: 1, savedAt, incomplete: usageIncomplete, buckets: [...usageBuckets.values()] }));
+    fs.renameSync(temporary, usageFile);
+    usageSavedAt = savedAt; usageDirty = false; usageError = null;
+  } catch { usageError = "Request history could not be saved. In-memory totals remain available; retrying on the next local update."; }
+  finally { try { fs.unlinkSync(temporary); } catch {} }
+}
+function usageSnapshot() {
+  const now = Date.now(), today = usageDay(now), month = today.slice(0, 7);
+  pruneUsage(now); flushUsage();
+  const periods = { today: emptyUsage(), last24Hours: emptyUsage(), thisMonth: emptyUsage(), sinceStart: { ...usageSinceStart } };
+  for (const bucket of usageBuckets.values()) {
+    if (bucket.domain !== usageDomain) continue;
+    const selected = [];
+    if (bucket.day === today) selected.push(periods.today);
+    if (bucket.day.startsWith(month)) selected.push(periods.thisMonth);
+    if (bucket.minute >= Math.floor((now - 86400000) / 60000) && bucket.minute <= Math.floor(now / 60000)) selected.push(periods.last24Hours);
+    for (const counts of selected) for (const key of usageKeys) counts[key] += bucket.counts[key];
+  }
+  for (const counts of Object.values(periods)) counts.total = usageKeys.filter(key => key !== "localOrUnknown").reduce((sum, key) => sum + counts[key], 0);
+  return { domain: usageDomain, startedAt: usageStartedAt, savedAt: usageSavedAt, error: usageError || (usageIncomplete ? "Request history capacity was exceeded; totals are incomplete." : null), persistenceEnabled: usageWritable, periods };
+}
+const usageFlushTimer = setInterval(() => { pruneUsage(Date.now()); flushUsage(); }, 10000);
+usageFlushTimer.unref();
+process.on("exit", flushUsage);
 
 function routeService(route) {
   return route && route.service ? route.service : inferService(route && route.name);
@@ -117,6 +208,7 @@ function connectionSnapshot() {
       idleSocketConfirmations: 2,
     },
     cleanup: { ...connectionCounters },
+    usage: usageSnapshot(),
   };
 }
 
@@ -201,9 +293,9 @@ function status(res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url === "/__router/status") return status(res);
-
   const { route, path } = pickRoute(req.url || "/");
+  recordUsage(req, route, path);
+  if (req.url === "/__router/status") return status(res);
   const publicHost = config.publicBaseUrl ? new URL(config.publicBaseUrl).host : `${route.targetHost}:${route.targetPort}`;
   const headers = { ...req.headers, host: upstreamHostHeader(route, publicHost) };
   for (const name of ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]) {
