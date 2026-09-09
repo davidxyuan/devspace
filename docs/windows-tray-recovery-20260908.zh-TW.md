@@ -47,6 +47,15 @@
 - 發現 Host restart 後雖沿用 6 小時 public probe 排程，但舊成功 probe snapshot 只存在記憶體，導致 Tray 在下一輪排程前持續顯示 `Checking public MCP`。已修正為：`consecutiveFailures=0`、`lastSuccessUtc` 合法且尚未到 `nextProbeUtc` 時，從 persisted state 還原 `persisted_success` 顯示，不新增 ngrok request。實機 Host PID `62876 -> 19652` 後 Overall 直接維持 `GREEN / Healthy`，`lastAttemptUtc=2026-09-08T11:11:37.8058935Z` 與 `nextProbeUtc=2026-09-08T17:11:37.8058935Z` 均未改變。
 - 尚未直接重開 Windows 或真正登出使用者；這兩項屬會中斷目前工作階段的 destructive durability test，仍需在可重開機的維護窗口執行。
 
+### NT1 / NT2R 遠端升級 — 2026-09-09
+
+- Repo 新增 Cloud Endpoint 向後相容修正 `4d67e32d1bb66faefe9120ea957bc5746bbd031c`：ngrok Inspector 使用預設 `127.0.0.1:4040` 時，既有 ngrok command line 可省略顯式 `--web-addr`；非 4040 仍要求顯式參數。`watchdog-control-core`、legacy watchdog 與回歸測試已同步，local/remote branch 當時為 0 ahead / 0 behind。
+- NT2R CTF（C02200041）以 `C:\Users\op.yo\devspace-clean` clean clone 驗證 `4d67e32`；typecheck、independent-task、control-core、supervisor、lifecycle、39 檔 package validation 全部通過。舊 minute watchdog 先做最小 quiesce 相容補丁並留備份，marker 存在時手動 `-Once` 實測 exit 0。
+- CTF all-in-one installer 同樣被 Kaspersky Event 4662 終止（`0x40000015`）；transaction 已留下完整 manifest 與 11 個 SHA 一致 runtime。未停用 Kaspersky，改採分段 commit：建立 `DevSpaceWatchdogSupervisor-01c9557cbf3a`、寫入正式 install record、啟動 Host/Tray，再套用 `4d67e32` core。現場 Dashboard `GREEN / Healthy`，DevSpace/Hermes/Router/ngrok 與 public MCP 均 Healthy，public probe 6 小時節流正常。Rollback backup：`C:\Users\op.yo\.devspace\configuration-backups\tray-install-20260909-111127-fdc8843b`。
+- NT2R FrameStation（C02180034）同樣以 `C:\Users\op.yo\devspace-clean` 驗證 `4d67e32`；independent-task、control-core、supervisor、lifecycle、39 檔 package validation 全部通過。npm 依賴安裝通道不穩，但本次 Windows Tray 所需 PowerShell gate 已完整通過，因此未拿 npm 作為部署阻擋條件。
+- FrameStation 舊 minute watchdog 亦完成最小 quiesce 補丁與 marker 驗證；all-in-one installer 由 Kaspersky Event 4662 明確終止後，沿用 transaction manifest 分段建立 `DevSpaceWatchdogSupervisor-01c9557cbf3a`、install record 與 Tray。現場最終 `GREEN / Healthy`，DevSpace/Hermes/Router/ngrok 與 public MCP 均 Healthy，public probe 6 小時節流正常。Rollback backup：`C:\Users\op.yo\.devspace\configuration-backups\tray-install-20260909-113114-a795a185`。
+- NT1（C02180288）原 checkout 為 detached HEAD `9c4462b` 且有多個未提交 dist/installer 變更，因此未覆蓋。已 fetch 最新 branch 並建立 DevSpace managed worktree `C:\Users\op.yo\.devspace\worktrees\devspace-f86d79ba`，base 精確為 `4d67e32`；independent-task、control-core、supervisor、lifecycle、39 檔 package validation 全部通過。NT1 Hermes/owner/operator connector 目前持續 502，因此尚未進行正式 Scheduled Task / install record 系統修改；DevSpace connector 本身可用。
+
 ### 仍需外部條件或另行驗證
 
 | 項目 | 狀態 |
@@ -54,6 +63,6 @@
 | 正式安裝與退出／重新登入持續性 | 正式 Supervisor 已部署；lifecycle Stop → HKCU Run 等價 `Mode Watch` handoff 實測通過。只剩真實 reboot/logoff 維護窗口驗證 |
 | 受保護的 legacy minute poller | 已直接嘗試 `Disable-ScheduledTask`，Windows 回 `0x80070005 Access is denied`；script-level quiesce 仍有效，真正 Disable 需要管理員帳號，未更改 ACL 或安全政策 |
 | 真實 Cloud Policy 套用 | TYO 使用 Agent Endpoint，本機不需要 Cloud Policy；Cloud Endpoint 舊機仍需要其帳號 API key 與選定 `ep_...` endpoint，未 PATCH 未提供的真實帳號 |
-| 三台舊機升級 | 仍需逐台處理；優先採獨立 clean clone，避免覆蓋 dirty checkout / dubious ownership，並在切換前處理舊 poller quiesce |
+| 三台舊機升級 | NT2R CTF 與 FrameStation 已用 clean clone + 分段部署完成並實機 `GREEN / Healthy`；NT1 已完成 `4d67e32` managed worktree 與全部 PowerShell/package gate，僅待 Hermes/owner connector 502 恢復後做正式系統切換 |
 | 原始對話索引修復 | 已有匯出檔；本次未改 Codex 私有資料庫／索引，仍屬未解決產品資料索引問題 |
 | 舊 installer 排程異常退出 | 原因已由 Kaspersky Event Log 直接定位；all-in-one PowerShell installer 仍會被 Endpoint Security 終止，正式機目前以分段部署完成，不以停用 AV 規避 |
