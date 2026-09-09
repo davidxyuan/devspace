@@ -229,11 +229,17 @@ try {
     Assert-Equal "Hermes process identity rejects partial port match" (Test-WatchdogManagedProcess $hermesWithWrongPort "hermes" $config) $false
     $agentNgrok = [pscustomobject]@{Name="ngrok.exe";ExecutablePath=$config.ngrokPath;CommandLine='"C:\missing\ngrok.exe" http http://127.0.0.1:18766 --url https://alpha.example.test'}
     Assert-Equal "Agent ngrok identity accepts full URL token" (Test-WatchdogManagedProcess $agentNgrok "ngrok" $config) $true
-    $cloudIdentityConfig = Copy-WatchdogObject $config; $cloudIdentityConfig.ngrokBinding = "internal"; $cloudIdentityConfig.ngrokAgentBaseUrl = "https://alpha-devspace.internal"
+    $cloudIdentityConfig = Copy-WatchdogObject $config; $cloudIdentityConfig.ngrokBinding = "internal"; $cloudIdentityConfig.ngrokAgentBaseUrl = "https://alpha-devspace.internal"; $cloudIdentityConfig.ngrokWebAddrSupported = $true; $cloudIdentityConfig.ngrokInspectorPort = 4040
     $ngrokWithoutBinding = [pscustomobject]@{Name="ngrok.exe";ExecutablePath=$config.ngrokPath;CommandLine='"C:\missing\ngrok.exe" http http://127.0.0.1:18766 --url https://alpha-devspace.internal'}
     Assert-Equal "Cloud ngrok identity requires binding" (Test-WatchdogManagedProcess $ngrokWithoutBinding "ngrok" $cloudIdentityConfig) $false
     $ngrokWrongBinding = Copy-WatchdogObject $ngrokWithoutBinding; $ngrokWrongBinding.CommandLine += ' --binding not-internal'
     Assert-Equal "Cloud ngrok identity rejects partial binding match" (Test-WatchdogManagedProcess $ngrokWrongBinding "ngrok" $cloudIdentityConfig) $false
+    $ngrokImplicitDefaultInspector = Copy-WatchdogObject $ngrokWithoutBinding; $ngrokImplicitDefaultInspector.CommandLine += ' --binding internal'
+    Assert-Equal "Cloud ngrok identity accepts implicit default inspector port" (Test-WatchdogManagedProcess $ngrokImplicitDefaultInspector "ngrok" $cloudIdentityConfig) $true
+    $cloudCustomInspectorConfig = Copy-WatchdogObject $cloudIdentityConfig; $cloudCustomInspectorConfig.ngrokInspectorPort = 14040
+    Assert-Equal "Cloud ngrok identity requires explicit custom inspector port" (Test-WatchdogManagedProcess $ngrokImplicitDefaultInspector "ngrok" $cloudCustomInspectorConfig) $false
+    $ngrokExplicitCustomInspector = Copy-WatchdogObject $ngrokImplicitDefaultInspector; $ngrokExplicitCustomInspector.CommandLine += ' --web-addr 127.0.0.1:14040'
+    Assert-Equal "Cloud ngrok identity accepts matching explicit custom inspector port" (Test-WatchdogManagedProcess $ngrokExplicitCustomInspector "ngrok" $cloudCustomInspectorConfig) $true
 
     $disabledConfig = Copy-WatchdogObject $config
     $disabledConfig.devspaceEnabled = $false; $disabledConfig.hermesEnabled = $false; $disabledConfig.routerPort = 0; $disabledConfig.manageNgrok = $false

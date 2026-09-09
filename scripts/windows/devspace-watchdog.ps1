@@ -542,7 +542,8 @@ function Is-GoodNgrok($process) {
     }
     $cmd = [string]$process.CommandLine
     $bindingMatches = -not $ngrokBinding -or ($cmd -like "*--binding*" -and $cmd -like "*$ngrokBinding*")
-    $inspectorMatches = -not $ngrokWebAddrSupported -or ($cmd -like "*--web-addr*" -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*")
+    $hasExplicitInspector = $cmd -like "*--web-addr*"
+    $inspectorMatches = -not $ngrokWebAddrSupported -or (($hasExplicitInspector -and $cmd -like "*127.0.0.1:$ngrokInspectorPort*") -or (-not $hasExplicitInspector -and $ngrokInspectorPort -eq 4040))
     return $cmd -like "*$ngrokAgentHost*" -and $cmd -like "*$upstream*" -and $bindingMatches -and $inspectorMatches
 }
 

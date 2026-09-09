@@ -1014,8 +1014,10 @@ function Test-WatchdogManagedProcess($Process, [string]$Service, $Config) {
             $binding = [string](Get-WatchdogProperty $Config "ngrokBinding" "")
             $bindingMatches = -not $binding -or ((Test-WatchdogCommandToken $command "--binding") -and (Test-WatchdogCommandToken $command $binding))
             $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $true)
-            $inspector = "127.0.0.1:$([int](Get-WatchdogProperty $Config 'ngrokInspectorPort' 4040))"
-            $inspectorMatches = -not $webSupported -or ((Test-WatchdogCommandToken $command "--web-addr") -and (Test-WatchdogCommandToken $command $inspector))
+            $inspectorPort = [int](Get-WatchdogProperty $Config 'ngrokInspectorPort' 4040)
+            $inspector = "127.0.0.1:$inspectorPort"
+            $hasExplicitInspector = Test-WatchdogCommandToken $command "--web-addr"
+            $inspectorMatches = -not $webSupported -or (($hasExplicitInspector -and (Test-WatchdogCommandToken $command $inspector)) -or (-not $hasExplicitInspector -and $inspectorPort -eq 4040))
             return (Test-WatchdogCommandToken $command $upstream) -and $agentMatches -and $bindingMatches -and $inspectorMatches
         }
     }
