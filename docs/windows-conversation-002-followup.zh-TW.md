@@ -78,3 +78,45 @@ CTF 恢復後 Host `15972`、Tray `6384`、Supervisor `10632`；DevSpace `12464`
 3. **FrameStation／NT1**：前者需由該機操作者啟用允許部署的 operator mode；後者需先恢復 ngrok／connector，再取得 machine 與檔案版本證據。已有備妥修正版，尚未在兩台寫入。
 4. **真實新帳號切換／Restore**：等待目標 domain 與該機 Dashboard Saved ngrok accounts 內已保存的 credential；token 不應貼入對話。尚未用真實新帳號驗證 Agent／Cloud Endpoint 切換及恢復。
 5. **關閉 Codex／登出／重開機耐久性**：未執行這些使用者工作階段操作，不能由目前 heartbeat 與排程 Running 狀態推論全部通過。
+
+## 2026-09-10 權限對照與 FrameStation 修復準備
+
+使用者要求 CTF、FrameStation 權限與 TYO 一致後，再次直接查詢三台 Hermes policy：
+
+| 權限層 | TYO | CTF | FrameStation |
+|---|---|---|---|
+| Hermes operator enabled | true | true | **false** |
+| Hermes level／apply mode | owner／direct | owner／direct | **read_only／dry_run** |
+| owner mode ready／mutation allowed | true／true | true／true | **false／false** |
+| Windows 執行帳號 | `YOUNGOPTICS\david.yuan` | `YOUNGOPTICS\op.yo` | Hermes project 位於 `C:\Users\op.yo\hermes-gpt`；無法執行 whoami |
+| 執行權杖為 Windows 管理員 | false | false | 未驗證 |
+
+CTF 的遠端 operator 等級已與 TYO 相同，不能把 Kaspersky 安裝事件歸因於缺少 Owner 權限。CTF 仍為 GREEN Healthy；本輪未再次執行遭中止的安裝，也未修改 Kaspersky／Windows 排程 ACL。
+
+FrameStation 在 `hermes_owner_run_command(command="whoami")` 上明確拒絕：`Operator mode is disabled. Set HERMES_GPT_OPERATOR_ENABLED=1 to enable it.`，trace `8d1a54edebea4232`。這是遠端服務實際執行的政策，並非再次要求使用者授權。
+
+已讀取 FrameStation 的實際 watchdog config 與 `Get-WatchdogHermesEnvironment`：config 只有舊欄位 `fullAccess=true`、`hermesFullAccess=true`，缺少 `capabilities.hermes`；目前 helper 僅由新版欄位產生 operator／owner 環境設定。CTF 的 config 也缺少新版欄位，但其正在執行的 Hermes 已有 owner/direct 環境。TYO 則有明確完整的 `capabilities.hermes`。不修改全域預設來自動授予其他舊安裝 Owner 權限。
+
+### FrameStation 本機執行
+
+已備妥 `scripts/windows/set-hermes-owner-capabilities.ps1`，需由 FrameStation 本機的安裝使用者執行。先下載／取得該檔，使用 Windows PowerShell：
+
+```powershell
+# 預覽，不修改設定或服務。
+powershell.exe -NoProfile -File .\set-hermes-owner-capabilities.ps1 -MachineSlug nt2rframestation
+
+# 套用使用者要求的 TYO Owner profile；不需要加 ExecutionPolicy Bypass。
+powershell.exe -NoProfile -File .\set-hermes-owner-capabilities.ps1 -MachineSlug nt2rframestation -Apply
+```
+
+此腳本核對 machine slug、安裝目錄與 Hermes 身分／健康，取得既有 operation lock，備份並核對 config SHA256，再寫入 TYO 的 Hermes capability profile。使用該機的 filesystem roots，不複製 TYO 個人的網路磁碟路徑；保留 DevSpace 設定、domain、token 來源及其他 config 欄位。沿用既有 lifecycle helper 重載 Host／Hermes；可捕捉的啟動失敗會回復原設定，備份路徑會顯示在 console。外部強制終止程序仍須依備份檢查恢復，不宣稱 catch 能處理安全軟體終止。
+
+`set-hermes-owner-capabilities.test.ps1` 已通過預覽無寫入、錯誤 machine 拒絕、原設定保留、備份及失敗回復檢查；測試替換程序啟停，不對實機服務操作。CTF 上亦已執行純預覽，確認現有 helper 能產生 owner/direct policy。**FrameStation 尚未套用**；本機執行後仍須由 connector 重讀 policy，確認 `enabled=true`、`owner/direct`、`mutation_allowed=true`，才能繼續部署。
+
+### CTF 需 IT 核對的具體事件
+
+- 電腦 `C02200041`，事件時間 **2026-09-10 06:34:16 +08:00**。
+- Log：`Kaspersky Endpoint Security`；Event ID：`4662`；安裝 task exit：`0x40000015`。
+- 腳本：`C:\Users\op.yo\.devspace\configuration-backups\rollout-69e3e44-20260910\deploy.ps1`。
+- 事件所列 SHA256：`5D4543F8455AEAEC45FB41AD51DC65CC4C0582E2BA2286BB5CF305113E8E4E78`。
+- 請 IT 比對 TYO 與 CTF 適用的行為監控政策及事件判定，核准此固定版本安裝所需的精確例外；保留其他防護。僅有 Event 4662 和程序退出碼尚不足以自行推定 Kaspersky 的內部規則名稱。
