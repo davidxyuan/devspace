@@ -46,7 +46,9 @@ function Get-StableHash([string]$Value) {
 
 $stableHash = Get-StableHash $ConfigPath
 $stopCreated = $false
-$stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, "Local\DevSpaceWatchdogTrayUiStop-$stableHash", [ref]$stopCreated)
+# The Thin Tray lives in the interactive Windows session while maintenance can run in Session 0.
+# Use one global manual-reset event so every currently running Tray session observes the same stop request.
+$stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::ManualReset, "Global\DevSpaceWatchdogTrayUiStop-$stableHash", [ref]$stopCreated)
 if ($Mode -eq "Stop") {
     Write-TrayStartupTrace "stop-signal"
     [void]$stopEvent.Set()

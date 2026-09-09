@@ -391,6 +391,9 @@ try {
     Assert-Contains "thin Tray probes Host asynchronously" $trayUiSource 'GetStringAsync($statusUrl)'
     Assert-Contains "thin Tray maintains Host off UI thread" $trayUiSource 'Start-TrayBackgroundWorker'
     Assert-Contains "thin Tray heartbeat records Windows session" $trayUiSource 'sessionId=$SessionId'
+    Assert-Contains "thin Tray stop signal crosses Windows sessions" $trayUiSource '"Global\DevSpaceWatchdogTrayUiStop-$stableHash"'
+    Assert-Contains "thin Tray cross-session stop reaches every active Tray" $trayUiSource '[System.Threading.EventResetMode]::ManualReset'
+    Assert-Contains "thin Tray mutex remains session-local" $trayUiSource '"Local\DevSpaceWatchdogTrayUi-$stableHash"'
     Assert-Contains "manual Host repair queues background work" $trayUiSource '$script:trayShared.RepairRequested = $true'
     Assert-Contains "forced Host repair is Host-only" $trayUiSource '"RepairHost"'
     Assert-True "thin Tray Host repair avoids ExecutionPolicy Bypass" (-not $trayUiSource.Contains('"ExecutionPolicy", "Bypass"'))
