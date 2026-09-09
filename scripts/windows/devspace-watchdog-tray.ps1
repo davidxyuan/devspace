@@ -921,7 +921,12 @@ function Start-ControlShellTarget([string]$Executable, [string[]]$Arguments) {
 
 function Open-ControlDashboard {
     $url = "http://127.0.0.1:$($script:settings.dashboardPort)/"
-    Start-ControlShellTarget (Join-Path $env:WINDIR "System32\rundll32.exe") @("url.dll,FileProtocolHandler", $url)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $url
+    $psi.UseShellExecute = $true
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if (-not $process) { throw "Windows shell did not return a browser process." }
+    $process.Dispose()
 }
 
 function Open-ControlLogs {

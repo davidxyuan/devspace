@@ -395,9 +395,11 @@ try {
     Assert-Contains "forced Host repair is Host-only" $trayUiSource '"RepairHost"'
     Assert-True "thin Tray Host repair avoids ExecutionPolicy Bypass" (-not $trayUiSource.Contains('"ExecutionPolicy", "Bypass"'))
     Assert-True "thin Tray does not host dashboard listener" (-not $trayUiSource.Contains('TcpListener'))
-    Assert-Contains "Tray opens dashboard through child rundll32" $trayUiSource 'url.dll,FileProtocolHandler'
-    Assert-Contains "Tray shell target avoids UseShellExecute" $trayUiSource '$psi.UseShellExecute = $false'
-    Assert-True "Tray dashboard opener avoids shell-bound URL ProcessStart" (-not $trayUiSource.Contains('$psi.FileName = "http://127.0.0.1:'))
+    Assert-Contains "Tray opens dashboard through Windows shell association" $trayUiSource '$psi.FileName = $dashboardUrl'
+    Assert-Contains "Tray dashboard opener enables ShellExecute" $trayUiSource '$psi.UseShellExecute = $true'
+    Assert-True "Tray no longer opens dashboard through rundll32 URL handler" (-not $trayUiSource.Contains('url.dll,FileProtocolHandler'))
+    Assert-Contains "Tray child process helper still avoids ShellExecute" $trayUiSource '$psi.UseShellExecute = $false'
+    Assert-Contains "Tray dashboard URL remains loopback-only" $trayUiSource '$dashboardUrl = "http://127.0.0.1:'
     Assert-Contains "installer deploys thin Tray UI" $installerSource 'devspace-watchdog-tray-ui.ps1'
     Assert-Contains "installer deploys Watchdog bootstrap" $installerSource 'devspace-watchdog-bootstrap.ps1'
     Assert-Contains "installer recognizes legacy monolithic Tray heartbeat" $installerSource 'legacyHeartbeat'

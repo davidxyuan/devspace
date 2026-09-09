@@ -153,11 +153,6 @@ $trayWorkerBody = {
                     $child.Dispose(); $child = $null; $Shared.ChildRunning = $false
                     $Shared.WorkerMessage = if ($code -eq 0) { "" } else { "Host action failed ($code); open Dashboard or logs." }
                 }
-                if ($Shared.OpenDashboard) {
-                    $Shared.OpenDashboard = $false
-                    $opened = Start-TrayWorkerProcess (Join-Path $env:WINDIR "System32\rundll32.exe") @("url.dll,FileProtocolHandler", $DashboardUrl)
-                    if ($opened) { $opened.Dispose() }
-                }
                 if ($Shared.OpenLogs) {
                     $Shared.OpenLogs = $false
                     $opened = Start-TrayWorkerProcess (Join-Path $env:WINDIR "explorer.exe") @($StateDirectory)
@@ -194,7 +189,7 @@ $trayWorkerBody = {
     }
 }
 $script:trayShared = [hashtable]::Synchronized(@{
-    Stop=$false; ExitRequested=$false; OpenDashboard=$false; OpenLogs=$false; RepairRequested=$false
+    Stop=$false; ExitRequested=$false; OpenLogs=$false; RepairRequested=$false
     EnsureRequested=$true; ManagementBusy=$true; ChildRunning=$false; StatusText="Checking"; WorkerMessage=""
 })
 $script:trayWorker = $null
@@ -303,8 +298,24 @@ function Complete-StatusProbe {
     } finally { $script:statusTask = $null }
 }
 
-$openItem.add_Click({ $script:trayShared.OpenDashboard = $true })
-$notify.add_DoubleClick({ $script:trayShared.OpenDashboard = $true })
+function Open-DashboardInDefaultBrowser {
+    try {
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = $dashboardUrl
+        $psi.UseShellExecute = $true
+        $opened = [Diagnostics.Process]::Start($psi)
+        if (-not $opened) { throw "Windows shell did not return a browser process." }
+        $opened.Dispose()
+        Write-TrayStartupTrace "dashboard-opened shell-execute"
+    } catch {
+        $message = Protect-WatchdogText $_.Exception.Message
+        $script:trayShared.WorkerMessage = "Could not open Dashboard; check the default browser association."
+        Write-TrayStartupTrace "dashboard-open-failed $message"
+    }
+}
+
+$openItem.add_Click({ Open-DashboardInDefaultBrowser })
+$notify.add_DoubleClick({ Open-DashboardInDefaultBrowser })
 $logsItem.add_Click({ $script:trayShared.OpenLogs = $true })
 $repairHostItem.add_Click({ $script:trayShared.RepairRequested = $true })
 $exitItem.add_Click({
