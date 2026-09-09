@@ -5,6 +5,13 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+# The legacy user poller task may be protected by a Task Scheduler ACL and remain
+# scheduled after Thin Tray migration. Bail out before loading modules or parsing
+# config so its unavoidable powershell.exe launch is as short-lived as possible.
+$fastLegacyPollerDisableMarker = Join-Path $PSScriptRoot "legacy-watchdog-poller.disabled"
+if ($Once -and (Test-Path -LiteralPath $fastLegacyPollerDisableMarker)) { exit 0 }
+
 . (Join-Path $PSScriptRoot 'stack-operation.ps1')
 . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 
