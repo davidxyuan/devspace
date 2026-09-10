@@ -14,6 +14,35 @@ function Get-InstallSupervisorTaskSpec([string]$InstallDir) {
     }
 }
 
+function Test-InstallSupervisorMinuteTrigger($Task) {
+    $triggers = @($Task.Triggers | Where-Object { $null -ne $_ })
+    if ($triggers.Count -ne 1) { return $false }
+    $trigger = $triggers[0]
+    $midnight = $false
+    try { $midnight = ([datetime]$trigger.StartBoundary).TimeOfDay -eq [TimeSpan]::Zero } catch { }
+    return [string]$trigger.CimClass.CimClassName -eq 'MSFT_TaskDailyTrigger' -and
+        [bool]$trigger.Enabled -and [int]$trigger.DaysInterval -eq 1 -and $midnight -and
+        [string]$trigger.Repetition.Interval -eq 'PT1M' -and [string]$trigger.Repetition.Duration -eq 'P1D' -and
+        -not [bool]$trigger.Repetition.StopAtDurationEnd
+}
+
+function Test-InstallSupervisorRecoveryPolicy($Task) {
+    if (-not $Task) { return $false }
+    return [int]$Task.Settings.RestartCount -eq 3 -and [string]$Task.Settings.RestartInterval -eq 'PT1M' -and
+        (Test-InstallSupervisorMinuteTrigger $Task)
+}
+
+function Test-InstallSupervisorKnownRecoveryPolicy($Task) {
+    if (-not $Task) { return $false }
+    if (Test-InstallSupervisorRecoveryPolicy $Task) { return $true }
+    $triggers = @($Task.Triggers | Where-Object { $null -ne $_ })
+    if ($triggers.Count -ne 0) { return $false }
+    $restartCount = [int]$Task.Settings.RestartCount
+    $restartInterval = [string]$Task.Settings.RestartInterval
+    return ($restartCount -eq 0 -and [string]::IsNullOrWhiteSpace($restartInterval)) -or
+        ($restartCount -eq 3 -and $restartInterval -eq 'PT1M')
+}
+
 function Assert-InstallSupervisorTask($Task, $Spec) {
     $taskUser = [string]$Task.Principal.UserId
     if ($taskUser -and $taskUser -notmatch '^S-1-') {
@@ -24,10 +53,33 @@ function Assert-InstallSupervisorTask($Task, $Spec) {
         @($Task.Actions).Count -ne 1 -or $Task.Actions[0].Execute -ne $Spec.executable -or
         $Task.Actions[0].Arguments -cne $Spec.arguments -or $taskUser -ne $Spec.user -or
         [string]$Task.Principal.LogonType -ne 'Interactive' -or [string]$Task.Principal.RunLevel -ne 'Limited' -or
-        @($Task.Triggers | Where-Object { $null -ne $_ }).Count -ne 0 -or -not $Task.Settings.Enabled -or
-        [string]$Task.Settings.MultipleInstances -ne 'IgnoreNew' -or [string]$Task.Settings.ExecutionTimeLimit -ne 'PT0S') {
+        -not $Task.Settings.Enabled -or [string]$Task.Settings.MultipleInstances -ne 'IgnoreNew' -or
+        [string]$Task.Settings.ExecutionTimeLimit -ne 'PT0S' -or -not (Test-InstallSupervisorKnownRecoveryPolicy $Task)) {
         throw 'Supervisor scheduled task identity/settings changed; refusing to use or remove it.'
     }
+}
+
+function Ensure-InstallSupervisorRecoveryPolicy([string]$InstallDir) {
+    $spec = Get-InstallSupervisorTaskSpec $InstallDir
+    $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    Assert-InstallSupervisorTask $task $spec
+    if (Test-InstallSupervisorRecoveryPolicy $task) { return [pscustomobject]@{ task=$task; changed=$false } }
+    $xml = Export-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    if (-not $xml.Contains('<Triggers />')) { throw 'Supervisor task has an unexpected trigger representation.' }
+    if (-not $xml.Contains('<RestartOnFailure>')) {
+        $marker = '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
+        if (-not $xml.Contains($marker)) { throw 'Supervisor task settings XML is missing the multiple-instance policy.' }
+        $restartXml = $marker + "`r`n    <RestartOnFailure>`r`n      <Count>3</Count>`r`n      <Interval>PT1M</Interval>`r`n    </RestartOnFailure>"
+        $xml = $xml.Replace($marker, $restartXml)
+    }
+    $start = [DateTime]::Today.ToString('yyyy-MM-ddT00:00:00')
+    $triggerXml = '<Triggers><CalendarTrigger><Repetition><Interval>PT1M</Interval><Duration>P1D</Duration><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>' + $start + '</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers>'
+    $xml = $xml.Replace('<Triggers />', $triggerXml)
+    Register-ScheduledTask -TaskName $spec.name -TaskPath '\' -Xml $xml -Force -ErrorAction Stop | Out-Null
+    $updated = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    Assert-InstallSupervisorTask $updated $spec
+    if (-not (Test-InstallSupervisorRecoveryPolicy $updated)) { throw 'Supervisor recovery policy did not activate after task update.' }
+    return [pscustomobject]@{ task=$updated; changed=$true }
 }
 
 function Wait-InstallSupervisorTaskStopped([string]$InstallDir) {

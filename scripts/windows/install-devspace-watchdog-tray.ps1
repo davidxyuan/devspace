@@ -235,12 +235,15 @@ $previousRecord = if ([IO.File]::Exists($recordPath)) { [IO.File]::ReadAllBytes(
 $recordChanged = $false
 $supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction SilentlyContinue
 if ($supervisorTask) { Assert-InstallSupervisorTask $supervisorTask $supervisorSpec }
+$previousSupervisorTaskXml = if ($supervisorTask) { Export-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop } else { $null }
+$supervisorRecoveryPolicyChanged = $false
 
 try {
     if (-not $PSCmdlet.ShouldProcess($InstallDir, "install and start DevSpace Watchdog Tray")) { return }
     $trayInstallLease = Enter-StackOperation -InstallDir $InstallDir
     [void][System.IO.Directory]::CreateDirectory($payloadPath)
     if ($null -ne $previousRecord) { [IO.File]::WriteAllBytes((Join-Path $backupPath 'previous-install-record.json'), $previousRecord) }
+    if ($previousSupervisorTaskXml) { [IO.File]::WriteAllText((Join-Path $backupPath 'previous-supervisor-task.xml'), $previousSupervisorTaskXml, [Text.Encoding]::Unicode) }
     foreach ($name in @($files) + @($retiredFiles)) {
         $target = Join-Path $InstallDir $name
         if ([System.IO.File]::Exists($target)) {
@@ -389,7 +392,10 @@ try {
         Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Action $action -Principal $principal -Settings $taskSettings -ErrorAction Stop | Out-Null
         $supervisorTaskCreated = $true
     }
-    Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop) $supervisorSpec
+    $supervisorRecovery = Ensure-InstallSupervisorRecoveryPolicy $InstallDir
+    $supervisorTask = $supervisorRecovery.task
+    $supervisorRecoveryPolicyChanged = [bool]$supervisorRecovery.changed
+    Assert-InstallSupervisorTask $supervisorTask $supervisorSpec
     Write-InstallerJson $recordPath $manifest
     $recordChanged = $true
     $supervisorStartedAt = [DateTimeOffset]::UtcNow
@@ -436,7 +442,14 @@ try {
     try { $rolesStopped = Invoke-InstalledWatchdogBootstrap "CheckStopped" } catch { }
     if ($rolesStopped -and -not $trayStillRunning -and -not $hostStillRunning -and -not $remainingDashboardOwners.Count) {
         if ($supervisorTaskCreated) { Remove-InstallSupervisorTask $InstallDir }
-        elseif ($supervisorTask) { Wait-InstallSupervisorTaskStopped $InstallDir }
+        elseif ($supervisorTask) {
+            Wait-InstallSupervisorTaskStopped $InstallDir
+            if ($supervisorRecoveryPolicyChanged -and $previousSupervisorTaskXml) {
+                Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Xml $previousSupervisorTaskXml -Force -ErrorAction Stop | Out-Null
+                $supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
+                Assert-InstallSupervisorTask $supervisorTask $supervisorSpec
+            }
+        }
         foreach ($item in $overwritten) {
             $source = Join-Path $payloadPath $item.name; $target = Join-Path $InstallDir $item.name
             if (-not [System.IO.File]::Exists($source) -or (Get-WatchdogFileSha256 $source) -ne $item.sha256) { throw "Rollback backup is missing or corrupt: $source" }

@@ -7,6 +7,14 @@ function Get-ScheduledTask { param($TaskName,$TaskPath) return $script:task }
 function Stop-ScheduledTask { param($TaskName,$TaskPath) if ($TaskName -ne $spec.name) { throw 'Wrong task stopped' } }
 function Unregister-ScheduledTask { param($TaskName,$TaskPath,$Confirm) $script:removed++ }
 Assert-InstallSupervisorTask $script:task $spec
+$script:task.Settings | Add-Member -NotePropertyName RestartCount -NotePropertyValue 3
+$script:task.Settings | Add-Member -NotePropertyName RestartInterval -NotePropertyValue 'PT1M'
+$script:task.Triggers=@([pscustomobject]@{Enabled=$true;DaysInterval=1;StartBoundary='2026-09-10T00:00:00';CimClass=[pscustomobject]@{CimClassName='MSFT_TaskDailyTrigger'};Repetition=[pscustomobject]@{Interval='PT1M';Duration='P1D';StopAtDurationEnd=$false}})
+if (-not (Test-InstallSupervisorRecoveryPolicy $script:task)) { throw 'Minute recovery trigger was not recognized.' }
+Assert-InstallSupervisorTask $script:task $spec
+$script:task.Triggers[0].Repetition.Interval='PT2M'
+try { Assert-InstallSupervisorTask $script:task $spec; throw 'Foreign recovery trigger accepted' } catch { if ($_.Exception.Message -eq 'Foreign recovery trigger accepted') { throw } }
+$script:task.Triggers[0].Repetition.Interval='PT1M'
 Remove-InstallSupervisorTask (Join-Path $env:TEMP 'devspace task test')
 if ($script:removed -ne 1) { throw 'Owned task was not removed' }
 foreach ($field in @('Arguments','Execute')) {
@@ -23,6 +31,14 @@ $script:task = $null
 Remove-InstallSupervisorTask (Join-Path $env:TEMP 'devspace task test')
 if ($script:removed -ne 1) { throw 'Absent task was removed' }
 Write-Host 'Independent supervisor task: exact identity, cleanup, changed action/user rejection and absent task passed.'
+# Exercise legacy supervisor recovery-policy migration without registering a real task.
+$script:task = [pscustomobject]@{TaskName=$spec.name;TaskPath='\';Actions=@([pscustomobject]@{Execute=$spec.executable;Arguments=$spec.arguments});Principal=[pscustomobject]@{UserId=$spec.user;LogonType='Interactive';RunLevel='Limited'};Triggers=@();Settings=[pscustomobject]@{Enabled=$true;MultipleInstances='IgnoreNew';ExecutionTimeLimit='PT0S';RestartCount=0;RestartInterval=$null}}
+$script:migrationXml=''
+function Export-ScheduledTask { param($TaskName,$TaskPath) return '<?xml version="1.0" encoding="UTF-16"?><Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Settings><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy></Settings><Triggers /></Task>' }
+function Register-ScheduledTask { param($TaskName,$TaskPath,$Xml,[switch]$Force) $script:migrationXml=$Xml; $script:task.Settings.RestartCount=3; $script:task.Settings.RestartInterval='PT1M'; $script:task.Triggers=@([pscustomobject]@{Enabled=$true;DaysInterval=1;StartBoundary='2026-09-10T00:00:00';CimClass=[pscustomobject]@{CimClassName='MSFT_TaskDailyTrigger'};Repetition=[pscustomobject]@{Interval='PT1M';Duration='P1D';StopAtDurationEnd=$false}}); return $script:task }
+$migrated=Ensure-InstallSupervisorRecoveryPolicy (Join-Path $env:TEMP 'devspace task test')
+if (-not $migrated.changed -or -not (Test-InstallSupervisorRecoveryPolicy $migrated.task) -or $script:migrationXml -notmatch '<RestartOnFailure>' -or $script:migrationXml -notmatch '<CalendarTrigger>') { throw 'Legacy supervisor recovery policy migration failed.' }
+Write-Host 'Supervisor recovery policy migration to minute trigger passed.'
 # Exercise actual installer registration and record rollback branches without scheduling anything.
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'install-devspace-watchdog-tray.ps1'),[ref]$tokens,[ref]$errors)
