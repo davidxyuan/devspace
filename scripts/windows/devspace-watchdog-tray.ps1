@@ -400,13 +400,26 @@ function Apply-HealthSnapshot($Snapshot) {
         foreach ($service in $script:WatchdogServiceNames) {
             if (-not (Test-WatchdogServiceEnabled $service $script:config)) { continue }
             $health = Get-WatchdogProperty $Snapshot.services $service $null
-            if ($health -and $service -in @('devspace','hermes') -and [bool](Get-WatchdogProperty $health 'busyIndeterminate' $false)) {
+            if ($health -and $service -in @('devspace','hermes')) {
                 $routerHealth = Get-WatchdogProperty $Snapshot.services 'router' $null
                 $routerConnections = Get-WatchdogProperty $routerHealth 'connections' $null
                 $serviceConnections = Get-WatchdogProperty (Get-WatchdogProperty $routerConnections 'services' $null) $service $null
                 $activeRequests = [int](Get-WatchdogProperty $serviceConnections 'activeRequests' 0)
                 $suspectRequests = [int](Get-WatchdogProperty $serviceConnections 'suspectRequests' 0)
-                if ($activeRequests -gt 0 -and $suspectRequests -eq 0) { Set-WatchdogProperty $health 'activeRequestProtected' $true }
+                $longRunningRequests = [int](Get-WatchdogProperty $serviceConnections 'longRunningRequests' 0)
+                $suspectLongRunningRequests = [int](Get-WatchdogProperty $serviceConnections 'suspectLongRunningRequests' 0)
+                if ($suspectRequests -gt 0) {
+                    Set-WatchdogProperty $health 'healthy' $false
+                    Set-WatchdogProperty $health 'httpReachable' $false
+                    Set-WatchdogProperty $health 'protocolHealthy' $false
+                    Set-WatchdogProperty $health 'busyIndeterminate' $false
+                    Set-WatchdogProperty $health 'activeRequestProtected' $false
+                    Set-WatchdogProperty $health 'routerStaleRequestConfirmed' $true
+                    Set-WatchdogProperty $health 'error' ("Router observed $suspectRequests stale MCP request(s); long-running stale=$suspectLongRunningRequests.")
+                    Set-WatchdogProperty $health 'detail' ("router_stale_requests=$suspectRequests; active=$activeRequests; long_running=$longRunningRequests")
+                } elseif ([bool](Get-WatchdogProperty $health 'busyIndeterminate' $false) -and $activeRequests -gt 0) {
+                    Set-WatchdogProperty $health 'activeRequestProtected' $true
+                }
             }
             $decision = Update-WatchdogRecoveryDecision $script:state $service $health $script:settings
             if ($decision.action -eq "Recover") {

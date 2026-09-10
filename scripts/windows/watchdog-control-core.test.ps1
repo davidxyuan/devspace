@@ -456,12 +456,15 @@ try {
     # Scheduled launch has no Process.Start handle; query only its heartbeat PID for identity.
     $installerCim = [regex]::Matches($installerSource, 'Get-CimInstance[^\r\n]+')
     Assert-True "installer uses only targeted supervisor PID identity lookup" ($installerCim.Count -eq 1 -and $installerCim[0].Value -eq 'Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop')
-    Assert-Contains "Hermes local health uses session-free OPTIONS transport probe" $coreSource 'Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS"'
-    Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=checked_separately'
+    Assert-True "Hermes local health no longer probes FastMCP every local cycle" (-not $coreSource.Contains('Invoke-WatchdogHttpRequest \"http://127.0.0.1:$port/mcp\" \"OPTIONS\"'))
+    Assert-Contains "Hermes local health relies on managed listener plus real Router/public traffic" $coreSource 'listener_ready; mcp=observed_by_router_and_public_probe'
+    Assert-Contains "public MCP probes tolerate slower healthy responses" $coreSource 'Invoke-WatchdogMcpProbe $hermesUrl -TimeoutSeconds 12'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
     Assert-True "recovery executor no longer re-blocks confirmed busy transport" (-not $coreSource.Contains('Busy or indeterminate service blocks automatic recovery.'))
     Assert-Contains "active MCP requests protect busy transport from self-recovery" $coreSource 'activeRequestProtected'
     Assert-Contains "Tray reads Router active request count" $traySource "'activeRequests'"
+    Assert-Contains "Tray consumes Router long-running request count" $traySource "'longRunningRequests'"
+    Assert-Contains "Tray converts Router stale request evidence into recovery health" $traySource "'routerStaleRequestConfirmed'"
     Assert-Contains "Tray stops protection once Router marks request suspect" $traySource "'suspectRequests'"
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'
     Assert-True "installer snapshots task XML before temporary quiesce" ($installerSource.IndexOf('$legacyTaskBackups = @()') -lt $installerSource.IndexOf('Disable-ScheduledTask'))

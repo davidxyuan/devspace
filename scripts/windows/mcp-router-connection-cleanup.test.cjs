@@ -75,6 +75,7 @@ async function main() {
     routerPort,
     publicBaseUrl: "https://example.invalid/cleanup-test/devspace_chatgpt",
     routerSuspectIdleSeconds: 1,
+    routerLongRunningSuspectIdleSeconds: 3,
     mcpRoutes: [{
       name: "devspace_chatgpt_cleanup_test",
       service: "devspace",
@@ -120,6 +121,37 @@ async function main() {
     const cleaned = await readRouterStatus(routerPort);
     assert.equal(cleaned.connections.services.devspace.activeRequests, 0, "closed DevSpace request remained active");
     assert.ok(cleaned.connections.cleanup.upstreamsDestroyed >= 1, "cleanup counter did not record destroyed upstream");
+
+    await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: "127.0.0.1",
+        port: routerPort,
+        path: "/cleanup-test/devspace_chatgpt/mcp",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      }, (res) => {
+        res.once("data", async () => {
+          try {
+            await new Promise((done) => setTimeout(done, 1200));
+            const longWork = await readRouterStatus(routerPort);
+            assert.equal(longWork.connections.services.devspace.activeRequests, 1, "long-running POST request was not counted");
+            assert.equal(longWork.connections.services.devspace.longRunningRequests, 1, "long-running tool call was not classified automatically");
+            assert.equal(longWork.connections.services.devspace.suspectRequests, 0, "long-running tool call used the short suspect threshold");
+            assert.equal(longWork.connections.thresholds.longRunningSuspectIdleSeconds, 3, "long-running threshold was not exposed");
+            res.destroy();
+            resolve();
+          } catch (error) { reject(error); }
+        });
+      });
+      req.once("error", reject);
+      req.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "long-work",
+        method: "tools/call",
+        params: { name: "hermes_owner_run_command", arguments: { timeout: 120, command: "example" } },
+      }));
+    });
+    await new Promise((done) => setTimeout(done, 100));
 
     await new Promise((resolve, reject) => {
       const req = http.request({

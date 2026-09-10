@@ -913,9 +913,9 @@ function Test-WatchdogMcpResponse([int]$Status, [string]$Body, $Headers) {
     return [pscustomobject]@{ protocolHealthy=[bool]$protocolHealthy; behavior=$behavior }
 }
 
-function Invoke-WatchdogMcpProbe([string]$Url, [switch]$Local) {
+function Invoke-WatchdogMcpProbe([string]$Url, [switch]$Local, [int]$TimeoutSeconds = 5) {
     $payload = '{"jsonrpc":"2.0","id":"devspace-watchdog-health","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"devspace-watchdog","version":"1.0"}}}'
-    $response = Invoke-WatchdogHttpRequest $Url "POST" $payload 5 -Local:$Local
+    $response = Invoke-WatchdogHttpRequest $Url "POST" $payload $TimeoutSeconds -Local:$Local
     $protocolHealthy = $false
     $behavior = "unreachable"
     if ($response.reachable) {
@@ -1101,16 +1101,14 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $probeError = if (-not $healthProbe.semanticHealthy) { $healthProbe.error } else { $mcpProbe.error }
             }
             "hermes" {
-                # Hermes has no lightweight /healthz endpoint. A full MCP initialize on every
-                # local 5-second cycle creates and tears down Streamable HTTP sessions, which
-                # can make the health checker itself destabilize a busy Hermes server. Keep
-                # the local layer session-free and let the lower-frequency public probe prove
-                # end-to-end MCP protocol health.
-                $transportProbe = Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS" "" 2 -Local
-                $httpReachable = $transportProbe.reachable
-                $protocolHealthy = $transportProbe.reachable -and $transportProbe.status -gt 0
-                $detail = if ($transportProbe.reachable) { "local_options=http_$($transportProbe.status); mcp=checked_separately" } else { "local_options=no_response; mcp=checked_separately" }
-                $probeError = if ($protocolHealthy) { "" } else { $transportProbe.error }
+                # Do not probe FastMCP on every local cycle. The managed process identity and
+                # listening socket prove that the transport is present; real MCP traffic is
+                # observed by the Router and the lower-frequency public probe proves end-to-end
+                # protocol health. This keeps the health checker from competing with long calls.
+                $httpReachable = [bool]$layer.listenerFound
+                $protocolHealthy = [bool]$layer.listenerFound
+                $detail = "listener_ready; mcp=observed_by_router_and_public_probe"
+                $probeError = ""
             }
             "router" {
                 $machineSlug = [string](Get-WatchdogProperty $Config "machineSlug" "")
@@ -1262,8 +1260,8 @@ function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic)
         $hermesUrl = $editable.publicDomain.TrimEnd("/") + $editable.hermesRoutePath + "/mcp"
         $public = [pscustomobject][ordered]@{
             checkedUtc = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
-            devspace = if ([bool](Get-WatchdogProperty $config "devspaceEnabled" $true)) { Invoke-WatchdogMcpProbe $devspaceUrl } else { $null }
-            hermes = if ([bool](Get-WatchdogProperty $config "hermesEnabled" $false)) { Invoke-WatchdogMcpProbe $hermesUrl } else { $null }
+            devspace = if ([bool](Get-WatchdogProperty $config "devspaceEnabled" $true)) { Invoke-WatchdogMcpProbe $devspaceUrl -TimeoutSeconds 12 } else { $null }
+            hermes = if ([bool](Get-WatchdogProperty $config "hermesEnabled" $false)) { Invoke-WatchdogMcpProbe $hermesUrl -TimeoutSeconds 12 } else { $null }
         }
     }
     return [pscustomobject][ordered]@{

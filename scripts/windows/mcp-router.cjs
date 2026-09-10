@@ -39,7 +39,8 @@ if (!defaultRoute) {
 
 const connectionWarnCount = Math.max(10, Number(config.routerConnectionWarnCount || 50));
 const connectionCriticalCount = Math.max(connectionWarnCount + 1, Number(config.routerConnectionCriticalCount || 200));
-const suspectIdleMs = Math.max(1_000, Number(config.routerSuspectIdleSeconds || 300) * 1000);
+const suspectIdleMs = Math.max(1_000, Number(config.routerSuspectIdleSeconds || 120) * 1000);
+const longRunningSuspectIdleMs = Math.max(suspectIdleMs, Number(config.routerLongRunningSuspectIdleSeconds || 900) * 1000);
 const idleSocketCleanupMs = Math.max(15_000, Number(config.routerIdleSocketCleanupSeconds || 120) * 1000);
 const cleanupSweepMs = Math.min(30_000, Math.max(5_000, Math.floor(idleSocketCleanupMs / 4)));
 const clientSockets = new Map();
@@ -149,6 +150,16 @@ function routeService(route) {
   return route && route.service ? route.service : inferService(route && route.name);
 }
 
+function classifyMcpToolRequest(payload) {
+  if (!payload || payload.method !== "tools/call") return { toolName: "", longRunning: false };
+  const toolName = String(payload.params?.name || "");
+  const args = payload.params?.arguments && typeof payload.params.arguments === "object" ? payload.params.arguments : {};
+  const timeout = Number(args.timeout || args.timeout_seconds || args.timeoutSeconds || 0);
+  const longByTimeout = Number.isFinite(timeout) && timeout >= 120;
+  const longByName = /(?:owner_run_command|workspace_run_test|codex|runner|cron_run|job|mission|delegat)/i.test(toolName);
+  return { toolName, longRunning: longByTimeout || longByName };
+}
+
 function markSocketActivity(socket) {
   const record = clientSockets.get(socket);
   if (record) {
@@ -163,14 +174,16 @@ function connectionSnapshot() {
   const services = Object.fromEntries(serviceNames.map((service) => [service, {
     activeRequests: 0,
     streamingRequests: 0,
+    longRunningRequests: 0,
     suspectRequests: 0,
+    suspectLongRunningRequests: 0,
     oldestRequestSeconds: 0,
     longestIdleSeconds: 0,
     longestStreamSeconds: 0,
   }]));
   for (const request of activeRequests.values()) {
     const service = request.service || "unknown";
-    if (!services[service]) services[service] = { activeRequests: 0, streamingRequests: 0, suspectRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0, longestStreamSeconds: 0 };
+    if (!services[service]) services[service] = { activeRequests: 0, streamingRequests: 0, longRunningRequests: 0, suspectRequests: 0, suspectLongRunningRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0, longestStreamSeconds: 0 };
     const ageSeconds = Math.max(0, Math.floor((now - request.startedAt) / 1000));
     const idleSeconds = Math.max(0, Math.floor((now - request.lastActivityAt) / 1000));
     services[service].activeRequests += 1;
@@ -179,9 +192,14 @@ function connectionSnapshot() {
       services[service].longestStreamSeconds = Math.max(services[service].longestStreamSeconds, ageSeconds);
       continue;
     }
+    if (request.longRunning) services[service].longRunningRequests += 1;
     services[service].oldestRequestSeconds = Math.max(services[service].oldestRequestSeconds, ageSeconds);
     services[service].longestIdleSeconds = Math.max(services[service].longestIdleSeconds, idleSeconds);
-    if (now - request.lastActivityAt >= suspectIdleMs) services[service].suspectRequests += 1;
+    const staleThreshold = request.longRunning ? longRunningSuspectIdleMs : suspectIdleMs;
+    if (now - request.lastActivityAt >= staleThreshold) {
+      services[service].suspectRequests += 1;
+      if (request.longRunning) services[service].suspectLongRunningRequests += 1;
+    }
   }
   const openClientSockets = clientSockets.size;
   const idleClientSockets = Array.from(clientSockets.values()).filter((item) => item.activeRequests === 0).length;
@@ -204,6 +222,7 @@ function connectionSnapshot() {
       warnCount: connectionWarnCount,
       criticalCount: connectionCriticalCount,
       suspectIdleSeconds: Math.floor(suspectIdleMs / 1000),
+      longRunningSuspectIdleSeconds: Math.floor(longRunningSuspectIdleMs / 1000),
       idleSocketCleanupSeconds: Math.floor(idleSocketCleanupMs / 1000),
       idleSocketConfirmations: 2,
     },
@@ -320,6 +339,8 @@ const server = http.createServer((req, res) => {
     method: req.method,
     path,
     longLivedStream: req.method === "GET" && path === "/mcp",
+    toolName: "",
+    longRunning: false,
     startedAt: now,
     lastActivityAt: now,
     finished: false,
@@ -343,7 +364,27 @@ const server = http.createServer((req, res) => {
     else connectionCounters.requestsAborted += 1;
   };
 
-  req.on("data", markRequestActivity);
+  let requestBody = "";
+  let requestBodyTooLarge = false;
+  req.on("data", (chunk) => {
+    markRequestActivity();
+    if (requestBodyTooLarge) return;
+    const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    if (Buffer.byteLength(requestBody) + Buffer.byteLength(text) > 262_144) {
+      requestBodyTooLarge = true;
+      requestBody = "";
+      return;
+    }
+    requestBody += text;
+  });
+  req.on("end", () => {
+    if (requestBodyTooLarge || !requestBody || requestRecord.finished) return;
+    try {
+      const classified = classifyMcpToolRequest(JSON.parse(requestBody));
+      requestRecord.toolName = classified.toolName;
+      requestRecord.longRunning = classified.longRunning;
+    } catch {}
+  });
 
   let upstreamResponse = null;
   const destroyUpstream = () => {
