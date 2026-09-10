@@ -1418,6 +1418,7 @@ function Get-WatchdogHermesEnvironment($Config) {
         $ownerMode = [bool](Get-WatchdogProperty $caps "ownerMode" $false)
         $values["HERMES_GPT_OPERATOR_LEVEL"] = if ($ownerMode) { "owner" } elseif ([bool](Get-WatchdogProperty $caps "workspaceWrite" $false) -or [bool](Get-WatchdogProperty $caps "runner" $false)) { "workspace" } elseif ([bool](Get-WatchdogProperty $caps "skillWrite" $false)) { "skills_config" } elseif ([bool](Get-WatchdogProperty $caps "cronWrite" $false)) { "cron" } else { "read_only" }
         $values["HERMES_GPT_OPERATOR_APPLY_MODE"] = if ([bool](Get-WatchdogProperty $caps "operatorDirect" $false)) { "direct" } else { "dry_run" }
+        $values["HERMES_GPT_OWNER_ACTIVE"] = if ($ownerMode) { "1" } else { $null }
         $values["HERMES_GPT_OWNER_ACK"] = if ($ownerMode) { "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE" } else { $null }
     }
     return $values

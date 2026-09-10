@@ -69,6 +69,16 @@ try {
     $monthlyBackgroundPublicRequests = [int](2 * [Math]::Ceiling((30 * 24 * 60 * 60) / $quotaSafeDefaults.publicProbeSeconds))
     Assert-True "quota-safe public probes stay below 300 requests per 30 days" ($monthlyBackgroundPublicRequests -le 300)
 
+    $ownerConfig = New-TestConfig $tempRoot
+    $ownerConfig.capabilities.hermes = [pscustomobject]@{
+        operator=$true; operatorDirect=$true; ownerMode=$true; workspaceWrite=$true
+        runner=$true; allowedRoots=@($tempRoot); filesystemScope="restricted"
+    }
+    $ownerEnv = Get-WatchdogHermesEnvironment $ownerConfig
+    Assert-Equal "Hermes owner level is explicit" $ownerEnv["HERMES_GPT_OPERATOR_LEVEL"] "owner"
+    Assert-Equal "Hermes v0.10 owner activation gate is explicit" $ownerEnv["HERMES_GPT_OWNER_ACTIVE"] "1"
+    Assert-Equal "Hermes owner acknowledgement is preserved" $ownerEnv["HERMES_GPT_OWNER_ACK"] "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"
+
     $statePath = Join-Path $tempRoot "watchdog-tray-state.json"
     $state = New-WatchdogState $config
     Set-WatchdogDesiredState $state "hermes" "stopped_by_user"
