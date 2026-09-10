@@ -52,6 +52,13 @@ function Test-UpdateContentEqual([string]$Left, [string]$Right) {
         return $leftText -ceq $rightText
     } catch { return $false }
 }
+function Test-UpdateKasperskyEndpointSecurity {
+    if (Get-Process -Name 'avp' -ErrorAction SilentlyContinue) { return $true }
+    foreach ($root in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if ($root -and [IO.Directory]::Exists((Join-Path $root 'Kaspersky Lab'))) { return $true }
+    }
+    return $false
+}
 function Copy-UpdateFile([string]$Source, [string]$Destination) {
     $temporary = "$Destination.update-$PID-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     try {
@@ -185,6 +192,9 @@ Write-Host "Changed runtime files: $($changes.Count)"
 foreach ($change in $changes) { Write-Host " - $($change.name)" }
 if (-not $changes.Count) { Write-Host 'Installed Watchdog runtime already matches this source.' -ForegroundColor Green; return }
 if (-not $Apply) { Write-Host 'Preview only. Re-run with -Apply to update this verified installation.'; return }
+if (Test-UpdateKasperskyEndpointSecurity) {
+    throw 'Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes. Use verified file-by-file deployment plus the existing Bootstrap/Dashboard lifecycle, or an IT-approved allowlist for the exact reviewed artifact.'
+}
 
 $backupDir = Join-Path $InstallDir ('configuration-backups\runtime-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8))
 [void][IO.Directory]::CreateDirectory($backupDir)

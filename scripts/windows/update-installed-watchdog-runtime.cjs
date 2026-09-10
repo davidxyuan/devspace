@@ -136,6 +136,17 @@ function run(command, args, options = {}) {
   if (result.status !== 0) throw new Error(`${path.basename(command)} exited with code ${result.status}. ${String(result.stderr || result.stdout || "").trim()}`);
   return result;
 }
+function kasperskyEndpointSecurityActive() {
+  const roots = [process.env["ProgramFiles(x86)"], process.env.ProgramFiles]
+    .filter(Boolean)
+    .map(root => path.join(root, "Kaspersky Lab"));
+  if (roots.some(root => fs.existsSync(root))) return true;
+  const tasklist = path.join(process.env.WINDIR || "C:\\Windows", "System32", "tasklist.exe");
+  try {
+    const result = spawnSync(tasklist, ["/FI", "IMAGENAME eq avp.exe", "/FO", "CSV", "/NH"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
+    return result.status === 0 && /"avp\.exe"/i.test(String(result.stdout || ""));
+  } catch { return false; }
+}
 function heartbeatFresh(file, role) {
   try {
     const value = readJson(file);
@@ -183,6 +194,9 @@ async function main(argv = process.argv.slice(2)) {
   for (const change of plan.changes) console.log(` - ${change.name}`);
   if (!plan.changes.length) { console.log("Installed Watchdog runtime already matches this source."); return { changed: 0, routerRestartRequired: false }; }
   if (!args.apply) { console.log("Preview only. Re-run with --apply to update this verified installation."); return { changed: plan.changes.length, routerRestartRequired: plan.changes.some(x => x.name === "mcp-router.cjs") }; }
+  if (kasperskyEndpointSecurityActive()) {
+    throw new Error("Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes. Use verified file-by-file deployment plus the existing Bootstrap/Dashboard lifecycle, or an IT-approved allowlist for the exact reviewed artifact.");
+  }
 
   const lockPath = path.join(plan.installDir, "stack-management", "node-runtime-update.lock");
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -258,4 +272,4 @@ async function main(argv = process.argv.slice(2)) {
 if (require.main === module) {
   main().catch(error => { console.error(error?.stack || String(error)); process.exitCode = 1; });
 }
-module.exports = { PAYLOAD_FILES, BACKEND_FILES, ALL_FILES, sha256File, contentEqual, supervisorTaskName, buildPlan, serviceAcceptable, parseArgs };
+module.exports = { PAYLOAD_FILES, BACKEND_FILES, ALL_FILES, sha256File, contentEqual, supervisorTaskName, buildPlan, serviceAcceptable, parseArgs, kasperskyEndpointSecurityActive };

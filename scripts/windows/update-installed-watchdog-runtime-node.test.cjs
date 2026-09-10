@@ -13,6 +13,11 @@ const {
   serviceAcceptable,
   parseArgs,
 } = require("./update-installed-watchdog-runtime.cjs");
+const updaterSource = fs.readFileSync(path.join(__dirname, "update-installed-watchdog-runtime.cjs"), "utf8");
+assert.match(updaterSource, /Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes/,
+  "Kaspersky-managed machines must fail closed before batch mutation");
+assert.ok(updaterSource.indexOf("kasperskyEndpointSecurityActive()") < updaterSource.indexOf("const lockPath = path.join(plan.installDir"),
+  "Kaspersky guard must execute before lock/backup/copy mutation begins");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "devspace-node-runtime-update-test-"));
 const installDir = path.join(root, "installed");

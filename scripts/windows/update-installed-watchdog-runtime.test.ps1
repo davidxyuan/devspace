@@ -32,6 +32,9 @@ Assert-Contains 'waits for existing supervisor' 'Wait-InstallSupervisorTaskStopp
 Assert-Contains 'restarts only changed backend router' "Restart-WatchdogManagedService 'router'"
 Assert-Contains 'restores payload on update failure' 'payload was restored'
 Assert-Contains 'requires explicit apply' 'if (-not $Apply)'
+Assert-Contains 'detects Kaspersky before batch mutation' 'function Test-UpdateKasperskyEndpointSecurity'
+Assert-Contains 'blocks Kaspersky-managed Apply before writes' 'Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes'
+if ($source.IndexOf('if (Test-UpdateKasperskyEndpointSecurity)') -gt $source.IndexOf('$backupDir = Join-Path')) { throw 'Kaspersky guard must run before backup/copy mutation.' }
 Assert-NotContains 'does not disable legacy scheduled task' 'Disable-ScheduledTask'
 Assert-NotContains 'does not unregister legacy scheduled task' 'Unregister-ScheduledTask'
 Assert-NotContains 'does not register replacement scheduled task' 'Register-ScheduledTask'

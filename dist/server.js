@@ -69,6 +69,7 @@ function toolWidgetDescriptorMeta(config, kind) {
 const toolNames = {
     openWorkspace: "open_workspace",
     read: "read",
+    inspectBatch: "inspect_batch",
     write: "write",
     edit: "edit",
     grep: "grep",
@@ -85,7 +86,7 @@ function serverInstructions(config) {
     }
     const inspection = config.toolMode !== "full"
         ? `In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use ${toolNames.shell} with command-line tools such as grep, rg, find, ls, and tree for search and directory inspection. `
-        : `Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. `;
+        : `Prefer ${toolNames.inspectBatch} when two or more independent read/search/list operations are needed in the same workspace so they share one MCP round trip. Use ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for single inspections. `;
     const skills = config.skillsEnabled
         ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
         : "";
@@ -1164,6 +1165,129 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
                 },
                 structuredContent: {
                     result: contentText(response.content),
+                },
+            };
+        });
+        registerAppTool(server, toolNames.inspectBatch, {
+            title: "Inspect batch",
+            description: "Run 2-12 independent read-only inspections inside one open workspace and return all results in one MCP response. Use this instead of multiple read/grep/glob/ls calls when the inspections do not depend on each other; it reduces remote round trips. Each operation keeps the same workspace containment and allowed-path checks as the corresponding standalone tool. No writes or shell commands are allowed.",
+            inputSchema: {
+                workspaceId: z
+                    .string()
+                    .describe("Workspace identifier returned by open_workspace."),
+                operations: z
+                    .array(z.discriminatedUnion("type", [
+                    z.object({
+                        type: z.literal("read"),
+                        path: z.string(),
+                        offset: z.number().int().positive().optional(),
+                        limit: z.number().int().positive().max(500).optional(),
+                    }),
+                    z.object({
+                        type: z.literal("grep"),
+                        pattern: z.string(),
+                        path: z.string().optional(),
+                        include: z.string().optional(),
+                    }),
+                    z.object({
+                        type: z.literal("glob"),
+                        pattern: z.string(),
+                        path: z.string().optional(),
+                    }),
+                    z.object({
+                        type: z.literal("ls"),
+                        path: z.string(),
+                    }),
+                ]))
+                    .min(2)
+                    .max(12)
+                    .describe("Independent read-only inspections to execute locally in order."),
+            },
+            outputSchema: resultOutputSchema({
+                results: z.array(z.object({
+                    index: z.number().int(),
+                    type: z.enum(["read", "grep", "glob", "ls"]),
+                    path: z.string().optional(),
+                    ok: z.boolean(),
+                    result: z.string(),
+                })),
+            }),
+            _meta: {},
+            annotations: { readOnlyHint: true },
+        }, async ({ workspaceId, operations }) => {
+            const startedAt = performance.now();
+            const workspace = workspaces.getWorkspace(workspaceId);
+            const results = [];
+            for (const [index, operation] of operations.entries()) {
+                let response;
+                let displayPath;
+                if (operation.type === "read") {
+                    const readPath = workspaces.resolveReadPath(workspace, operation.path);
+                    displayPath = operation.path;
+                    response = await readFileTool({
+                        path: readPath.absolutePath,
+                        offset: operation.offset,
+                        limit: operation.limit,
+                    }, {
+                        cwd: workspace.root,
+                        root: workspace.root,
+                        readRoots: readPath.readRoots,
+                    });
+                    if (!response.isError)
+                        workspaces.markReadPathLoaded(workspace, readPath);
+                }
+                else if (operation.type === "grep") {
+                    if (operation.path)
+                        workspaces.resolvePath(workspace, operation.path);
+                    displayPath = operation.path;
+                    response = await grepFilesTool({
+                        pattern: operation.pattern,
+                        path: operation.path,
+                        glob: operation.include,
+                    }, { cwd: workspace.root, root: workspace.root });
+                }
+                else if (operation.type === "glob") {
+                    if (operation.path)
+                        workspaces.resolvePath(workspace, operation.path);
+                    displayPath = operation.path;
+                    response = await findFilesTool({ pattern: operation.pattern, path: operation.path }, { cwd: workspace.root, root: workspace.root });
+                }
+                else {
+                    workspaces.resolvePath(workspace, operation.path);
+                    displayPath = operation.path;
+                    response = await listDirectoryTool({ path: operation.path }, { cwd: workspace.root, root: workspace.root });
+                }
+                results.push({
+                    index,
+                    type: operation.type,
+                    path: displayPath,
+                    ok: !response.isError,
+                    result: contentText(response.content),
+                });
+            }
+            const combined = results
+                .map((item) => `#${item.index + 1} ${item.type}${item.path ? ` ${item.path}` : ""} ${item.ok ? "OK" : "ERROR"}\n${item.result}`)
+                .join("\n\n");
+            const content = [textBlock(combined)];
+            logToolCall(config, {
+                tool: toolNames.inspectBatch,
+                workspaceId,
+                success: true,
+                durationMs: Math.round(performance.now() - startedAt),
+            });
+            return {
+                content,
+                _meta: {
+                    tool: toolNames.inspectBatch,
+                    card: {
+                        workspaceId,
+                        summary: { operations: results.length, failures: results.filter((item) => !item.ok).length },
+                        payload: { content },
+                    },
+                },
+                structuredContent: {
+                    result: combined,
+                    results,
                 },
             };
         });
