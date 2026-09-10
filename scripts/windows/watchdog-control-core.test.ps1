@@ -490,7 +490,8 @@ try {
     Assert-Contains "installer verifies Host owns dashboard port" $installerSource 'hostOwnsDashboard'
     Assert-Contains "installer verifies Tray is in active console session" $installerSource 'traySessionReady'
     Assert-Contains "OpenCodex Tray repair delegates to bootstrap bridge" $coreSource "'RepairOpenCodexTray'"
-    Assert-Contains "OpenCodex Tray repair launches PowerShell script directly" $bootstrapSource 'opencodex-tray.ps1'
+    Assert-Contains "OpenCodex Tray repair prefers native hidden launcher" $bootstrapSource 'opencodex-tray-launcher.exe'
+    Assert-Contains "OpenCodex Tray repair retains VBS compatibility fallback" $bootstrapSource 'opencodex-tray.vbs'
     Assert-Contains "bootstrap supports OpenCodex repair mode" $bootstrapSource 'RepairOpenCodexTray'
     Assert-True "bootstrap does not exit parent PowerShell host" (-not $bootstrapSource.Contains('exit 0'))
     Assert-Contains "ngrok profile tokens use separate DPAPI entropy" $coreSource 'DevSpaceWatchdogNgrokProfileV1'

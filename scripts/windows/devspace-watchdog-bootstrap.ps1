@@ -149,23 +149,36 @@ function Start-InteractiveWatchdogTray([int]$ExpectedSessionId) {
 function Start-InteractiveOpenCodexTray([int]$ExpectedSessionId) {
     $openCodexHome = [string]$config.openCodexHome
     if ([string]::IsNullOrWhiteSpace($openCodexHome)) { $openCodexHome = Join-Path $env:USERPROFILE ".opencodex" }
-    $openCodexTrayScript = Join-Path $openCodexHome "opencodex-tray.ps1"
-    if (-not [System.IO.File]::Exists($openCodexTrayScript)) { throw "OpenCodex Tray script is missing: $openCodexTrayScript" }
+    $openCodexTrayLauncherExe = Join-Path $openCodexHome "opencodex-tray-launcher.exe"
+    $openCodexTrayLauncherVbs = Join-Path $openCodexHome "opencodex-tray.vbs"
+    $launcherExe = $null
+    $launcherArgs = @()
+    if ([System.IO.File]::Exists($openCodexTrayLauncherExe)) {
+        $launcherExe = $openCodexTrayLauncherExe
+    } elseif ([System.IO.File]::Exists($openCodexTrayLauncherVbs)) {
+        $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
+        if (-not [System.IO.File]::Exists($wscript)) { throw "Windows Script Host is missing: $wscript" }
+        $launcherExe = $wscript
+        $launcherArgs = @("//B","//NoLogo",$openCodexTrayLauncherVbs)
+    } else {
+        throw "OpenCodex Tray launcher is missing under $openCodexHome"
+    }
     if ($ExpectedSessionId -lt 0 -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq $ExpectedSessionId) {
-        [void](Start-HiddenNativeProcess $powershell @("-NoP","-Sta","-W","Hidden","-File",$openCodexTrayScript))
+        [void](Start-HiddenNativeProcess $launcherExe $launcherArgs)
         return
     }
     $schtasks = Join-Path $env:WINDIR "System32\schtasks.exe"
     if (-not [System.IO.File]::Exists($schtasks)) { throw "Task Scheduler CLI is missing: $schtasks" }
     $taskName = "DevSpaceWatchdogOpenCodexInteractive-" + [Guid]::NewGuid().ToString("N")
-    $taskCommand = "powershell.exe -NoP -Sta -W Hidden -F " + (Convert-NativeArgument $openCodexTrayScript)
+    $taskCommand = Convert-NativeArgument $launcherExe
+    foreach ($launcherArg in @($launcherArgs)) { $taskCommand += " " + (Convert-NativeArgument $launcherArg) }
     if ($taskCommand.Length -gt 240) { throw "OpenCodex interactive Tray task command is unexpectedly long ($($taskCommand.Length) characters)." }
     $startAt = (Get-Date).AddMinutes(2).ToString("HH:mm")
     try {
         $created = Start-HiddenNativeProcess $schtasks @("/Create","/TN",$taskName,"/TR",$taskCommand,"/SC","ONCE","/ST",$startAt,"/RL","LIMITED","/IT","/F") 10000
-        if ($created -ne 0) { throw "Could not create interactive OpenCodex Tray task (exit $created)." }
+        if ($created -ne 0) { throw "Could not create interactive OpenCodex Tray launch task (exit $created)." }
         $ran = Start-HiddenNativeProcess $schtasks @("/Run","/TN",$taskName) 10000
-        if ($ran -ne 0) { throw "Could not run interactive OpenCodex Tray task (exit $ran)." }
+        if ($ran -ne 0) { throw "Could not run interactive OpenCodex Tray launch task (exit $ran)." }
         Start-Sleep -Milliseconds 500
     } finally {
         try { [void](Start-HiddenNativeProcess $schtasks @("/Delete","/TN",$taskName,"/F") 5000) } catch { }
