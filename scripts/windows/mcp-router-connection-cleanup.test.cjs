@@ -59,6 +59,11 @@ async function main() {
   let backendRequestClosedResolve;
   const backendRequestClosed = new Promise((resolve) => { backendRequestClosedResolve = resolve; });
   const backend = http.createServer((req, res) => {
+    if (req.url === "/completed") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+      return;
+    }
     req.once("close", backendRequestClosedResolve);
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write(": connected\n\n");
@@ -92,6 +97,15 @@ async function main() {
 
   try {
     await waitForRouter(routerPort);
+    await new Promise((resolve, reject) => {
+      http.get({ host: "127.0.0.1", port: routerPort, path: "/cleanup-test/devspace_chatgpt/completed" }, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      }).once("error", reject);
+    });
+    const completedStatus = await readRouterStatus(routerPort);
+    assert.match(completedStatus.connections.services.devspace.lastCompletedAt || "", /^\d{4}-\d{2}-\d{2}T/, "completed request timestamp was not exposed per service");
+
     await new Promise((resolve, reject) => {
       const req = http.get({
         host: "127.0.0.1",

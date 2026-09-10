@@ -167,6 +167,22 @@ function Get-ServiceFromSnapshot([string]$Service) {
     return Get-WatchdogProperty $script:lastHealth.services $Service $null
 }
 
+function Test-RecentCompletedRouterRequest([string]$Service, [int]$MaxAgeSeconds = 300) {
+    $routerHealth = Get-ServiceFromSnapshot "router"
+    $connections = Get-WatchdogProperty $routerHealth "connections" $null
+    $services = Get-WatchdogProperty $connections "services" $null
+    $serviceMetrics = Get-WatchdogProperty $services $Service $null
+    $lastCompletedAt = [string](Get-WatchdogProperty $serviceMetrics "lastCompletedAt" "")
+    if ([string]::IsNullOrWhiteSpace($lastCompletedAt)) { return $false }
+    try {
+        $completedAt = [DateTimeOffset]::Parse($lastCompletedAt).ToUniversalTime()
+        $age = ([DateTimeOffset]::UtcNow - $completedAt).TotalSeconds
+        return $age -ge 0 -and $age -le [Math]::Max(1, $MaxAgeSeconds)
+    } catch {
+        return $false
+    }
+}
+
 function Get-OverallTrayState {
     if (-not $script:lastHealth) { return [pscustomobject]@{ color="YELLOW"; label="Checking" } }
     $enabled = @($script:WatchdogServiceNames | Where-Object { Test-WatchdogServiceEnabled $_ $script:config })
@@ -190,13 +206,27 @@ function Get-OverallTrayState {
     $connectionLevel = [string](Get-WatchdogProperty $connectionMetrics "level" "")
     if ($connectionLevel -eq "RED") { return [pscustomobject]@{ color="RED"; label="Connection overload" } }
     if ($connectionLevel -eq "YELLOW") { return [pscustomobject]@{ color="YELLOW"; label="Connection warning" } }
-    if (-not $script:lastPublic) { return [pscustomobject]@{ color="YELLOW"; label="Checking public MCP" } }
-    foreach ($service in @("devspace", "hermes")) {
-        if (Test-WatchdogServiceEnabled $service $script:config) {
-            $probe = Get-WatchdogProperty $script:lastPublic $service $null
-            if (-not [bool](Get-WatchdogProperty $probe "protocolHealthy" $false)) { return [pscustomobject]@{ color="YELLOW"; label="Public MCP degraded" } }
+    $publicVerificationPending = $false
+    if (-not $script:lastPublic) {
+        $enabledPublicServices = @(@("devspace", "hermes") | Where-Object { Test-WatchdogServiceEnabled $_ $script:config })
+        $recentTrafficForAll = $enabledPublicServices.Count -gt 0 -and @($enabledPublicServices | Where-Object { Test-RecentCompletedRouterRequest $_ }).Count -eq $enabledPublicServices.Count
+        if (-not $recentTrafficForAll) { return [pscustomobject]@{ color="YELLOW"; label="Checking public MCP" } }
+        $publicVerificationPending = $true
+    } else {
+        foreach ($service in @("devspace", "hermes")) {
+            if (Test-WatchdogServiceEnabled $service $script:config) {
+                $probe = Get-WatchdogProperty $script:lastPublic $service $null
+                if (-not [bool](Get-WatchdogProperty $probe "protocolHealthy" $false)) {
+                    if (Test-RecentCompletedRouterRequest $service) {
+                        $publicVerificationPending = $true
+                        continue
+                    }
+                    return [pscustomobject]@{ color="YELLOW"; label="Public MCP degraded" }
+                }
+            }
         }
     }
+    if ($publicVerificationPending) { return [pscustomobject]@{ color="GREEN"; label="Healthy (public verification pending)" } }
     return [pscustomobject]@{ color="GREEN"; label="Healthy" }
 }
 

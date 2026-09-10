@@ -55,6 +55,7 @@ const connectionCounters = {
   idleClientSocketsDestroyed: 0,
   lastCleanupAt: null,
 };
+const lastCompletedAtByService = new Map();
 
 const usageKeys = ["devspace", "hermes", "watchdog", "other", "localOrUnknown"];
 const emptyUsage = () => Object.fromEntries(usageKeys.map(key => [key, 0]));
@@ -180,10 +181,11 @@ function connectionSnapshot() {
     oldestRequestSeconds: 0,
     longestIdleSeconds: 0,
     longestStreamSeconds: 0,
+    lastCompletedAt: lastCompletedAtByService.get(service) || null,
   }]));
   for (const request of activeRequests.values()) {
     const service = request.service || "unknown";
-    if (!services[service]) services[service] = { activeRequests: 0, streamingRequests: 0, longRunningRequests: 0, suspectRequests: 0, suspectLongRunningRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0, longestStreamSeconds: 0 };
+    if (!services[service]) services[service] = { activeRequests: 0, streamingRequests: 0, longRunningRequests: 0, suspectRequests: 0, suspectLongRunningRequests: 0, oldestRequestSeconds: 0, longestIdleSeconds: 0, longestStreamSeconds: 0, lastCompletedAt: lastCompletedAtByService.get(service) || null };
     const ageSeconds = Math.max(0, Math.floor((now - request.startedAt) / 1000));
     const idleSeconds = Math.max(0, Math.floor((now - request.lastActivityAt) / 1000));
     services[service].activeRequests += 1;
@@ -360,8 +362,10 @@ const server = http.createServer((req, res) => {
       socketRecord.activeRequests = Math.max(0, socketRecord.activeRequests - 1);
       socketRecord.lastActivityAt = Date.now();
     }
-    if (reason === "completed") connectionCounters.requestsCompleted += 1;
-    else connectionCounters.requestsAborted += 1;
+    if (reason === "completed") {
+      connectionCounters.requestsCompleted += 1;
+      if (requestRecord.service) lastCompletedAtByService.set(requestRecord.service, new Date().toISOString());
+    } else connectionCounters.requestsAborted += 1;
   };
 
   let requestBody = "";
