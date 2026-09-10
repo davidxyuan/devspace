@@ -539,11 +539,16 @@ function Update-WatchdogRecoveryDecision($State, [string]$Service, $Health, $Set
         return [pscustomobject]@{ action="None"; reason="healthy"; record=$record }
     }
     $record.lastError = Protect-WatchdogText ([string](Get-WatchdogProperty $Health "error" "health check failed"))
-    $record.consecutiveFailures = [int]$record.consecutiveFailures + 1
     if ([bool](Get-WatchdogProperty $Health "identityConflict" $false)) {
         $record.phase = "RecoveryFailed"; $record.nextRetryUtc = $null
         return [pscustomobject]@{ action="None"; reason="identity_conflict"; record=$record }
     }
+    if ([bool](Get-WatchdogProperty $Health "busyIndeterminate" $false) -and [bool](Get-WatchdogProperty $Health "activeRequestProtected" $false)) {
+        $record.phase = "Busy"
+        $record.nextRetryUtc = $null
+        return [pscustomobject]@{ action="None"; reason="active_request"; record=$record }
+    }
+    $record.consecutiveFailures = [int]$record.consecutiveFailures + 1
     if ([bool](Get-WatchdogProperty $Health "busyIndeterminate" $false)) {
         $transportUnreachable = -not [bool](Get-WatchdogProperty $Health "httpReachable" $false)
         $hungTransportConfirmed = $transportUnreachable -and [int]$record.consecutiveFailures -ge [int]$Settings.busyTransportFailureThreshold

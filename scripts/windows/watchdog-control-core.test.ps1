@@ -118,8 +118,17 @@ try {
     Assert-Equal "maintenance never recovers" (Update-WatchdogRecoveryDecision $maintenanceState "devspace" $failed $testSettings $now).reason "maintenance"
     $busy = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;identityConflict=$false;httpReachable=$true;error="long MCP call"}
     Assert-Equal "busy reachable service never restarts" (Update-WatchdogRecoveryDecision (New-WatchdogState $config) "devspace" $busy $testSettings $now).reason "busy_indeterminate"
+    $protectedState = New-WatchdogState $config
+    $protectedBusy = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;activeRequestProtected=$true;identityConflict=$false;httpReachable=$false;error="active MCP request"}
+    for ($i = 1; $i -le ($testSettings.busyTransportFailureThreshold + 2); $i++) {
+        $protectedDecision = Update-WatchdogRecoveryDecision $protectedState "hermes" $protectedBusy $testSettings $now.AddSeconds($i)
+        Assert-Equal "active request suppresses self-recovery $i" $protectedDecision.reason "active_request"
+        Assert-Equal "active request does not accumulate transport failures $i" $protectedDecision.record.consecutiveFailures 0
+    }
+    $protectedConflict = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;activeRequestProtected=$true;identityConflict=$true;httpReachable=$false;error="wrong owner"}
+    Assert-Equal "identity conflict overrides active request protection" (Update-WatchdogRecoveryDecision (New-WatchdogState $config) "hermes" $protectedConflict $testSettings $now).record.phase "RecoveryFailed"
     $hungState = New-WatchdogState $config
-    $hung = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;identityConflict=$false;httpReachable=$false;error="transport timeout"}
+    $hung = [pscustomobject]@{healthy=$false;busyIndeterminate=$true;activeRequestProtected=$false;identityConflict=$false;httpReachable=$false;error="transport timeout"}
     for ($i = 1; $i -lt $testSettings.busyTransportFailureThreshold; $i++) {
         Assert-Equal "unreachable busy transport confirms before hung threshold $i" (Update-WatchdogRecoveryDecision $hungState "hermes" $hung $testSettings $now.AddSeconds($i)).reason "busy_indeterminate"
     }
@@ -333,6 +342,10 @@ try {
     Assert-True "dashboard does not bind all interfaces" (-not $traySource.Contains("0.0.0.0"))
     Assert-Contains "dashboard checks Origin" $traySource 'Invalid Origin header.'
     Assert-Contains "dashboard checks control token" $traySource 'x-devspace-control-token'
+    Assert-Contains "manual service actions reload on-disk config" $traySource 'function Refresh-ManualActionConfig'
+    Assert-Contains "manual service action config reload happens before service selection" $traySource 'Refresh-ManualActionConfig'
+    Assert-Contains "manual config reload rejects stateDir changes" $traySource 'Watchdog stateDir changed on disk; restart the Host before using service controls.'
+    Assert-Contains "manual config reload rejects dashboard port changes" $traySource 'Dashboard port changed on disk; restart the Host before using service controls.'
     Assert-Contains "control JSON preserves empty arrays" $traySource 'ConvertTo-Json -InputObject $Value'
     Assert-Contains "dashboard bounds request body" $traySource '$contentLength -gt 65536'
     Assert-True "dashboard avoids dynamic HTML injection" (-not $dashboardSource.Contains("innerHTML"))
@@ -414,6 +427,8 @@ try {
     Assert-Contains "thin Tray cross-session stop reaches every active Tray" $trayUiSource '[System.Threading.EventResetMode]::ManualReset'
     Assert-Contains "thin Tray mutex remains session-local" $trayUiSource '"Local\DevSpaceWatchdogTrayUi-$stableHash"'
     Assert-Contains "manual Host repair queues background work" $trayUiSource '$script:trayShared.RepairRequested = $true'
+    Assert-Contains "Exit Tray only exits the UI" $trayUiSource '$script:trayShared.ExitRequested = $true'
+    Assert-True "Exit Tray no longer persists the manual-stop flag" (-not $trayUiSource.Contains('Tray exited by user'))
     Assert-Contains "forced Host repair is Host-only" $trayUiSource '"RepairHost"'
     Assert-True "thin Tray Host repair avoids ExecutionPolicy Bypass" (-not $trayUiSource.Contains('"ExecutionPolicy", "Bypass"'))
     Assert-True "thin Tray does not host dashboard listener" (-not $trayUiSource.Contains('TcpListener'))
@@ -427,6 +442,7 @@ try {
     Assert-Contains "installer recognizes legacy monolithic Tray heartbeat" $installerSource 'legacyHeartbeat'
     Assert-Contains "installer validates dashboard ownership from heartbeat" $installerSource 'expectedDashboardUrl'
     Assert-Contains "bootstrap starts Host role" $bootstrapSource '"Host"'
+    Assert-Contains "bootstrap gives roles time to drain before force fallback" $bootstrapSource 'AddSeconds(10)'
     Assert-Contains "bootstrap starts thin Tray role" $bootstrapSource 'devspace-watchdog-tray-ui.ps1'
     Assert-Contains "installer stops installed roles through bootstrap" $installerSource 'Invoke-InstalledWatchdogStop'
     Assert-Contains "installer starts installed roles through bootstrap" $installerSource 'Invoke-InstalledWatchdogRun'
@@ -444,6 +460,9 @@ try {
     Assert-Contains "Hermes local health defers MCP protocol proof to public probe" $coreSource 'mcp=checked_separately'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
     Assert-True "recovery executor no longer re-blocks confirmed busy transport" (-not $coreSource.Contains('Busy or indeterminate service blocks automatic recovery.'))
+    Assert-Contains "active MCP requests protect busy transport from self-recovery" $coreSource 'activeRequestProtected'
+    Assert-Contains "Tray reads Router active request count" $traySource "'activeRequests'"
+    Assert-Contains "Tray stops protection once Router marks request suspect" $traySource "'suspectRequests'"
     Assert-Contains "managed launches reuse hidden console" $coreSource 'NoNewWindow = $true'
     Assert-True "installer snapshots task XML before temporary quiesce" ($installerSource.IndexOf('$legacyTaskBackups = @()') -lt $installerSource.IndexOf('Disable-ScheduledTask'))
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))

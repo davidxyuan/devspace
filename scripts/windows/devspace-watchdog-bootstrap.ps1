@@ -293,7 +293,10 @@ function Stop-RoleFromHeartbeat([string]$HeartbeatPath) {
 function Stop-RoleReliably([string]$HeartbeatPath, [string]$ScriptPath, [string]$ChildMode) {
     if (-not (Test-RoleRunning $HeartbeatPath)) { Remove-StaleHeartbeat $HeartbeatPath; return }
     Start-HiddenWatchdogProcess $ScriptPath $ChildMode
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(2)
+    # Give the role enough time to drain HTTP/runspace work after the stop event.
+    # Two seconds was too aggressive on production PCs and forced an unnecessary
+    # cross-process Kill fallback while the same-user role was still exiting.
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
     while ((Test-RoleRunning $HeartbeatPath) -and [DateTimeOffset]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 100
     }

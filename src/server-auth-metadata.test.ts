@@ -13,6 +13,10 @@ assert.match(
   /if \(config\.widgets !== "off"\) \{\s*registerAppResource\(/,
   "widgets=off must not advertise the workspace app resource",
 );
+assert.match(serverSource, /inspectBatch: "inspect_batch"/, "read-only batch inspection tool must stay registered");
+assert.match(serverSource, /\.min\(2\)\s*\.max\(12\)/, "batch inspection must stay bounded to 2-12 operations");
+assert.match(serverSource, /No writes or shell commands are allowed\./, "batch inspection must remain read-only");
+assert.match(serverSource, /Prefer \$\{toolNames\.inspectBatch\} when two or more independent read\/search\/list operations are needed/, "server instructions should prefer one batch round trip for independent inspections");
 
 const stateDir = mkdtempSync(join(tmpdir(), "devspace-server-auth-test-"));
 const publicBaseUrl = "https://example.ngrok-free.dev/tyo/devspace_chatgpt";
