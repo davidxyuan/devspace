@@ -481,6 +481,7 @@ try {
     Assert-True "installer retains legacy task" (-not $installerSource.Contains("Unregister-ScheduledTask"))
     Assert-Contains "installer refuses unverified skip-start migration" $installerSource 'Tray migration cannot use -SkipStart'
     $stackInstallerSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-devspace-watchdog.ps1"), [System.Text.Encoding]::UTF8)
+    Assert-Contains "stack installer emits Hermes v0.10 owner activation gate" $stackInstallerSource 'HERMES_GPT_OWNER_ACTIVE=1'
     Assert-Contains "stack installer supports Tray-only mode" $stackInstallerSource '[switch]$NoLegacyPoller'
     Assert-Contains "stack installer accepts owner token via environment" $stackInstallerSource '$env:DEVSPACE_OWNER_TOKEN'
     Assert-Contains "Tray-only mode uses disable marker" $stackInstallerSource 'legacy-watchdog-poller.disabled'

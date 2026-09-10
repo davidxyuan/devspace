@@ -737,7 +737,10 @@ if ($installHermes) {
         $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_LEVEL=$level`""
         $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_APPLY_MODE=$(if ($hermesCapabilities.operatorDirect) { 'direct' } else { 'dry_run' })`""
     }
-    if ($hermesCapabilities.ownerMode) { $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACK=I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"' }
+    if ($hermesCapabilities.ownerMode) {
+        $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACTIVE=1"'
+        $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACK=I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"'
+    }
     $hermesFullAccessEnv = $hermesCapabilityEnv -join [Environment]::NewLine
     $hermesCommandContent = @"
 @echo off
