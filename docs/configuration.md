@@ -39,6 +39,38 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
 
+## Native Artifact Download
+
+Native-file download is disabled by default. Enable it when ChatGPT needs to hand
+an attached or generated file into an already-open workspace:
+
+```bash
+DEVSPACE_ARTIFACTS=1 npx @waishnav/devspace serve
+```
+
+This feature currently supports Linux. It is not registered on macOS, Windows,
+or BSD because the secure publication path depends on traversable,
+descriptor-anchored directory paths provided by Linux procfs.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEVSPACE_ARTIFACTS` | `0` | Expose `download_artifact` for trusted native files. |
+| `DEVSPACE_ARTIFACT_MAX_FILE_BYTES` | `104857600` | Maximum streamed size of one file (100 MiB). |
+
+The same settings may be persisted in `~/.devspace/config.json` as
+`artifactsEnabled` and `artifactMaxFileBytes`.
+
+`download_artifact` accepts the native file object supplied by the MCP connector,
+a `workspaceId` returned by `open_workspace`, and a relative workspace `path`.
+DevSpace safely creates missing parent directories, refuses to overwrite an
+existing destination, and returns only the normalized workspace-relative path.
+It does not accept conflict modes, expected hashes, arbitrary URL strings, local
+paths, embedded credentials, or extra object fields.
+
+There is no artifact root, total quota, TTL, pinning, persistent database record,
+or background artifact cleanup service. See [Native File Download](artifact-exchange.md)
+for the supported connector shape and security boundaries.
+
 ## OAuth
 
 DevSpace uses a single-user OAuth approval flow.
@@ -92,7 +124,7 @@ sessions.
 | Variable | Purpose |
 | --- | --- |
 | `DEVSPACE_SKILLS` | Set to `0` to hide skills. Enabled by default. |
-| `DEVSPACE_SUBAGENTS` | Set to `1` to expose configured agent profiles as Subagents. Experimental and disabled by default. |
+| `DEVSPACE_SUBAGENTS` | Optional master override for the persisted Subagents configuration. |
 | `DEVSPACE_AGENT_DIR` | Defaults to `~/.codex`; its `skills` child is loaded for compatibility. |
 | `DEVSPACE_SKILL_PATHS` | Optional comma-separated additional skill directories. |
 
@@ -104,7 +136,7 @@ DevSpace discovers standard Agent Skills from:
 
 It also keeps compatibility with:
 
-- the bundled `subagent-delegation` skill when `DEVSPACE_SUBAGENTS=1`, unless `~/.devspace/skills/subagent-delegation/SKILL.md` exists
+- the bundled `subagents` skill when Subagents are enabled, unless `~/.devspace/skills/subagents/SKILL.md` exists
 - `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
 - additional paths from `DEVSPACE_SKILL_PATHS`
 
@@ -114,13 +146,72 @@ from:
 - `~/.devspace/agents/*.md`
 - project `.devspace/agents/*.md`
 
+Enable providers and set their defaults in `~/.devspace/config.json`:
+
+```json
+{
+  "subagents": {
+    "enabled": true,
+    "providers": [
+      {
+        "id": "codex",
+        "enabled": true,
+        "model": "gpt-5.4",
+        "effort": "high"
+      },
+      {
+        "id": "claude",
+        "enabled": true,
+        "model": "sonnet"
+      },
+      {
+        "id": "grok",
+        "enabled": true,
+        "model": "grok-4.5",
+        "effort": "low"
+      }
+    ]
+  }
+}
+```
+
+Each entry controls one provider. Providers omitted from the array are disabled.
+`model` and `effort` are optional defaults; an invocation override wins over a
+profile value, which wins over the provider default. The legacy boolean
+`"subagents": true` remains readable and enables every provider, but new
+configuration should use the explicit object form.
+
+`devspace agents targets` shows usable providers and profiles for the current
+workspace. Add `--json` for a compact list of exact target names and their
+selection metadata. Disabled, unavailable, and unconfigured providers are
+omitted. Provider availability is runtime state and never rewrites the
+configuration.
+
+Grok Build is discovered from the `grok` executable. Authenticate it with
+`grok login` or `XAI_API_KEY`; DevSpace does not read or store Grok credentials.
+Grok supports `grok-build` by default and validates explicit model and effort
+values against the ACP session metadata when available. Set `GROK_COMMAND` when
+the executable is not on the normal PATH. If your Grok installation selects a
+custom agent profile, set `GROK_AGENT_PROFILE` to that profile's path; DevSpace
+passes it to `grok agent stdio` without writing to Grok's configuration.
+
 `open_workspace` returns a compact catalog containing profile names,
-descriptions, providers, and optional models/thinking levels so the host model can choose an
-agent without reading provider-specific launch details. `devspace agents ls`
+descriptions, providers, and optional models/effort levels so the host model can choose an
+agent without reading provider-specific launch details. Disabled or unavailable
+providers and their profiles are omitted from this model-facing catalog. `devspace agents ls`
 lists existing subagent sessions for the current workspace, scoped by the
-workspace environment injected into shell commands. The `subagent-delegation`
+workspace environment injected into shell commands. The `subagents`
 skill teaches the model to use only the minimal `devspace agents ls`,
-`devspace agents run`, and `devspace agents show` workflow.
+`devspace agents targets`, `devspace agents run`, `devspace agents continue`,
+and `devspace agents show` workflow.
+
+For Codex, Claude Code, OpenCode, Pi, or another supported Coding Agent, use
+the Skills CLI to install the same skill. DevSpace setup prints this command but
+does not run it or write into agent skill directories:
+
+```bash
+npx skills add Waishnav/devspace --skill subagents --global
+```
 
 Starter profile templates are available under `examples/agents/`. Copy or adapt
 them into one of the active profile directories before use.
@@ -158,6 +249,7 @@ DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -base64 32)" \
 DEVSPACE_ALLOWED_ROOTS="$HOME/personal,$HOME/work" \
 DEVSPACE_PUBLIC_BASE_URL="https://devspace.example.com" \
 DEVSPACE_WORKTREE_ROOT="$HOME/.devspace/worktrees" \
+DEVSPACE_ARTIFACTS="1" \
 DEVSPACE_TOOL_MODE="minimal" \
 DEVSPACE_WIDGETS="full" \
 npx @waishnav/devspace serve

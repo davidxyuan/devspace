@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 export function devspaceConfigDir(env = process.env) {
     return resolve(expandHomePath(env.DEVSPACE_CONFIG_DIR ?? join(homedir(), ".devspace")));
@@ -48,20 +48,6 @@ export function writeDevspaceAuth(auth, env = process.env) {
 }
 export function generateOwnerToken() {
     return randomBytes(32).toString("base64url");
-}
-export function ensureDevspaceDefaultSkills(env = process.env) {
-    const targetPath = join(devspaceSkillsDir(env), "subagent-delegation", "SKILL.md");
-    if (existsSync(targetPath))
-        return [];
-    const sourcePath = new URL("../skills/subagent-delegation/SKILL.md", import.meta.url);
-    mkdirSync(dirname(targetPath), { recursive: true });
-    writeFileSync(targetPath, readFileSync(sourcePath, "utf8"), { mode: 0o644 });
-    return [targetPath];
-}
-export function resolveSubagentsFlag(config, env = process.env) {
-    if (env.DEVSPACE_SUBAGENTS === undefined)
-        return config.subagents;
-    return ["1", "true", "yes", "on"].includes(env.DEVSPACE_SUBAGENTS.toLowerCase());
 }
 function readJsonFile(filePath) {
     try {

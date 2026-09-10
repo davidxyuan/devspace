@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { openDatabase } from "./db/client.js";
-import { workspaceSessions, } from "./db/schema.js";
+import { workspaceConversationBindings, workspaceSessions, } from "./db/schema.js";
 export class SqliteWorkspaceStore {
     database;
     constructor(stateDir) {
@@ -52,6 +52,55 @@ export class SqliteWorkspaceStore {
             .where(eq(workspaceSessions.id, id))
             .run();
     }
+    getConversationBinding(conversationScopeId, targetKey) {
+        const row = this.database.db
+            .select()
+            .from(workspaceConversationBindings)
+            .where(and(eq(workspaceConversationBindings.conversationScopeId, conversationScopeId), eq(workspaceConversationBindings.targetKey, targetKey)))
+            .get();
+        return row ? rowToWorkspaceConversationBinding(row) : undefined;
+    }
+    setConversationBinding(input) {
+        const now = new Date().toISOString();
+        const row = this.database.db
+            .insert(workspaceConversationBindings)
+            .values({
+            conversationScopeId: input.conversationScopeId,
+            targetKey: input.targetKey,
+            workspaceSessionId: input.workspaceSessionId,
+            createdAt: now,
+            lastUsedAt: now,
+        })
+            .onConflictDoUpdate({
+            target: [
+                workspaceConversationBindings.conversationScopeId,
+                workspaceConversationBindings.targetKey,
+            ],
+            set: {
+                workspaceSessionId: input.workspaceSessionId,
+                lastUsedAt: now,
+            },
+        })
+            .returning()
+            .get();
+        if (!row) {
+            throw new Error("Conversation workspace binding upsert returned no row.");
+        }
+        return rowToWorkspaceConversationBinding(row);
+    }
+    touchConversationBinding(conversationScopeId, targetKey) {
+        this.database.db
+            .update(workspaceConversationBindings)
+            .set({ lastUsedAt: new Date().toISOString() })
+            .where(and(eq(workspaceConversationBindings.conversationScopeId, conversationScopeId), eq(workspaceConversationBindings.targetKey, targetKey)))
+            .run();
+    }
+    deleteConversationBinding(conversationScopeId, targetKey) {
+        this.database.db
+            .delete(workspaceConversationBindings)
+            .where(and(eq(workspaceConversationBindings.conversationScopeId, conversationScopeId), eq(workspaceConversationBindings.targetKey, targetKey)))
+            .run();
+    }
     close() {
         this.database.close();
     }
@@ -69,6 +118,15 @@ function rowToWorkspaceSession(row) {
         baseRef: row.baseRef ?? undefined,
         baseSha: row.baseSha ?? undefined,
         managed: row.managed === "true",
+        createdAt: row.createdAt,
+        lastUsedAt: row.lastUsedAt,
+    };
+}
+function rowToWorkspaceConversationBinding(row) {
+    return {
+        conversationScopeId: row.conversationScopeId,
+        targetKey: row.targetKey,
+        workspaceSessionId: row.workspaceSessionId,
         createdAt: row.createdAt,
         lastUsedAt: row.lastUsedAt,
     };

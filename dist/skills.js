@@ -4,13 +4,13 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSkills, } from "@earendil-works/pi-coding-agent";
 import { expandHomePath, isPathInsideRoot } from "./roots.js";
-const SUBAGENT_DELEGATION_NAME = "subagent-delegation";
-const SUBAGENT_DELEGATION_SKILL = join(SUBAGENT_DELEGATION_NAME, "SKILL.md");
+const SUBAGENTS_SKILL_NAME = "subagents";
+const SUBAGENTS_SKILL = join(SUBAGENTS_SKILL_NAME, "SKILL.md");
 function bundledSkillsDir() {
     return fileURLToPath(new URL("../skills", import.meta.url));
 }
-function hasSubagentDelegationSkill(skillDir) {
-    return existsSync(join(skillDir, SUBAGENT_DELEGATION_SKILL));
+function hasSubagentsSkill(skillDir) {
+    return existsSync(join(skillDir, SUBAGENTS_SKILL));
 }
 export function effectiveSkillPaths(config, cwd) {
     const bundledSkills = bundledSkillsDir();
@@ -19,7 +19,7 @@ export function effectiveSkillPaths(config, cwd) {
         resolve(cwd, ".agents", "skills"),
         config.devspaceSkillsDir,
         join(config.agentDir, "skills"),
-        config.subagents && !hasSubagentDelegationSkill(config.devspaceSkillsDir)
+        config.subagents.enabled && !hasSubagentsSkill(config.devspaceSkillsDir)
             ? bundledSkills
             : undefined,
     ];
@@ -46,13 +46,13 @@ export function loadWorkspaceSkills(config, cwd) {
         skillPaths: effectiveSkillPaths(config, cwd),
         includeDefaults: false,
     });
-    if (config.subagents)
+    if (config.subagents.enabled)
         return result;
     return {
-        skills: result.skills.filter((skill) => skill.name !== SUBAGENT_DELEGATION_NAME),
+        skills: result.skills.filter((skill) => skill.name !== SUBAGENTS_SKILL_NAME),
         diagnostics: result.diagnostics.filter((diagnostic) => {
             const collision = diagnostic.collision;
-            return !(collision?.resourceType === "skill" && collision.name === SUBAGENT_DELEGATION_NAME);
+            return !(collision?.resourceType === "skill" && collision.name === SUBAGENTS_SKILL_NAME);
         }),
     };
 }

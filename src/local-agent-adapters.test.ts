@@ -6,13 +6,8 @@ import {
   extractOpenCodeFinalResponse,
   extractPiFinalResponse,
   extractPiProviderError,
-  extractPiStreamingText,
-  opencodeStartupTimeoutMs,
-  parseOpencodeModel,
-  parseOpencodePromptModel,
-  piCommandEnvironment,
   resolveAcpModelConfigUpdate,
-  resolveAcpThinkingConfigUpdate,
+  resolveAcpEffortConfigUpdate,
 } from "./local-agent-adapters.js";
 import { removeDevspaceNodeModulesBinFromPath } from "./local-agent-path.js";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
@@ -24,12 +19,13 @@ const providers: LocalAgentProvider[] = [
   "pi",
   "cursor",
   "copilot",
+  "grok",
 ];
 
 for (const provider of providers) {
   const adapter = createLocalAgentAdapter(provider);
   assert.equal(adapter.provider, provider);
-  assert.equal(typeof adapter.run, "function");
+  assert.equal(typeof adapter.runtimeKey, "function");
 }
 
 assert.deepEqual(
@@ -114,7 +110,7 @@ assert.throws(
 );
 
 assert.deepEqual(
-  resolveAcpThinkingConfigUpdate({
+  resolveAcpEffortConfigUpdate({
     sessionId: "session_1",
     newSessionResponse: {
       configOptions: [
@@ -134,7 +130,7 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-  resolveAcpThinkingConfigUpdate({
+  resolveAcpEffortConfigUpdate({
     sessionId: "session_2",
     newSessionResponse: {
       configOptions: [
@@ -160,7 +156,7 @@ assert.deepEqual(
 );
 
 assert.throws(
-  () => resolveAcpThinkingConfigUpdate({
+  () => resolveAcpEffortConfigUpdate({
     sessionId: "session_3",
     newSessionResponse: {
       configOptions: [
@@ -177,21 +173,21 @@ assert.throws(
 );
 
 assert.throws(
-  () => resolveAcpThinkingConfigUpdate(undefined, "high", "copilot"),
+  () => resolveAcpEffortConfigUpdate(undefined, "high", "copilot"),
   /session metadata/,
 );
 
 assert.throws(
-  () => resolveAcpThinkingConfigUpdate({ newSessionResponse: { configOptions: [] } }, "high", "copilot"),
+  () => resolveAcpEffortConfigUpdate({ newSessionResponse: { configOptions: [] } }, "high", "copilot"),
   /session id/,
 );
 
 assert.throws(
-  () => resolveAcpThinkingConfigUpdate({
+  () => resolveAcpEffortConfigUpdate({
     sessionId: "session_4",
     newSessionResponse: { configOptions: [] },
   }, "high", "copilot"),
-  /does not expose a thinking option/,
+  /does not expose a reasoning effort option/,
 );
 
 {
@@ -220,7 +216,7 @@ assert.equal(
       {
         info: { id: "msg_assistant", role: "assistant" },
         parts: [
-          { type: "reasoning", text: "thinking" },
+          { type: "reasoning", text: "effort" },
           { type: "tool", tool: "grep", input: { pattern: "secret" }, output: "src/foo.ts" },
           { type: "text", text: "Final OpenCode response." },
         ],
@@ -242,7 +238,7 @@ assert.equal(
         id: "msg_assistant",
         type: "assistant",
         content: [
-          { type: "reasoning", text: "thinking" },
+          { type: "reasoning", text: "effort" },
           { type: "tool", name: "grep", state: { status: "completed", result: "src/foo.ts" } },
           { type: "text", text: "Final OpenCode v2 response." },
         ],
@@ -260,7 +256,7 @@ assert.equal(
         role: "assistant",
         structured: { summary: "structured answer" },
       },
-      parts: [{ type: "reasoning", text: "thinking" }],
+      parts: [{ type: "reasoning", text: "effort" }],
     },
   }),
   '{"summary":"structured answer"}',
@@ -271,7 +267,7 @@ assert.equal(
     data: {
       info: { id: "msg_tool_only", role: "assistant" },
       parts: [
-        { type: "reasoning", text: "thinking" },
+        { type: "reasoning", text: "effort" },
         { type: "tool", tool: "bash", input: { command: "cat src/secret.ts" }, output: "secret" },
       ],
     },
@@ -346,27 +342,6 @@ assert.equal(
   "(0 , _piAi.streamSimpleOpenAIResponses) is not a function",
 );
 
-assert.equal(
-  extractPiStreamingText([
-    {
-      type: "message_update",
-      message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden" }] },
-      assistantMessageEvent: { type: "thinking_delta", delta: "hidden" },
-    },
-    {
-      type: "message_update",
-      message: { role: "assistant", content: [{ type: "text", text: "Final " }] },
-      assistantMessageEvent: { type: "text_delta", delta: "Final " },
-    },
-    {
-      type: "message_update",
-      message: { role: "assistant", content: [{ type: "text", text: "Pi response." }] },
-      assistantMessageEvent: { type: "text_delta", delta: "Pi response." },
-    },
-  ]),
-  "Final Pi response.",
-);
-
 {
   const devspaceBin = `${process.cwd()}/node_modules/.bin`;
   const userBin = "/home/user/.local/bin";
@@ -375,44 +350,4 @@ assert.equal(
     userBin,
   );
 
-  const env = piCommandEnvironment({
-    PATH: [devspaceBin, userBin].join(delimiter),
-  });
-
-  assert.equal(env.PATH, userBin);
 }
-
-{
-  const devspaceBin = `${process.cwd()}/node_modules/.bin`;
-  const env = piCommandEnvironment({
-    PI_COMMAND: "/custom/pi",
-    PATH: [devspaceBin, "/home/user/.local/bin"].join(delimiter),
-  });
-
-  assert.equal(env.PATH, [devspaceBin, "/home/user/.local/bin"].join(delimiter));
-}
-
-assert.equal(opencodeStartupTimeoutMs({}), 30_000);
-assert.equal(opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "45000" }), 45_000);
-assert.throws(
-  () => opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "4999" }),
-  /between 5000 and 120000/,
-);
-assert.throws(
-  () => opencodeStartupTimeoutMs({ DEVSPACE_OPENCODE_START_TIMEOUT_MS: "not-a-number" }),
-  /must be an integer/,
-);
-
-assert.deepEqual(parseOpencodeModel("deepseek-v4-flash-free"), {
-  providerID: "opencode",
-  id: "deepseek-v4-flash-free",
-});
-assert.deepEqual(parseOpencodeModel("opencode/mimo-v2.5-free", "high"), {
-  providerID: "opencode",
-  id: "mimo-v2.5-free",
-  variant: "high",
-});
-assert.deepEqual(parseOpencodePromptModel("opencode/deepseek-v4-flash-free"), {
-  providerID: "opencode",
-  modelID: "deepseek-v4-flash-free",
-});
