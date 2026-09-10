@@ -40,7 +40,15 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "0" }).skillsEnabled, fal
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "1" }).skillsEnabled, true);
 assert.deepEqual(loadConfig({ ...baseEnv, DEVSPACE_SUBAGENTS: "1" }).subagents, {
   enabled: true,
-  providers: [],
+  providers: [
+    { id: "codex", enabled: true },
+    { id: "claude", enabled: true },
+    { id: "opencode", enabled: true },
+    { id: "pi", enabled: true },
+    { id: "cursor", enabled: true },
+    { id: "copilot", enabled: true },
+    { id: "grok", enabled: true },
+  ],
 });
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "invalid" }),

@@ -23,16 +23,19 @@ const subagentsSchema = z.object({
     }
 });
 export function resolveSubagentsConfig(value, env = process.env) {
+    const envEnabled = env.DEVSPACE_SUBAGENTS === undefined
+        ? undefined
+        : parseBoolean(env.DEVSPACE_SUBAGENTS);
     const stored = value === undefined
-        ? { enabled: false, providers: [] }
+        ? envEnabled === true
+            ? legacySubagentsConfig(true)
+            : { enabled: false, providers: [] }
         : typeof value === "boolean"
             ? legacySubagentsConfig(value)
             : subagentsSchema.parse(value);
     return {
         ...stored,
-        enabled: env.DEVSPACE_SUBAGENTS === undefined
-            ? stored.enabled
-            : parseBoolean(env.DEVSPACE_SUBAGENTS),
+        enabled: envEnabled ?? stored.enabled,
     };
 }
 export function subagentProviderConfig(config, provider) {

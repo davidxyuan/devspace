@@ -31,7 +31,7 @@ $create=$ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementA
 $supervisorSpec=$spec; $supervisorTask=$null; $supervisorTaskCreated=$false; $script:registrations=0; $script:failRegistration=$false
 function New-ScheduledTaskAction { param($Execute,$Argument) if ($Execute -ne $spec.executable -or $Argument -cne $spec.arguments) { throw 'Wrong action' }; return @{} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) if ($UserId -ne $spec.user -or $LogonType -ne 'Interactive' -or $RunLevel -ne 'Limited') { throw 'Wrong principal' }; return @{} }
-function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) if ($ExecutionTimeLimit -ne [TimeSpan]::Zero -or $MultipleInstances -ne 'IgnoreNew' -or -not $AllowStartIfOnBatteries -or -not $DontStopIfGoingOnBatteries) { throw 'Wrong settings' }; return @{} }
+function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries,$RestartCount,$RestartInterval) if ($ExecutionTimeLimit -ne [TimeSpan]::Zero -or $MultipleInstances -ne 'IgnoreNew' -or -not $AllowStartIfOnBatteries -or -not $DontStopIfGoingOnBatteries -or $RestartCount -ne 3 -or $RestartInterval -ne (New-TimeSpan -Minutes 1)) { throw 'Wrong settings' }; return @{} }
 function Register-ScheduledTask { param($TaskName,$TaskPath,$Action,$Principal,$Settings) if ($script:failRegistration) { throw 'Injected registration failure' }; $script:registrations++ }
 Invoke-Expression $create.Extent.Text
 if (-not $supervisorTaskCreated -or $script:registrations -ne 1) { throw 'Creation not tracked for rollback' }

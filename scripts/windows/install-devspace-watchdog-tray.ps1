@@ -385,7 +385,7 @@ try {
     if (-not $supervisorTask) {
         $action = New-ScheduledTaskAction -Execute $supervisorSpec.executable -Argument $supervisorSpec.arguments
         $principal = New-ScheduledTaskPrincipal -UserId $supervisorSpec.user -LogonType Interactive -RunLevel Limited
-        $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
         Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Action $action -Principal $principal -Settings $taskSettings -ErrorAction Stop | Out-Null
         $supervisorTaskCreated = $true
     }
