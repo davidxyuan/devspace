@@ -1886,7 +1886,11 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
             $applied = Set-WatchdogConfiguration $ConfigPath $editable
             $activeConfig = $applied.config
         }
-        $targets = @(@($impact.requiresServiceRestart) + "ngrok" | Select-Object -Unique)
+        # An ngrok account/profile switch changes the public connectivity boundary.
+        # Restart every enabled core service so process state, public-base settings,
+        # connectors, and Dashboard uptime all begin from the same switch boundary.
+        $targets = @(@("devspace", "hermes", "router", "ngrok") | Where-Object { Test-WatchdogServiceEnabled $_ $oldConfig })
+        Set-WatchdogProperty $impact "requiresServiceRestart" $targets
         foreach ($service in @("ngrok", "router", "devspace", "hermes")) {
             if ($service -notin $targets -or -not (Test-WatchdogServiceEnabled $service $oldConfig)) { continue }
             $result = Stop-WatchdogManagedService $service $oldConfig

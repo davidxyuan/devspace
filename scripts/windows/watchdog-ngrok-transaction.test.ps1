@@ -75,7 +75,12 @@ try {
     $result = Invoke-WatchdogNgrokAccountSwitch $ConfigPath $payload $desired
     Assert-True "token-only switch succeeds" $result.result.success
     Assert-True "token-only switch has no configuration backup" ($null -eq $result.result.backupId)
-    Assert-Equal "token-only switch restarts once with new credential" ($script:serviceCalls -join ",") "stop:ngrok,start:ngrok:new-test-record"
+    Assert-Equal "token-only switch restarts every enabled core service" $script:serviceCalls.Count 8
+    foreach ($service in @("devspace", "hermes", "router", "ngrok")) {
+        Assert-True "token-only switch stops $service" ($script:serviceCalls -contains "stop:$service")
+        Assert-True "token-only switch starts $service with new credential" ($script:serviceCalls -contains "start:$service`:new-test-record")
+    }
+    Assert-Equal "token-only switch impact reports all restarted services" ((@($result.result.impact.requiresServiceRestart | Sort-Object) -join ",")) "devspace,hermes,ngrok,router"
     Assert-True "token-only switch creates no configuration backup directory" (-not [System.IO.Directory]::Exists((Get-WatchdogBackupRoot $testRoot)))
 
     [System.IO.File]::WriteAllText($credentialPath, "old-test-record")
@@ -85,7 +90,10 @@ try {
     try { [void](Invoke-WatchdogNgrokAccountSwitch $ConfigPath $payload $desired) } catch { $errorText = $_.Exception.Message }
     Assert-True "failed token-only switch reports rollback" ($errorText -like "*was rolled back*")
     Assert-Equal "failed token-only switch restores previous credential" ([System.IO.File]::ReadAllText($credentialPath)) "old-test-record"
-    Assert-Equal "rollback restarts ngrok with restored credential" ($script:serviceCalls -join ",") "stop:ngrok,start:ngrok:new-test-record,stop:ngrok,start:ngrok:old-test-record"
+    foreach ($service in @("devspace", "hermes", "router", "ngrok")) {
+        Assert-True "rollback stops candidate $service" ($script:serviceCalls -contains "stop:$service")
+        Assert-True "rollback starts restored $service" ($script:serviceCalls -contains "start:$service`:old-test-record")
+    }
     Assert-Equal "public verification only once per candidate and rollback" $script:publicVerifications 3
 
     $script:failOldVerification = $true
