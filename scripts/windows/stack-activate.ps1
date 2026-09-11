@@ -63,13 +63,16 @@ function Assert-StackServiceReady([string]$Service, $Config) {
 }
 
 function Get-HermesGatewayServiceDirectory {
-    $home = [string]$env:HERMES_HOME
-    if ([string]::IsNullOrWhiteSpace($home)) {
-        $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $hermesHome = [string]$env:HERMES_HOME
+    if ([string]::IsNullOrWhiteSpace($hermesHome)) {
+        $local = [string]$env:LOCALAPPDATA
+        if ([string]::IsNullOrWhiteSpace($local)) {
+            $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        }
         if ([string]::IsNullOrWhiteSpace($local)) { return $null }
-        $home = Join-Path $local 'hermes'
+        $hermesHome = Join-Path $local 'hermes'
     }
-    return Join-Path ([IO.Path]::GetFullPath($home)) 'gateway-service'
+    return Join-Path ([IO.Path]::GetFullPath($hermesHome)) 'gateway-service'
 }
 
 function Test-HermesGatewayLauncherInstalled {

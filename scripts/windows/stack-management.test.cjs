@@ -73,6 +73,10 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   assert.equal(networkCalls, 0, "local inventory never performs remote requests");
   assert.equal(component(i, "node").installedVersion, "24.14.0");
   assert.equal(component(i, "node").detail, "");
+  const expectedGitPath = process.platform === "win32" && /[\\/]mingw64[\\/]bin[\\/]git\.exe$/i.test(gitPath)
+    ? path.resolve(path.dirname(gitPath), "..", "..", "cmd", "git.exe")
+    : gitPath;
+  assert.equal(component(i, "git").path, fs.existsSync(expectedGitPath) ? expectedGitPath : gitPath, "Windows Git should prefer the cmd launcher over mingw64/bin when available");
   assert.equal(component(i, "devspace-tray-fork").source.head, forkHead);
   assert.equal(component(i, "devspace-tray-fork").source.dirty, false);
   assert.equal(action(i, "devspace-official", "install").enabled, false, "official package cannot silently replace active fork");

@@ -63,6 +63,13 @@ function findExecutable(names, env) {
   }
   return null;
 }
+function normalizeGitExecutable(file) {
+  if (!file) return null;
+  const resolved = path.resolve(file);
+  if (process.platform !== "win32" || !/[\\/]mingw64[\\/]bin[\\/]git\.exe$/i.test(resolved)) return resolved;
+  const cmdGit = path.resolve(path.dirname(resolved), "..", "..", "cmd", "git.exe");
+  return exists(cmdGit) ? cmdGit : resolved;
+}
 function configuredPath(value, fallback) { return safePath(value) || fallback || null; }
 function receiptFor(root) {
   let dir = root;
@@ -187,7 +194,7 @@ async function collectInventory(options = {}) {
   const manifest = json(path.join(packageRoot, "scripts", "windows", "tested-stack-manifest.json")) || {};
   const toolPaths = {
     node: configuredPath(w.nodePath, options.nodePath || process.execPath),
-    git: findExecutable(["git.exe", "git"], env),
+    git: normalizeGitExecutable(findExecutable(["git.exe", "git"], env)),
     python: configuredPath(w.hermesPython, findExecutable(["python.exe", "python3", "python"], env)),
     ngrok: configuredPath(w.ngrokPath, findExecutable(["ngrok.exe", "ngrok"], env)),
   };
@@ -352,7 +359,15 @@ async function executeComponentAction(plan, callbacks = {}) {
       if (locked?.integrity !== target.integrity || locked?.version !== target.version) throw new Error("下載套件與已核對版本不符。");
     } else {
       root = path.join(stage, "payload");
-      await invoke(tool("git").path, ["clone", "--no-checkout", "--filter=blob:none", "--", `https://github.com/${target.repository}.git`, root]);
+      try {
+        await invoke(tool("git").path, ["clone", "--no-checkout", "--filter=blob:none", "--", `https://github.com/${target.repository}.git`, root]);
+      } catch {
+        // Some Git for Windows builds/endpoint-security combinations can crash during partial clone.
+        // Retry once without object filtering; the pinned fetch + HEAD verification below still enforce identity.
+        fs.rmSync(root, { recursive: true, force: true });
+        log("Git partial clone failed; retrying candidate clone without --filter=blob:none.");
+        await invoke(tool("git").path, ["clone", "--no-checkout", "--", `https://github.com/${target.repository}.git`, root]);
+      }
       await invoke(tool("git").path, ["-C", root, "fetch", "--depth=1", "origin", target.commit]);
       await invoke(tool("git").path, ["-C", root, "checkout", "--detach", target.commit]);
       const head = await attempt(run, tool("git").path, ["-C", root, "rev-parse", "HEAD"]);

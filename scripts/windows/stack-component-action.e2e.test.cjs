@@ -5,11 +5,13 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { execFileSync, spawn, spawnSync } = require("node:child_process");
 const jobs = require("./stack-jobs.cjs");
 
 const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-const git = execFileSync("where.exe", ["git.exe"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
+const gitCandidates = execFileSync("where.exe", ["git.exe"], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
+const git = gitCandidates.find(candidate => /[\\/]cmd[\\/]git\.exe$/i.test(candidate)) || gitCandidates[0];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, description, timeout = 30000) {
   const deadline = Date.now() + timeout;
@@ -200,11 +202,13 @@ const remoteFixture = [
     write(configPath, config); write(path.join(installDir, "config.json"), { allowedRoots: [root] }); write(path.join(installDir, "auth.json"), { ownerToken: "fixture-owner" }); write(path.join(installDir, "watchdog-tray-state.json"), { desired: { devspace: "running", hermes: "running" } });
     fs.writeFileSync(serviceState, "start|" + oldHermesServer + "\n");
     const beforeConfig = fs.readFileSync(configPath), beforeAuth = fs.readFileSync(path.join(installDir, "auth.json")), beforeState = fs.readFileSync(path.join(installDir, "watchdog-tray-state.json"));
-    const gitConfig = path.join(root, "gitconfig"); runGit(["config", "--file", gitConfig, "url." + remoteRoot + ".insteadOf", "https://github.com/davidxyuan/devspace.git"]); runGit(["config", "--file", gitConfig, "url." + hermesRemoteRoot + ".insteadOf", "https://github.com/NousResearch/hermes-agent.git"]);
+    const gitConfig = path.join(root, "gitconfig");
+    const remoteUrl = pathToFileURL(remoteRoot).href, hermesRemoteUrl = pathToFileURL(hermesRemoteRoot).href;
+    runGit(["config", "--file", gitConfig, "url." + remoteUrl + ".insteadOf", "https://github.com/davidxyuan/devspace.git"]); runGit(["config", "--file", gitConfig, "url." + hermesRemoteUrl + ".insteadOf", "https://github.com/NousResearch/hermes-agent.git"]);
     const preload = path.join(root, "remote-fixture.cjs"); write(preload, remoteFixture);
     const gitDir = path.dirname(git);
     const minimalPath = [gitDir, path.dirname(process.execPath), path.join(process.env.SystemRoot || "C:\\Windows", "System32"), path.join(process.env.SystemRoot || "C:\\Windows", "System32", "Wbem")].join(path.delimiter);
-    const env = cleanEnv({ NODE_OPTIONS: "--require \"" + preload.replaceAll("\\", "/") + "\"", DEVSPACE_STACK_PACKAGE_ROOT: packageRoot, USERPROFILE: root, LOCALAPPDATA: path.join(root, "local"), PATH: minimalPath, GIT_CONFIG_GLOBAL: gitConfig, STACK_E2E_DEV_LATEST: latestHead, STACK_E2E_HERMES_LATEST: hermesLatestHead, STACK_E2E_CONFIG_PATH: configPath, STACK_E2E_SERVICE_STATE: serviceState, STACK_E2E_BOOTSTRAP_STATE: bootstrapState, STACK_E2E_FORCE_ROLLBACK_FAILURE: forceRollbackFailure });
+    const env = cleanEnv({ NODE_OPTIONS: "--require \"" + preload.replaceAll("\\", "/") + "\"", DEVSPACE_STACK_PACKAGE_ROOT: packageRoot, USERPROFILE: root, HOME: root, APPDATA: path.join(root, "roaming"), LOCALAPPDATA: path.join(root, "local"), HERMES_HOME: path.join(root, "local", "hermes"), PIP_CACHE_DIR: path.join(root, "pip-cache"), PSModuleAnalysisCachePath: path.join(root, "ps-module-cache"), PATH: minimalPath, GIT_CONFIG_GLOBAL: gitConfig, STACK_E2E_DEV_LATEST: latestHead, STACK_E2E_HERMES_LATEST: hermesLatestHead, STACK_E2E_CONFIG_PATH: configPath, STACK_E2E_SERVICE_STATE: serviceState, STACK_E2E_BOOTSTRAP_STATE: bootstrapState, STACK_E2E_FORCE_ROLLBACK_FAILURE: forceRollbackFailure });
     server = await startServer(path.join(scriptDir, "devspace-stack-setup.cjs"), installDir, env);
     await until(async () => (await request(server.base, "/api/components")).data?.components?.length === 12, "initial installed inventory");
     const refresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "component-refresh-e2e" } });
@@ -220,7 +224,7 @@ const remoteFixture = [
     await until(() => jobDone(installDir, action.data.jobId), "full component action worker");
     const finished = jobs.readJob(installDir, action.data.jobId);
     assert.equal(finished.phase, "failed", JSON.stringify(finished));
-    assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), "activation failure did not report the rollback result");
+    assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), `activation failure did not report the rollback result: ${JSON.stringify(finished)}`);
     assert.deepEqual(fs.readFileSync(configPath), beforeConfig, "failed candidate did not restore configuration bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), beforeAuth, "failed candidate changed auth bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), beforeState, "failed candidate changed tray state bytes");
