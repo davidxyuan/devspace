@@ -62,6 +62,38 @@ function Assert-StackServiceReady([string]$Service, $Config) {
     throw "Service $Service failed its local health check."
 }
 
+function Get-HermesGatewayServiceDirectory {
+    $home = [string]$env:HERMES_HOME
+    if ([string]::IsNullOrWhiteSpace($home)) {
+        $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        if ([string]::IsNullOrWhiteSpace($local)) { return $null }
+        $home = Join-Path $local 'hermes'
+    }
+    return Join-Path ([IO.Path]::GetFullPath($home)) 'gateway-service'
+}
+
+function Test-HermesGatewayLauncherInstalled {
+    $serviceDir = Get-HermesGatewayServiceDirectory
+    if ($serviceDir -and [IO.Directory]::Exists($serviceDir)) {
+        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    }
+    try {
+        if (@(Get-ScheduledTask -TaskName 'Hermes_Gateway*' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    } catch { }
+    return $false
+}
+
+function Refresh-HermesAgentGatewayLauncher([string]$AgentExe) {
+    $agentExePath = [IO.Path]::GetFullPath($AgentExe)
+    if (-not [IO.File]::Exists($agentExePath)) { throw 'Hermes Agent executable is missing while refreshing the gateway launcher.' }
+    $python = Join-Path (Split-Path $agentExePath -Parent) 'python.exe'
+    if (-not [IO.File]::Exists($python)) { throw 'Hermes Agent Python runtime is missing while refreshing the gateway launcher.' }
+    $output = & $python -c "from hermes_cli.gateway_windows import _write_task_script; print(_write_task_script())" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Hermes Agent gateway launcher refresh failed: $($output -join ' ')" }
+    return $true
+}
+
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $configPath = Join-Path $InstallDir 'devspace-watchdog.config.json'
 $lease = Enter-StackOperation $InstallDir
@@ -72,6 +104,8 @@ $wasRunning = $false
 $startCandidate = $false
 $hostWasRunning = $false
 $candidateActivated = $false
+$gatewayLauncherRefreshRequired = $false
+$gatewayLauncherRefreshed = $false
 $config = $null
 $change = $null
 try {
@@ -109,6 +143,15 @@ try {
     }
     Write-WatchdogAtomicJson $configPath $change.config 40
     $candidateActivated = $true
+    if ($candidate.kind -eq 'hermes-agent') {
+        $gatewayLauncherRefreshRequired = Test-HermesGatewayLauncherInstalled
+        if ($gatewayLauncherRefreshRequired) {
+            # Refresh the generated Scheduled Task/Startup launcher from the newly activated Agent.
+            # This keeps Hermes_Gateway.vbs/.cmd aligned with the candidate venv and launcher logic.
+            $gatewayLauncherRefreshed = $true
+            [void](Refresh-HermesAgentGatewayLauncher ([string]$candidate.hermesAgentExe))
+        }
+    }
     if ($startCandidate) {
         $result = Start-WatchdogManagedService $change.service $configPath $change.config
         if (-not $result.success) { throw $result.error }
@@ -142,6 +185,11 @@ try {
                 Assert-StackServiceStopped $change.service $change.config
             }
             Undo-InstallTransaction $transaction
+            if ($gatewayLauncherRefreshed -and $config.hermesAgentExe) {
+                # The launcher lives outside the install transaction. Regenerate it from the restored
+                # Agent so a failed update cannot leave a candidate VBS/CMD pointing at the wrong venv.
+                [void](Refresh-HermesAgentGatewayLauncher ([string]$config.hermesAgentExe))
+            }
             Restart-InstallLegacyProcesses $transaction
             if ($serviceStopped -and $wasRunning) {
                 $restored = Start-WatchdogManagedService $change.service $configPath $config

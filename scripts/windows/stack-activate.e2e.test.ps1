@@ -25,6 +25,10 @@ try {
     foreach ($name in @('stack-activate.ps1', 'stack-operation.ps1', 'watchdog-control-core.ps1', 'watchdog-install-transaction.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $scriptRoot $name)
     }
+    $activationSource = [IO.File]::ReadAllText((Join-Path $scriptRoot 'stack-activate.ps1'))
+    Assert-StackE2E ($activationSource -match 'function Refresh-HermesAgentGatewayLauncher') 'Hermes Agent activation is missing the gateway launcher refresh helper.'
+    Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$candidate\.hermesAgentExe\)') 'Hermes Agent activation does not refresh the installed gateway launcher.'
+    Assert-StackE2E ($activationSource -match 'Undo-InstallTransaction[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$config\.hermesAgentExe\)') 'Hermes Agent rollback does not regenerate the launcher from the restored runtime.'
     @('devspace-stack-setup.cjs', 'stack-management.cjs', 'stack-host-management.ps1', 'install-devspace-watchdog-tray.ps1') | ForEach-Object {
         $path = Join-Path $candidateRoot "scripts\windows\$_"
         [void][IO.Directory]::CreateDirectory((Split-Path $path -Parent))
