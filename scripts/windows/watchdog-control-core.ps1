@@ -1101,14 +1101,19 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $probeError = if (-not $healthProbe.semanticHealthy) { $healthProbe.error } else { $mcpProbe.error }
             }
             "hermes" {
-                # Do not probe FastMCP on every local cycle. The managed process identity and
-                # listening socket prove that the transport is present; real MCP traffic is
-                # observed by the Router and the lower-frequency public probe proves end-to-end
-                # protocol health. This keeps the health checker from competing with long calls.
-                $httpReachable = [bool]$layer.listenerFound
-                $protocolHealthy = [bool]$layer.listenerFound
-                $detail = "listener_ready; mcp=observed_by_router_and_public_probe"
-                $probeError = ""
+                # Probe only Hermes' lightweight root health endpoint on the local cycle.
+                # Long synchronous tool calls can temporarily block the HTTP event loop; when
+                # that happens the Tray's Router activity evidence marks the health result as
+                # activeRequestProtected so legitimate in-flight MCP work is never recovered.
+                $healthProbe = Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/" { param($json)
+                    [string](Get-WatchdogProperty $json "status" "") -eq "ok" -and
+                    [string](Get-WatchdogProperty $json "server" "") -eq "hermes-gpt" -and
+                    [string](Get-WatchdogProperty $json "mcp_path" "") -eq "/mcp"
+                }
+                $httpReachable = $healthProbe.httpReachable
+                $protocolHealthy = $healthProbe.semanticHealthy
+                $detail = "health_root=$($healthProbe.semanticHealthy)"
+                $probeError = $healthProbe.error
             }
             "router" {
                 $machineSlug = [string](Get-WatchdogProperty $Config "machineSlug" "")
@@ -1823,15 +1828,24 @@ function Get-WatchdogNgrokSwitchSnapshot([string]$ConfigPath, $Config) {
         $ready = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
     } while (-not $ready -and [DateTimeOffset]::UtcNow -lt $deadline)
     if (-not $ready) { throw "ngrok did not become locally healthy within 30 seconds." }
-    # Public verification runs once, after the local agent is ready.
+    # Public verification runs once, after the local agent is ready. Preserve
+    # per-service diagnostics so a rollback explains exactly which MCP path failed.
     $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath -IncludePublic
-    $verified = [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)
-    foreach ($service in @("devspace", "hermes")) {
-        if (Test-WatchdogServiceEnabled $service $Config) {
-            $verified = $verified -and [bool](Get-WatchdogProperty (Get-WatchdogProperty $snapshot.public $service $null) "protocolHealthy" $false)
-        }
+    $failures = @()
+    $ngrokHealth = Get-WatchdogProperty $snapshot.services "ngrok" $null
+    if (-not [bool](Get-WatchdogProperty $ngrokHealth "healthy" $false)) {
+        $failures += "ngrok local tunnel unhealthy: $([string](Get-WatchdogProperty $ngrokHealth 'error' 'unknown ngrok health failure'))"
     }
-    if (-not $verified) { throw "ngrok public MCP verification failed." }
+    foreach ($service in @("devspace", "hermes")) {
+        if (-not (Test-WatchdogServiceEnabled $service $Config)) { continue }
+        $publicHealth = Get-WatchdogProperty $snapshot.public $service $null
+        if ([bool](Get-WatchdogProperty $publicHealth "protocolHealthy" $false)) { continue }
+        $status = [int](Get-WatchdogProperty $publicHealth "status" 0)
+        $behavior = [string](Get-WatchdogProperty $publicHealth "behavior" "unknown")
+        $error = [string](Get-WatchdogProperty $publicHealth "error" "MCP verification failed")
+        $failures += "$service public MCP verification failed: status=$status; behavior=$behavior; error=$error"
+    }
+    if ($failures.Count) { throw ("ngrok public MCP verification failed: " + ($failures -join "; ")) }
     return $snapshot
 }
 

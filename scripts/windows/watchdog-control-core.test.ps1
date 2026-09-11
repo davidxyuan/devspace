@@ -531,8 +531,10 @@ try {
     $installerCim = [regex]::Matches($installerSource, 'Get-CimInstance[^\r\n]+')
     Assert-True "installer uses only targeted supervisor PID identity lookup" ($installerCim.Count -eq 1 -and $installerCim[0].Value -eq 'Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop')
     Assert-True "Hermes local health no longer probes FastMCP every local cycle" (-not $coreSource.Contains('Invoke-WatchdogHttpRequest \"http://127.0.0.1:$port/mcp\" \"OPTIONS\"'))
-    Assert-Contains "Hermes local health relies on managed listener plus real Router/public traffic" $coreSource 'listener_ready; mcp=observed_by_router_and_public_probe'
+    Assert-Contains "Hermes local health probes lightweight root endpoint" $coreSource 'Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/"'
+    Assert-Contains "Hermes local health validates Hermes root identity" $coreSource 'health_root=$($healthProbe.semanticHealthy)'
     Assert-Contains "public MCP probes tolerate slower healthy responses" $coreSource 'Invoke-WatchdogMcpProbe $hermesUrl -TimeoutSeconds 12'
+    Assert-Contains "ngrok switch diagnostics identify failing public service" $coreSource 'public MCP verification failed: status=$status; behavior=$behavior; error=$error'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
     Assert-True "recovery executor no longer re-blocks confirmed busy transport" (-not $coreSource.Contains('Busy or indeterminate service blocks automatic recovery.'))
     Assert-Contains "active MCP requests protect busy transport from self-recovery" $coreSource 'activeRequestProtected'
