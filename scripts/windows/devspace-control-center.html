@@ -123,6 +123,32 @@
         <p class="muted">Display names have no connection impact. Domain and route changes alter public MCP URLs and can require ChatGPT reconnection.</p>
         <div class="actions"><button class="primary" type="submit">Validate &amp; Preview</button><button id="cancel-preview" type="button">Cancel Preview</button></div>
       </form>
+      <div class="grid">
+        <div class="panel">
+          <h2>DevSpace ChatGPT Connection</h2>
+          <dl>
+            <dt>MCP URL</dt><dd id="devspace-chatgpt-url">—</dd>
+            <dt>Authentication</dt><dd>OAuth</dd>
+            <dt>Owner Password</dt><dd id="devspace-owner-password">••••••••••••••••</dd>
+            <dt>Status</dt><dd id="devspace-owner-status">Checking</dd>
+          </dl>
+          <div class="actions" style="margin-top:1rem">
+            <button id="copy-devspace-url" type="button">Copy MCP URL</button>
+            <button id="copy-devspace-owner-password" type="button">Copy Owner Password</button>
+            <button id="reveal-devspace-owner-password" type="button">Reveal 30s</button>
+          </div>
+          <p class="muted">The Owner Password is requested from this localhost Dashboard only when you press Copy or Reveal. It is never embedded in the page HTML and responses are no-store.</p>
+        </div>
+        <div class="panel">
+          <h2>Hermes ChatGPT Connection</h2>
+          <dl>
+            <dt>MCP URL</dt><dd id="hermes-chatgpt-url">—</dd>
+            <dt>Authentication</dt><dd>None required</dd>
+          </dl>
+          <div class="actions" style="margin-top:1rem"><button id="copy-hermes-url" type="button">Copy MCP URL</button></div>
+          <p class="muted">Hermes uses the current Active Domain but does not require the DevSpace OAuth Owner Password.</p>
+        </div>
+      </div>
       <div id="impact-panel" class="panel impact" hidden><h2>Connection Impact Preview</h2><div id="impact-content"></div></div>
     </section>
 
@@ -239,6 +265,49 @@
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       return payload;
+    }
+
+    let ownerPasswordRevealTimer = null;
+    function maskDevSpaceOwnerPassword() {
+      clearTimeout(ownerPasswordRevealTimer); ownerPasswordRevealTimer = null;
+      const target = $("#devspace-owner-password"); if (target) target.textContent = "••••••••••••••••";
+    }
+    function renderChatGptConnections(status) {
+      $("#devspace-chatgpt-url").textContent = status.publicEndpoint?.devspaceUrl || "—";
+      $("#hermes-chatgpt-url").textContent = status.publicEndpoint?.hermesUrl || "—";
+      const configured = Boolean(status.devspaceAuth?.ownerPasswordConfigured);
+      $("#devspace-owner-status").textContent = configured ? "Owner authentication configured ✓" : "Owner authentication missing";
+      $("#devspace-owner-status").className = configured ? "" : "warning";
+      $("#copy-devspace-owner-password").disabled = !configured;
+      $("#reveal-devspace-owner-password").disabled = !configured;
+      if (!configured) maskDevSpaceOwnerPassword();
+    }
+    async function getDevSpaceOwnerPassword() {
+      const result = await api("/api/devspace/owner-password/reveal", { method:"POST", body:"{}" });
+      if (!result.ownerPassword) throw new Error("DevSpace Owner Password is unavailable.");
+      return result.ownerPassword;
+    }
+    async function copyDevSpaceOwnerPassword() {
+      let secret = "";
+      try { secret = await getDevSpaceOwnerPassword(); await navigator.clipboard.writeText(secret); toast("DevSpace Owner Password copied."); }
+      catch (error) { toast(error.message, true); }
+      finally { secret = ""; }
+    }
+    async function revealDevSpaceOwnerPassword() {
+      let secret = "";
+      try {
+        secret = await getDevSpaceOwnerPassword();
+        $("#devspace-owner-password").textContent = secret;
+        clearTimeout(ownerPasswordRevealTimer); ownerPasswordRevealTimer = setTimeout(maskDevSpaceOwnerPassword, 30000);
+        toast("Owner Password revealed for 30 seconds.");
+      } catch (error) { toast(error.message, true); }
+      finally { secret = ""; }
+    }
+    async function copyCurrentMcpUrl(service) {
+      const url = service === "devspace" ? state.status?.publicEndpoint?.devspaceUrl : state.status?.publicEndpoint?.hermesUrl;
+      if (!url) { toast("MCP URL is unavailable.", true); return; }
+      try { await navigator.clipboard.writeText(url); toast(`${service === "devspace" ? "DevSpace" : "Hermes"} MCP URL copied.`); }
+      catch { toast("Clipboard unavailable; select and copy the URL manually.", true); }
     }
 
     function formatUptime(seconds) {
@@ -651,7 +720,7 @@
         const first = !state.status; state.status = await api("/api/status");
         attachManagementStatus(state.status);
         const overall = state.status.overall; $("#overall-dot").className = `dot ${overall.color}`; $("#overall-label").textContent = overall.label; $("#maintenance-chip").hidden = !state.status.maintenanceMode;
-        renderOverview(state.status); renderConnections(state.status); renderOptionalTools(state.status); renderControls(state.status); if (first) fillConfig(state.status.config);
+        renderOverview(state.status); renderConnections(state.status); renderOptionalTools(state.status); renderControls(state.status); renderChatGptConnections(state.status); if (first) fillConfig(state.status.config);
       } catch (error) { toast(error.message, true); }
       finally { statusLoading = false; }
     }
@@ -719,6 +788,10 @@
     $("#resume-button").addEventListener("click", () => runAction("resume", "all"));
     $("#config-form").addEventListener("submit", previewConfig);
     $("#config-form").elements.endpointMode.addEventListener("change", toggleInternalEndpoint);
+    $("#copy-devspace-url").addEventListener("click", () => copyCurrentMcpUrl("devspace"));
+    $("#copy-hermes-url").addEventListener("click", () => copyCurrentMcpUrl("hermes"));
+    $("#copy-devspace-owner-password").addEventListener("click", copyDevSpaceOwnerPassword);
+    $("#reveal-devspace-owner-password").addEventListener("click", revealDevSpaceOwnerPassword);
     $("#ngrok-account-form").addEventListener("submit", switchNgrokAccount);
     $("#restore-ngrok-account").addEventListener("click", restoreNgrokAccount);
     $("#ngrok-account-form").elements.switchEndpointMode.addEventListener("change", toggleNgrokSwitchCloud);

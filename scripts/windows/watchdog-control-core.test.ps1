@@ -415,6 +415,18 @@ try {
     Assert-Contains "dashboard loads saved ngrok profiles" $dashboardSource '/api/ngrok/profiles'
     Assert-Contains "dashboard switches saved ngrok profile" $dashboardSource '/api/ngrok/profile/switch'
     Assert-Contains "dashboard deletes saved ngrok profile" $dashboardSource '/api/ngrok/profile/delete'
+    Assert-Contains "dashboard has DevSpace ChatGPT connection card" $dashboardSource 'DevSpace ChatGPT Connection'
+    Assert-Contains "dashboard has Hermes ChatGPT connection card" $dashboardSource 'Hermes ChatGPT Connection'
+    Assert-Contains "dashboard copies current DevSpace MCP URL" $dashboardSource 'id="copy-devspace-url"'
+    Assert-Contains "dashboard copies Owner Password on demand" $dashboardSource 'id="copy-devspace-owner-password"'
+    Assert-Contains "dashboard supports timed Owner Password reveal" $dashboardSource 'id="reveal-devspace-owner-password"'
+    Assert-Contains "dashboard calls protected Owner Password endpoint" $dashboardSource '/api/devspace/owner-password/reveal'
+    Assert-True "dashboard never embeds ownerToken field" (-not $dashboardSource.Contains('ownerToken'))
+    Assert-Contains "Tray reads DevSpace Owner Password only on demand" $traySource 'function Get-DevSpaceOwnerPassword'
+    Assert-Contains "status exposes only Owner Password configured boolean" $traySource 'ownerPasswordConfigured = [bool](Test-DevSpaceOwnerPasswordConfigured)'
+    $ownerRevealRoute = $traySource.IndexOf('if ($Request.path -eq "/api/devspace/owner-password/reveal")')
+    $ownerMutationGuard = $traySource.LastIndexOf('Assert-ControlMutation $Request', $ownerRevealRoute)
+    Assert-True "Owner Password endpoint is protected by localhost mutation auth" ($ownerRevealRoute -gt 0 -and $ownerMutationGuard -gt 0 -and $ownerMutationGuard -lt $ownerRevealRoute)
     Assert-Contains "dashboard keeps navigation tabs visible by wrapping" $dashboardSource 'nav { display:flex; flex-wrap:wrap;'
     Assert-Contains "dashboard uses password field for ngrok token" $dashboardSource 'name="switchAuthToken" type="password"'
     Assert-Contains "dashboard uses password field for saved profile token" $dashboardSource 'name="profileAuthToken" type="password"'

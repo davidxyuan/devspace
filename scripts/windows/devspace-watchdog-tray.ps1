@@ -283,6 +283,10 @@ function Get-ControlStatusPayload {
                 forced = [bool]$script:forcePublicProbe
             }
         }
+        devspaceAuth = [pscustomobject]@{
+            mode = "OAuth"
+            ownerPasswordConfigured = [bool](Test-DevSpaceOwnerPasswordConfigured)
+        }
         config = $editable
     }
 }
@@ -892,6 +896,20 @@ function Write-ControlJson($Stream, [int]$Status, $Value) {
     Write-LoopbackHttpResponse $Stream $Status "application/json; charset=utf-8" (ConvertTo-Json -InputObject $Value -Depth 30 -Compress)
 }
 
+function Get-DevSpaceOwnerPassword {
+    $authPath = Join-Path $script:stackInstallDir "auth.json"
+    if (-not [System.IO.File]::Exists($authPath)) { throw "DevSpace owner authentication is not configured." }
+    try { $auth = Read-WatchdogJson $authPath } catch { throw "DevSpace owner authentication could not be read." }
+    $value = [string](Get-WatchdogProperty $auth "ownerToken" "")
+    if ([string]::IsNullOrWhiteSpace($value)) { throw "DevSpace owner authentication is not configured." }
+    return $value
+}
+
+function Test-DevSpaceOwnerPasswordConfigured {
+    try { return -not [string]::IsNullOrWhiteSpace((Get-DevSpaceOwnerPassword)) }
+    catch { return $false }
+}
+
 function Invoke-SetupDashboardLaunch {
     $nodePath = [string](Get-WatchdogProperty $script:config "nodePath" "")
     $cliPath = [string](Get-WatchdogProperty $script:config "cliPath" "")
@@ -940,8 +958,13 @@ function Invoke-ControlHttpRequest($Request) {
     if ($Request.method -eq "GET" -and $Request.path -eq "/api/ngrok/profiles") { Write-ControlJson $Request.stream 200 @(Get-WatchdogNgrokProfiles $script:config); return }
     if ($Request.method -eq "GET" -and ($Request.path -eq "/api/components" -or $Request.path -match '^/api/job\?id=[a-f0-9]{24}$')) { return (Start-StackManagementProxy $Request) }
     if ($Request.method -ne "POST") { Write-ControlJson $Request.stream 404 @{ error="Not found." }; return }
+    $requestLease = $null
     try {
         Assert-ControlMutation $Request
+        if ($Request.path -eq "/api/devspace/owner-password/reveal") {
+            Write-ControlJson $Request.stream 200 @{ ownerPassword=(Get-DevSpaceOwnerPassword) }
+            return
+        }
         if ($Request.path -in @("/api/components/refresh", "/api/components/action", "/api/cloud/preview", "/api/cloud/apply")) {
             if ($script:mutationInProgress -or $script:shutdownRequested) { Write-ControlJson $Request.stream 409 @{error="Watchdog is busy or stopping."}; return }
             return (Start-StackManagementProxy $Request)
