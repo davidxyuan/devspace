@@ -149,6 +149,15 @@
         <div id="ngrok-profiles-table" class="table-wrap" hidden>
           <table><thead><tr><th>Profile</th><th>Mode</th><th>Domain &amp; MCP URLs</th><th>Readiness</th><th>Actions</th></tr></thead><tbody id="ngrok-profiles-body"></tbody></table>
         </div>
+        <form id="ngrok-current-profile-form" style="margin-top:1rem">
+          <h3>Save current live account</h3>
+          <div class="form-grid">
+            <label>Profile Name<input name="currentProfileName" maxlength="64" value="ngrok_00" required></label>
+            <label>Current ngrok Auth Token<input name="currentProfileAuthToken" type="password" autocomplete="new-password" placeholder="Only needed once for a legacy/unmanaged current account"></label>
+          </div>
+          <p class="muted">Captures the currently running Domain/Mode and marks it ACTIVE. If Watchdog already manages the credential it is also READY; a legacy/unmanaged credential remains UNTESTED until you switch away and run Test. The token is encrypted immediately and never returned in the saved-account list.</p>
+          <div class="actions"><button id="save-current-ngrok-profile" type="submit">Save Current Account</button></div>
+        </form>
         <form id="ngrok-profile-form" style="margin-top:1rem">
           <input name="profileId" type="hidden">
           <h3 id="ngrok-profile-form-title">Add ngrok account</h3>
@@ -460,6 +469,8 @@
       state.ngrokProfiles = profiles || [];
       const empty = $("#ngrok-profiles-empty"), table = $("#ngrok-profiles-table"), body = $("#ngrok-profiles-body");
       body.replaceChildren(); empty.hidden = state.ngrokProfiles.length > 0; table.hidden = state.ngrokProfiles.length === 0;
+      const currentForm = $("#ngrok-current-profile-form"), currentSaved = state.ngrokProfiles.some(profile => profile.active);
+      currentForm.hidden = currentSaved;
       for (const profile of state.ngrokProfiles) {
         const row = el("tr"); addCell(row, profile.name); addCell(row, profile.endpointMode);
         const endpointCell = document.createElement("td");
@@ -508,6 +519,19 @@
     async function refreshNgrokProfiles() {
       try { renderNgrokProfiles(await api("/api/ngrok/profiles")); }
       catch (error) { toast(error.message, true); }
+    }
+
+    async function saveCurrentNgrokProfile(event) {
+      event.preventDefault();
+      const form = $("#ngrok-current-profile-form"), authToken = form.elements.currentProfileAuthToken.value;
+      const payload = { name:form.elements.currentProfileName.value.trim(), authToken };
+      const button = $("#save-current-ngrok-profile"); button.disabled = true;
+      try {
+        const result = await api("/api/ngrok/profile/save-current", { method:"POST", body:JSON.stringify(payload) });
+        renderNgrokProfiles(result.profiles || []);
+        toast("Current live ngrok account saved and marked ACTIVE.");
+      } catch (error) { toast(error.message, true); }
+      finally { payload.authToken = ""; form.elements.currentProfileAuthToken.value = ""; button.disabled = false; }
     }
 
     async function saveNgrokProfile(event) {
@@ -698,6 +722,7 @@
     $("#ngrok-account-form").addEventListener("submit", switchNgrokAccount);
     $("#restore-ngrok-account").addEventListener("click", restoreNgrokAccount);
     $("#ngrok-account-form").elements.switchEndpointMode.addEventListener("change", toggleNgrokSwitchCloud);
+    $("#ngrok-current-profile-form").addEventListener("submit", saveCurrentNgrokProfile);
     $("#ngrok-profile-form").addEventListener("submit", saveNgrokProfile);
     $("#ngrok-profile-form").elements.profileEndpointMode.addEventListener("change", toggleNgrokProfileCloud);
     $("#cancel-ngrok-profile-edit").addEventListener("click", resetNgrokProfileForm);

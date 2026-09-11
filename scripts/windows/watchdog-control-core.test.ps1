@@ -196,8 +196,31 @@ try {
     $resolvedProfile.authToken = $null
     Set-WatchdogNgrokActiveProfile $config $savedA.id
     Assert-True "ngrok active profile is marked" ([bool](@(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $savedA.id })[0].active))
+    $currentToken = "current-profile-" + [Guid]::NewGuid().ToString("N")
+    $currentSaved = Save-WatchdogCurrentNgrokProfile $config ([pscustomobject]@{name="Current Account";authToken=$currentToken})
+    $currentProfile = @(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $currentSaved.id })[0]
+    Assert-True "save-current marks profile active" ([bool]$currentProfile.active)
+    Assert-Equal "save-current keeps explicit legacy credential untested" $currentProfile.testStatus "untested"
+    Assert-Equal "save-current captures current domain" $currentProfile.publicDomain "https://alpha.example.test"
+    $currentStoreText = [System.IO.File]::ReadAllText($profilePath, [System.Text.Encoding]::UTF8)
+    Assert-True "save-current never stores plaintext token" (-not $currentStoreText.Contains($currentToken))
+    $resolvedCurrent = Get-WatchdogNgrokProfileForSwitch $config $currentSaved.id
+    Assert-Equal "save-current encrypted token roundtrip" $resolvedCurrent.authToken $currentToken
+    $resolvedCurrent.authToken = $null
+    $adoptedCurrent = Save-WatchdogCurrentNgrokProfile $config ([pscustomobject]@{name="Current Account";authToken=""})
+    Assert-Equal "save-current reuses matching encrypted profile without plaintext token" $adoptedCurrent.id $currentSaved.id
+    Assert-Equal "reused legacy current profile remains untested" (@(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $currentSaved.id })[0].testStatus) "untested"
+    $managedCurrentToken = "managed-current-" + [Guid]::NewGuid().ToString("N")
+    [void](Set-WatchdogNgrokCredential $config $managedCurrentToken)
+    $managedCurrent = Save-WatchdogCurrentNgrokProfile $config ([pscustomobject]@{name="Current Account";authToken=""})
+    $managedCurrentProfile = @(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $managedCurrent.id })[0]
+    Assert-Equal "managed current credential is ready" $managedCurrentProfile.testStatus "ready"
+    $resolvedManagedCurrent = Get-WatchdogNgrokProfileForSwitch $config $managedCurrent.id
+    Assert-Equal "managed current credential replaces legacy profile token" $resolvedManagedCurrent.authToken $managedCurrentToken
+    $resolvedManagedCurrent.authToken = $null
+    [System.IO.File]::Delete((Get-WatchdogNgrokCredentialPath $config))
     [void](Remove-WatchdogNgrokProfile $config $savedB.id)
-    Assert-Equal "ngrok profile delete" (@(Get-WatchdogNgrokProfiles $config)).Count 1
+    Assert-Equal "ngrok profile delete" (@(Get-WatchdogNgrokProfiles $config)).Count 2
     [System.IO.File]::Delete($profilePath)
 
     $routeInput = Copy-Editable $config; $routeInput.devspaceRoutePath = "/alpha/new_devspace"
@@ -361,6 +384,7 @@ try {
     Assert-True "dashboard does not bind all interfaces" (-not $traySource.Contains("0.0.0.0"))
     Assert-Contains "dashboard checks Origin" $traySource 'Invalid Origin header.'
     Assert-Contains "dashboard checks control token" $traySource 'x-devspace-control-token'
+    Assert-Contains "dashboard exposes save-current API" $traySource '/api/ngrok/profile/save-current'
     Assert-Contains "ngrok profile preflight supports v3 agent web_addr config fallback" $coreSource 'web_addr:'
     Assert-Contains "ngrok profile preflight passes isolated config to candidate" $coreSource '"--config", $temporaryAgentConfigPath'
     Assert-Contains "ngrok profile preflight validates temporary config" $coreSource '"config", "check", "--config", $temporaryAgentConfigPath'
@@ -386,6 +410,8 @@ try {
     Assert-Contains "dashboard supports OpenCodex Tray repair" $dashboardSource '/api/optional/repair'
     Assert-Contains "dashboard exposes ngrok account switch" $dashboardSource '/api/ngrok/switch'
     Assert-Contains "dashboard exposes saved ngrok accounts" $dashboardSource 'id="ngrok-profile-form"'
+    Assert-Contains "dashboard exposes save-current form" $dashboardSource 'id="ngrok-current-profile-form"'
+    Assert-Contains "dashboard calls save-current endpoint" $dashboardSource '/api/ngrok/profile/save-current'
     Assert-Contains "dashboard loads saved ngrok profiles" $dashboardSource '/api/ngrok/profiles'
     Assert-Contains "dashboard switches saved ngrok profile" $dashboardSource '/api/ngrok/profile/switch'
     Assert-Contains "dashboard deletes saved ngrok profile" $dashboardSource '/api/ngrok/profile/delete'

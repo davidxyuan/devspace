@@ -1597,6 +1597,66 @@ function Save-WatchdogNgrokProfile($Config, $Payload) {
     return [pscustomobject]@{ success=$true; id=$id; profiles=@(Get-WatchdogNgrokProfiles $Config) }
 }
 
+function Save-WatchdogCurrentNgrokProfile($Config, $Payload) {
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $name = ([string](Get-WatchdogProperty $Payload "name" "")).Trim()
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 64 -or $name.Contains("`r") -or $name.Contains("`n") -or $name.Contains([char]0)) { throw "ngrok profile name must be 1-64 characters without control characters." }
+    $editable = Get-WatchdogEditableConfig $Config
+    $matching = $store.profiles | Where-Object {
+        [string](Get-WatchdogProperty $_ "endpointMode" "AgentEndpoint") -eq $editable.endpointMode -and
+        [string](Get-WatchdogProperty $_ "publicDomain" "") -ieq $editable.publicDomain -and
+        [string](Get-WatchdogProperty $_ "internalAgentEndpoint" "") -ieq $editable.internalAgentEndpoint
+    } | Select-Object -First 1
+    $id = if ($matching) { [string](Get-WatchdogProperty $matching "id" "") } else { [Guid]::NewGuid().ToString("N") }
+    if (-not $matching -and @($store.profiles).Count -ge 20) { throw "At most 20 ngrok profiles are supported." }
+    $duplicateName = @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -ne $id -and [string](Get-WatchdogProperty $_ "name" "") -ieq $name }).Count -gt 0
+    if ($duplicateName) { throw "Another ngrok profile already uses this name." }
+
+    $token = [string](Get-WatchdogProperty $Payload "authToken" "")
+    $managedToken = ""
+    $effectiveToken = ""
+    try {
+        if ([string]::IsNullOrWhiteSpace($token)) { $managedToken = Get-WatchdogNgrokCredential $Config }
+        $effectiveToken = if (-not [string]::IsNullOrWhiteSpace($token)) { $token } else { $managedToken }
+        $protectedToken = ""
+        $credentialVerified = $false
+        if (-not [string]::IsNullOrWhiteSpace($effectiveToken)) {
+            Assert-WatchdogNgrokToken $effectiveToken
+            $protectedToken = Protect-WatchdogNgrokProfileToken $effectiveToken
+            $credentialVerified = -not [string]::IsNullOrWhiteSpace($managedToken) -and [string]::IsNullOrWhiteSpace($token)
+        } elseif ($matching) {
+            $protectedToken = [string](Get-WatchdogProperty $matching "protectedToken" "")
+        }
+        if ([string]::IsNullOrWhiteSpace($protectedToken)) {
+            throw "The current ngrok account still uses an unmanaged credential. Enter its Auth Token once to save the current account securely."
+        }
+        $now = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
+        $existingStatus = if ($matching) { [string](Get-WatchdogProperty $matching "testStatus" "untested") } else { "untested" }
+        $status = if ($credentialVerified -or $existingStatus -eq "ready") { "ready" } else { "untested" }
+        $record = [pscustomobject][ordered]@{
+            id=$id; name=$name; endpointMode=$editable.endpointMode; publicDomain=$editable.publicDomain
+            internalAgentEndpoint=$editable.internalAgentEndpoint; protectedToken=$protectedToken
+            testStatus=$status
+            testedUtc=$(if ($status -eq "ready") { if ($matching -and (Get-WatchdogProperty $matching "testedUtc" "")) { [string](Get-WatchdogProperty $matching "testedUtc" "") } else { $now } } else { "" })
+            testDetail=$(if ($status -eq "ready") { if ($credentialVerified) { "Current live account uses the Watchdog-managed credential." } else { [string](Get-WatchdogProperty $matching "testDetail" "Previously preflight-verified credential.") } } else { "Saved from the current live account; run Test after switching away to verify this stored credential." })
+            updatedUtc=$now
+        }
+        $profiles = New-Object System.Collections.Generic.List[object]
+        foreach ($profile in @($store.profiles)) {
+            if ([string](Get-WatchdogProperty $profile "id" "") -eq $id) { [void]$profiles.Add($record) } else { [void]$profiles.Add($profile) }
+        }
+        if (-not $matching) { [void]$profiles.Add($record) }
+        $store.profiles = $profiles.ToArray()
+        $store.activeProfileId = $id
+        [void](Write-WatchdogNgrokProfileStore $Config $store)
+        return [pscustomobject]@{ success=$true; id=$id; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+    } finally {
+        $token = $null
+        $managedToken = $null
+        $effectiveToken = $null
+    }
+}
+
 function Remove-WatchdogNgrokProfile($Config, [string]$Id) {
     if ($Id -notmatch '^[a-f0-9]{32}$') { throw "Invalid ngrok profile id." }
     $store = Read-WatchdogNgrokProfileStore $Config

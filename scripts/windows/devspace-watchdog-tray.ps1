@@ -982,6 +982,11 @@ function Invoke-ControlHttpRequest($Request) {
             "/api/ngrok/profile/save" {
                 Write-ControlJson $Request.stream 200 (Save-WatchdogNgrokProfile $script:config $payload)
             }
+            "/api/ngrok/profile/save-current" {
+                $snapshot = Get-WatchdogHealthSnapshot -ConfigPath $ConfigPath
+                if (-not [bool](Get-WatchdogProperty $snapshot.services.ngrok "healthy" $false)) { throw "Current ngrok tunnel is not healthy; save-current was not performed." }
+                Write-ControlJson $Request.stream 200 (Save-WatchdogCurrentNgrokProfile $script:config $payload)
+            }
             "/api/ngrok/profile/delete" {
                 if ([string](Get-WatchdogProperty $payload "confirmation" "") -ne "DELETE NGROK PROFILE") { throw "DELETE NGROK PROFILE confirmation is required." }
                 Write-ControlJson $Request.stream 200 (Remove-WatchdogNgrokProfile $script:config ([string](Get-WatchdogProperty $payload "id" "")))
