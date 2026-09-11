@@ -361,6 +361,10 @@ try {
     Assert-True "dashboard does not bind all interfaces" (-not $traySource.Contains("0.0.0.0"))
     Assert-Contains "dashboard checks Origin" $traySource 'Invalid Origin header.'
     Assert-Contains "dashboard checks control token" $traySource 'x-devspace-control-token'
+    Assert-Contains "ngrok profile preflight supports v3 agent web_addr config fallback" $coreSource 'web_addr:'
+    Assert-Contains "ngrok profile preflight passes isolated config to candidate" $coreSource '"--config", $temporaryAgentConfigPath'
+    Assert-Contains "ngrok profile preflight validates temporary config" $coreSource '"config", "check", "--config", $temporaryAgentConfigPath'
+    Assert-Contains "ngrok profile preflight cleans temporary config" $coreSource '@($stdoutPath, $stderrPath, $temporaryAgentConfigPath)'
     Assert-Contains "manual service actions reload on-disk config" $traySource 'function Refresh-ManualActionConfig'
     Assert-Contains "manual service action config reload happens before service selection" $traySource 'Refresh-ManualActionConfig'
     Assert-Contains "manual config reload rejects stateDir changes" $traySource 'Watchdog stateDir changed on disk; restart the Host before using service controls.'

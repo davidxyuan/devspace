@@ -1664,14 +1664,10 @@ function Test-WatchdogNgrokProfile($Config, [string]$Id) {
     $process = $null
     $stdoutPath = $null
     $stderrPath = $null
+    $temporaryAgentConfigPath = $null
     try {
         if ($profile.endpointMode -ne "AgentEndpoint") {
             $detail = "CloudEndpoint profiles require their cloud Traffic Policy and endpoint resource, so they are verified during the real switch instead of a parallel local tunnel test."
-            Set-WatchdogNgrokProfileTestState $Config $Id "switch_only" $detail
-            return [pscustomobject]@{ success=$true; status="switch_only"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
-        }
-        if (-not [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)) {
-            $detail = "This ngrok binary cannot isolate a second inspector port; verify this profile during the real switch."
             Set-WatchdogNgrokProfileTestState $Config $Id "switch_only" $detail
             return [pscustomobject]@{ success=$true; status="switch_only"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
         }
@@ -1685,7 +1681,22 @@ function Test-WatchdogNgrokProfile($Config, [string]$Id) {
         $stamp = [Guid]::NewGuid().ToString("N")
         $stdoutPath = Join-Path $stateDir "ngrok-profile-test-$stamp.out.log"
         $stderrPath = Join-Path $stateDir "ngrok-profile-test-$stamp.err.log"
-        $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$profile.publicDomain, "--web-addr", "127.0.0.1:$inspectorPort", "--log", "stdout")
+        if ([bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)) {
+            $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$profile.publicDomain, "--web-addr", "127.0.0.1:$inspectorPort", "--log", "stdout")
+        } else {
+            # Current ngrok v3 builds may expose agent.web_addr only through YAML rather than `ngrok http --web-addr`.
+            # Use an isolated temporary config so the candidate gets its own local inspector without touching the live agent.
+            $temporaryAgentConfigPath = Join-Path $stateDir "ngrok-profile-test-$stamp.yml"
+            $temporaryAgentConfig = "version: `"3`"`r`nagent:`r`n  web_addr: `"127.0.0.1:$inspectorPort`"`r`n"
+            Write-WatchdogAtomicText $temporaryAgentConfigPath $temporaryAgentConfig
+            $configCheck = Invoke-WatchdogNativeAndWait $ngrok @("config", "check", "--config", $temporaryAgentConfigPath) 10000
+            if ($configCheck -ne 0) {
+                $detail = "This ngrok binary does not accept an isolated v3 agent.web_addr override; verify this profile during the real switch."
+                Set-WatchdogNgrokProfileTestState $Config $Id "switch_only" $detail
+                return [pscustomobject]@{ success=$true; status="switch_only"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+            }
+            $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$profile.publicDomain, "--config", $temporaryAgentConfigPath, "--log", "stdout")
+        }
         $environment = @{ NGROK_AUTHTOKEN = [string]$profile.authToken }
         $process = Invoke-WithWatchdogEnvironment $environment { Start-WatchdogHiddenProcess $ngrok $arguments (Split-Path -Parent $ngrok) $stdoutPath $stderrPath }
         $environment["NGROK_AUTHTOKEN"] = $null
@@ -1720,7 +1731,7 @@ function Test-WatchdogNgrokProfile($Config, [string]$Id) {
             try { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction Stop } } catch { }
             try { $process.Dispose() } catch { }
         }
-        foreach ($path in @($stdoutPath, $stderrPath)) { if ($path) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } } }
+        foreach ($path in @($stdoutPath, $stderrPath, $temporaryAgentConfigPath)) { if ($path) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } } }
         if ($profile) { $profile.authToken = $null }
     }
 }
