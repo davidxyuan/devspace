@@ -1535,13 +1535,22 @@ function Unprotect-WatchdogNgrokProfileToken([string]$ProtectedText) {
 function Get-WatchdogNgrokProfiles($Config) {
     $store = Read-WatchdogNgrokProfileStore $Config
     $activeId = [string]$store.activeProfileId
+    $editable = Get-WatchdogEditableConfig $Config
+    $devspaceRoute = [string]$editable.devspaceRoutePath
+    $hermesRoute = [string]$editable.hermesRoutePath
     return @($store.profiles | ForEach-Object {
+        $domain = [string](Get-WatchdogProperty $_ "publicDomain" "")
         [pscustomobject][ordered]@{
             id = [string](Get-WatchdogProperty $_ "id" "")
             name = [string](Get-WatchdogProperty $_ "name" "")
             endpointMode = [string](Get-WatchdogProperty $_ "endpointMode" "AgentEndpoint")
-            publicDomain = [string](Get-WatchdogProperty $_ "publicDomain" "")
+            publicDomain = $domain
             internalAgentEndpoint = [string](Get-WatchdogProperty $_ "internalAgentEndpoint" "")
+            devspaceUrl = if ($domain) { $domain.TrimEnd("/") + $devspaceRoute + "/mcp" } else { "" }
+            hermesUrl = if ($domain) { $domain.TrimEnd("/") + $hermesRoute + "/mcp" } else { "" }
+            testStatus = [string](Get-WatchdogProperty $_ "testStatus" "untested")
+            testedUtc = [string](Get-WatchdogProperty $_ "testedUtc" "")
+            testDetail = [string](Get-WatchdogProperty $_ "testDetail" (Get-WatchdogProperty $_ "testError" ""))
             updatedUtc = [string](Get-WatchdogProperty $_ "updatedUtc" "")
             active = ([string](Get-WatchdogProperty $_ "id" "") -eq $activeId -and -not [string]::IsNullOrWhiteSpace($activeId))
         }
@@ -1574,6 +1583,7 @@ function Save-WatchdogNgrokProfile($Config, $Payload) {
     $record = [pscustomobject][ordered]@{
         id=$id; name=$name; endpointMode=$validated.endpointMode; publicDomain=$validated.publicDomain
         internalAgentEndpoint=$validated.internalAgentEndpoint; protectedToken=$protectedToken
+        testStatus="untested"; testedUtc=""; testDetail=""
         updatedUtc=(ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow))
     }
     $profiles = New-Object System.Collections.Generic.List[object]
@@ -1617,6 +1627,102 @@ function Set-WatchdogNgrokActiveProfile($Config, [string]$Id) {
     if ($Id -and -not @($store.profiles | Where-Object { [string](Get-WatchdogProperty $_ "id" "") -eq $Id }).Count) { throw "ngrok profile was not found." }
     $store.activeProfileId = $Id
     [void](Write-WatchdogNgrokProfileStore $Config $store)
+}
+
+function Set-WatchdogNgrokProfileTestState($Config, [string]$Id, [string]$Status, [string]$Detail = "") {
+    if ($Id -notmatch '^[a-f0-9]{32}$') { throw "Invalid ngrok profile id." }
+    if ($Status -notin @("untested", "ready", "failed", "switch_only")) { throw "Invalid ngrok profile test status." }
+    $store = Read-WatchdogNgrokProfileStore $Config
+    $found = $false
+    $safeDetail = if ($Detail) { (Protect-WatchdogText $Detail) -replace '[\r\n]+',' ' } else { "" }
+    if ($safeDetail.Length -gt 300) { $safeDetail = $safeDetail.Substring(0, 300) }
+    $profiles = @($store.profiles | ForEach-Object {
+        if ([string](Get-WatchdogProperty $_ "id" "") -eq $Id) {
+            $found = $true
+            $copy = Copy-WatchdogObject $_
+            Set-WatchdogProperty $copy "testStatus" $Status
+            Set-WatchdogProperty $copy "testedUtc" $(if ($Status -eq "untested") { "" } else { ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow) })
+            Set-WatchdogProperty $copy "testDetail" $(if ($Status -eq "untested") { "" } else { $safeDetail })
+            $copy
+        } else { $_ }
+    })
+    if (-not $found) { throw "ngrok profile was not found." }
+    $store.profiles = $profiles
+    [void](Write-WatchdogNgrokProfileStore $Config $store)
+}
+
+function Get-WatchdogEphemeralLoopbackPort {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return [int]$listener.LocalEndpoint.Port
+    } finally { $listener.Stop() }
+}
+
+function Test-WatchdogNgrokProfile($Config, [string]$Id) {
+    $profile = Get-WatchdogNgrokProfileForSwitch $Config $Id
+    $process = $null
+    $stdoutPath = $null
+    $stderrPath = $null
+    try {
+        if ($profile.endpointMode -ne "AgentEndpoint") {
+            $detail = "CloudEndpoint profiles require their cloud Traffic Policy and endpoint resource, so they are verified during the real switch instead of a parallel local tunnel test."
+            Set-WatchdogNgrokProfileTestState $Config $Id "switch_only" $detail
+            return [pscustomobject]@{ success=$true; status="switch_only"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+        }
+        if (-not [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)) {
+            $detail = "This ngrok binary cannot isolate a second inspector port; verify this profile during the real switch."
+            Set-WatchdogNgrokProfileTestState $Config $Id "switch_only" $detail
+            return [pscustomobject]@{ success=$true; status="switch_only"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+        }
+        Assert-WatchdogNgrokToken ([string]$profile.authToken)
+        $ngrok = [string](Get-WatchdogProperty $Config "ngrokPath" "")
+        if (-not [System.IO.File]::Exists($ngrok)) { throw "ngrok executable is missing." }
+        $upstreamPort = [int](Get-WatchdogProperty $Config "publicUpstreamPort" (Get-WatchdogProperty $Config "routerPort" 0))
+        if ($upstreamPort -lt 1) { throw "Router upstream port is invalid." }
+        $inspectorPort = Get-WatchdogEphemeralLoopbackPort
+        $stateDir = [System.IO.Path]::GetFullPath([string](Get-WatchdogProperty $Config "stateDir" ""))
+        $stamp = [Guid]::NewGuid().ToString("N")
+        $stdoutPath = Join-Path $stateDir "ngrok-profile-test-$stamp.out.log"
+        $stderrPath = Join-Path $stateDir "ngrok-profile-test-$stamp.err.log"
+        $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$profile.publicDomain, "--web-addr", "127.0.0.1:$inspectorPort", "--log", "stdout")
+        $environment = @{ NGROK_AUTHTOKEN = [string]$profile.authToken }
+        $process = Invoke-WithWatchdogEnvironment $environment { Start-WatchdogHiddenProcess $ngrok $arguments (Split-Path -Parent $ngrok) $stdoutPath $stderrPath }
+        $environment["NGROK_AUTHTOKEN"] = $null
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+        $matched = $false
+        do {
+            if ($process.HasExited) { throw "ngrok rejected the candidate credential/domain before the tunnel became ready." }
+            $probe = Invoke-WatchdogHttpRequest "http://127.0.0.1:$inspectorPort/api/tunnels" "GET" "" 2 -Local
+            if ($probe.reachable -and $probe.status -eq 200) {
+                try {
+                    $payload = $probe.body | ConvertFrom-Json
+                    $targetOrigin = ([Uri]$profile.publicDomain).GetLeftPart([UriPartial]::Authority)
+                    $matched = @($payload.tunnels | Where-Object { ([string]$_.public_url).TrimEnd("/") -ieq $targetOrigin.TrimEnd("/") }).Count -gt 0
+                } catch { $matched = $false }
+                if ($matched) { break }
+            }
+            Start-Sleep -Milliseconds 300
+        } while ([DateTimeOffset]::UtcNow -lt $deadline)
+        if (-not $matched) { throw "ngrok candidate tunnel did not bind the saved domain within 15 seconds." }
+        Set-WatchdogNgrokProfileTestState $Config $Id "ready"
+        $safe = @(Get-WatchdogNgrokProfiles $Config | Where-Object { $_.id -eq $Id } | Select-Object -First 1)[0]
+        return [pscustomobject]@{
+            success=$true; status="ready"; message="Candidate Auth Token and Development Domain opened a parallel ngrok tunnel successfully. The live stack was not switched."
+            devspaceUrl=$safe.devspaceUrl; hermesUrl=$safe.hermesUrl; profiles=@(Get-WatchdogNgrokProfiles $Config)
+        }
+    } catch {
+        $detail = Protect-WatchdogText $_.Exception.Message
+        try { Set-WatchdogNgrokProfileTestState $Config $Id "failed" $detail } catch { }
+        return [pscustomobject]@{ success=$false; status="failed"; message=$detail; profiles=@(Get-WatchdogNgrokProfiles $Config) }
+    } finally {
+        if ($process) {
+            try { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction Stop } } catch { }
+            try { $process.Dispose() } catch { }
+        }
+        foreach ($path in @($stdoutPath, $stderrPath)) { if ($path) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } } }
+        if ($profile) { $profile.authToken = $null }
+    }
 }
 
 function Get-WatchdogNgrokSwitchSnapshot([string]$ConfigPath, $Config) {
@@ -1692,6 +1798,7 @@ function Invoke-WatchdogNgrokAccountSwitch([string]$ConfigPath, $Payload, $Desir
         $snapshot = Get-WatchdogNgrokSwitchSnapshot $ConfigPath $activeConfig
         Write-WatchdogEvent ([string]$activeConfig.stateDir) $activeConfig "ngrok" "account_switch" "user request" "credential/domain switch" "verified; token redacted"
         Set-WatchdogNgrokActiveProfile $activeConfig $ActiveProfileId
+        if ($ActiveProfileId) { Set-WatchdogNgrokProfileTestState $activeConfig $ActiveProfileId "ready" }
         return [pscustomobject]@{
             config=$activeConfig; snapshot=$snapshot
             result=[pscustomobject]@{

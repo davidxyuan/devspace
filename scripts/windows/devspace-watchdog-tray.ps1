@@ -156,6 +156,7 @@ $script:lastHeartbeat = [DateTimeOffset]::MinValue
 $script:mutationInProgress = $false
 $script:mutationPowerShell = $null
 $script:mutationAsync = $null
+$script:mutationKind = ""
 $script:stackMutationLease = $null
 $script:mutationClient = $null
 $script:shutdownRequested = $false
@@ -685,6 +686,7 @@ function Start-ControlNgrokSwitch($Client, $Payload, [switch]$SavedProfile) {
     Assert-ControlMutationAvailable
     Stop-HealthRunspace
     $script:mutationInProgress = $true
+    $script:mutationKind = "ngrok_switch"
     $scriptText = @'
 param($CorePath, $ConfigurationPath, $PayloadJson, $DesiredJson, $Saved)
 $ErrorActionPreference = "Stop"
@@ -714,6 +716,40 @@ try {
         if ($script:mutationAsync) { throw }
         if ($script:mutationPowerShell) { $script:mutationPowerShell.Dispose() }
         $script:mutationPowerShell = $null
+        $script:mutationKind = ""
+        $script:mutationInProgress = $false
+        throw
+    }
+}
+
+function Start-ControlNgrokProfileTest($Client, $Payload) {
+    Assert-ControlMutationAvailable
+    Stop-HealthRunspace
+    $script:mutationInProgress = $true
+    $script:mutationKind = "ngrok_profile_test"
+    $scriptText = @'
+param($CorePath, $ConfigurationPath, $ProfileId)
+$ErrorActionPreference = "Stop"
+. $CorePath
+try {
+    $config = Read-WatchdogJson $ConfigurationPath
+    $result = Test-WatchdogNgrokProfile $config $ProfileId
+    [pscustomobject]@{ success=$true; result=$result } | ConvertTo-Json -Depth 30 -Compress
+} catch {
+    [pscustomobject]@{ success=$false; error=(Protect-WatchdogText $_.Exception.Message) } | ConvertTo-Json -Depth 30 -Compress
+}
+'@
+    try {
+        Write-ControlHeartbeat -Force
+        $script:mutationPowerShell = [PowerShell]::Create()
+        [void]$script:mutationPowerShell.AddScript($scriptText).AddArgument($corePath).AddArgument($ConfigPath).AddArgument([string](Get-WatchdogProperty $Payload "id" ""))
+        $script:mutationAsync = $script:mutationPowerShell.BeginInvoke()
+        $script:mutationClient = $Client
+    } catch {
+        if ($script:mutationAsync) { throw }
+        if ($script:mutationPowerShell) { $script:mutationPowerShell.Dispose() }
+        $script:mutationPowerShell = $null
+        $script:mutationKind = ""
         $script:mutationInProgress = $false
         throw
     }
@@ -728,7 +764,10 @@ function Complete-ControlNgrokSwitch {
         $json = ($output | ForEach-Object { [string]$_ }) -join ""
         if (-not $json) { throw "Account switch worker returned no result; inspect configuration before retrying." }
         $completed = $json | ConvertFrom-Json
-        if ($completed.success) {
+        if ($script:mutationKind -eq "ngrok_profile_test") {
+            if ($completed.success) { $response = $completed.result; $status = 200 }
+            else { $response = @{ error=[string]$completed.error } }
+        } elseif ($completed.success) {
             $script:config = $completed.outcome.config
             $script:settings = Get-WatchdogControlSettings $script:config
             # Keep automatic recovery excluded while adopting the transaction's verified evidence.
@@ -750,8 +789,10 @@ function Complete-ControlNgrokSwitch {
             $response = @{ error=[string]$completed.error }
         }
     } catch {
-        $script:state.maintenanceMode = $true
-        Save-WatchdogState $script:statePath $script:state
+        if ($script:mutationKind -ne "ngrok_profile_test") {
+            $script:state.maintenanceMode = $true
+            Save-WatchdogState $script:statePath $script:state
+        }
         $response = @{ error=(Protect-WatchdogText $_.Exception.Message) }
     } finally {
         try { if ($script:mutationClient) { Write-ControlJson $script:mutationClient.GetStream() $status $response } } catch { }
@@ -760,6 +801,7 @@ function Complete-ControlNgrokSwitch {
         $script:mutationClient = $null
         $script:mutationPowerShell = $null
         $script:mutationAsync = $null
+        $script:mutationKind = ""
         Exit-StackOperation $script:stackMutationLease; $script:stackMutationLease = $null
         $script:mutationInProgress = $false
         $script:lastHealthStarted = [DateTimeOffset]::MinValue
@@ -943,6 +985,11 @@ function Invoke-ControlHttpRequest($Request) {
             "/api/ngrok/profile/delete" {
                 if ([string](Get-WatchdogProperty $payload "confirmation" "") -ne "DELETE NGROK PROFILE") { throw "DELETE NGROK PROFILE confirmation is required." }
                 Write-ControlJson $Request.stream 200 (Remove-WatchdogNgrokProfile $script:config ([string](Get-WatchdogProperty $payload "id" "")))
+            }
+            "/api/ngrok/profile/test" {
+                Start-ControlNgrokProfileTest $Request.client $payload
+                $script:stackMutationLease = $requestLease; $requestLease = $null
+                return $true
             }
             "/api/ngrok/profile/switch" {
                 Start-ControlNgrokSwitch $Request.client $payload -SavedProfile

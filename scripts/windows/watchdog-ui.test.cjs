@@ -25,7 +25,7 @@ function harness(name) {
     document:{querySelector:query,getElementById:id=>query('#'+id),querySelectorAll:()=>[],createElement:tag=>new Node(tag)},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},
     sessionStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value),removeItem:key=>saved.delete(key)},
-    confirm:()=>true,alert(){},prompt:()=>null, navigator:{},window:{open(){}},
+    confirm:()=>true,alert(){},prompt:()=>null, navigator:{clipboard:{writeText:async text=>saved.set("clipboard",text)}},window:{open(){}},
     fetch:async(url,options)=>{requests.push({url,options});return {ok:true,json:async()=>sandbox.response(url,options)};},
     response:()=>({schemaVersion:1,revision:"r1",components:[]})
   };
@@ -102,6 +102,19 @@ async function exercise(name) {
   assert.equal(JSON.parse(control.requests.find(r=>r.url==="/api/ngrok/restore").options.body).confirmation, "RESTORE PREVIOUS NGROK");
   assert.match(control.query("#ngrok-switch-urls").textContent, /old.invalid/);
   assert.equal(control.query("#restore-ngrok-account").disabled, false);
+  control.sandbox.profileFixture={id:"p1",name:"Backup B",endpointMode:"AgentEndpoint",publicDomain:"https://backup-b.example.test",devspaceUrl:"https://backup-b.example.test/alpha/devspace_chatgpt/mcp",hermesUrl:"https://backup-b.example.test/alpha/hermes_chatgpt/mcp",testStatus:"ready",testedUtc:"2026-09-11T00:00:00Z",testDetail:"candidate verified",active:false};
+  control.run("renderNgrokProfiles([profileFixture])");
+  const profileRow=control.query("#ngrok-profiles-body").children[0];
+  assert.match(profileRow.children[2].children[1].textContent,/devspace_chatgpt\/mcp/,"profile renders DevSpace MCP URL");
+  assert.match(profileRow.children[2].children[2].textContent,/hermes_chatgpt\/mcp/,"profile renders Hermes MCP URL");
+  assert.equal(profileRow.children[3].children[0].children[1].textContent,"READY","preflight state is visible");
+  const profileActions=profileRow.children[4].children[0];
+  assert.deepEqual(profileActions.children.map(button=>button.textContent),["Test","Switch","Copy URLs","Edit","Delete"]);
+  await control.run("copyNgrokProfileUrls(profileFixture)");
+  assert.match(control.saved.get("clipboard"),/backup-b\.example\.test\/alpha\/hermes_chatgpt\/mcp/,"copy action includes candidate MCP URLs");
+  control.sandbox.response=url=>url==="/api/ngrok/profile/test"?{success:true,status:"ready",message:"synthetic ready",profiles:[control.sandbox.profileFixture]}:{};
+  await control.run("testSavedNgrokProfile(profileFixture, document.querySelector('#profile-test-button'))");
+  assert(control.requests.some(r=>r.url==="/api/ngrok/profile/test"),"profile Test uses the non-destructive preflight API");
   const h=harness("devspace-stack-setup.html");
   h.sandbox.initial={state:"Existing",configurationFingerprint:"original",defaults:{machineName:"station",allowedRoots:"D:\\projects",endpointMode:"AgentEndpoint",fullAccess:true},packageVersion:"1",tray:{}};
   h.run("fill(initial)");

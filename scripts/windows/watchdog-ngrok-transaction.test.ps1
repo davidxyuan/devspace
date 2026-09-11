@@ -174,7 +174,7 @@ try {
 
     # Load Host functions without its top-level listener, UI, or process startup.
     $trayPath = Join-Path $PSScriptRoot "devspace-watchdog-tray.ps1"
-    foreach ($name in @("Assert-ControlMutationAvailable", "Start-ControlNgrokSwitch", "Complete-ControlNgrokSwitch", "Write-ControlHeartbeat", "Wait-ControlMutationDrain", "Invoke-ControlHttpRequest", "Invoke-ManualServiceAction")) {
+    foreach ($name in @("Assert-ControlMutationAvailable", "Start-ControlNgrokSwitch", "Start-ControlNgrokProfileTest", "Complete-ControlNgrokSwitch", "Write-ControlHeartbeat", "Wait-ControlMutationDrain", "Invoke-ControlHttpRequest", "Invoke-ManualServiceAction")) {
         Invoke-Expression (Get-TestFunctionSource $trayPath $name)
     }
     $script:settings = Get-WatchdogControlSettings $script:config
@@ -185,6 +185,7 @@ try {
     $script:mutationInProgress = $false
     $script:mutationPowerShell = $null
     $script:mutationAsync = $null
+    $script:mutationKind = ""
     $script:mutationClient = $null
     $script:shutdownRequested = $false
     $script:responses = @()
@@ -219,6 +220,9 @@ function Invoke-WatchdogNgrokSwitch($ConfigPath, $Payload, $Desired, [switch]$Sa
     $gate = [System.Threading.EventWaitHandle]::OpenExisting($Payload.eventName)
     try { if (-not $gate.WaitOne(30000)) { throw "Test worker was not released." } } finally { $gate.Dispose() }
     return [pscustomobject]@{ config=([System.IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json); snapshot=[pscustomobject]@{}; result=[pscustomobject]@{ success=$true } }
+}
+function Test-WatchdogNgrokProfile($Config, [string]$Id) {
+    return [pscustomobject]@{ success=$true; status="ready"; message="synthetic ready"; profiles=@([pscustomobject]@{id=$Id;testStatus="ready"}) }
 }
 function Protect-WatchdogText($Value) { return $Value }
 function Read-WatchdogJson($Path) { return [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json }
@@ -276,6 +280,15 @@ function Read-WatchdogJson($Path) { return [System.IO.File]::ReadAllText($Path) 
         Assert-True "uncertain rollback pauses automatic recovery" $script:state.maintenanceMode
         Assert-True "uncertain rollback persists maintenance" (Read-WatchdogJson $script:statePath).maintenanceMode
         Assert-Equal "uncertain rollback returns failed response" $script:responses[-1].status 400
+
+        $script:state.maintenanceMode = $false
+        $client.disposed = $false
+        Start-ControlNgrokProfileTest $client ([pscustomobject]@{ id="synthetic-profile" })
+        while ($script:mutationAsync) { [System.Threading.Thread]::Sleep(20); Complete-ControlNgrokSwitch }
+        Assert-Equal "profile preflight returns success without switching config" $script:responses[-1].status 200
+        Assert-Equal "profile preflight returns ready state" $script:responses[-1].value.status "ready"
+        Assert-True "profile preflight does not enter maintenance" (-not $script:state.maintenanceMode)
+        Assert-True "profile preflight releases busy slot" (-not $script:mutationInProgress)
     } finally {
         [void]$gate.Set()
         if ($script:mutationAsync) { Wait-ControlMutationDrain }

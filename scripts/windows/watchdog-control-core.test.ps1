@@ -182,6 +182,15 @@ try {
     $safeProfiles = @(Get-WatchdogNgrokProfiles $config)
     Assert-Equal "ngrok profile list count" $safeProfiles.Count 2
     Assert-True "ngrok safe profile list never exposes token" (-not ($safeProfiles[0].PSObject.Properties.Name -contains "authToken") -and -not ($safeProfiles[0].PSObject.Properties.Name -contains "protectedToken"))
+    Assert-Equal "ngrok profile starts untested" $safeProfiles[0].testStatus "untested"
+    Assert-Equal "ngrok profile derives DevSpace MCP URL" $safeProfiles[0].devspaceUrl "https://account-a.example.test/alpha/devspace_chatgpt/mcp"
+    Assert-Equal "ngrok profile derives Hermes MCP URL" $safeProfiles[0].hermesUrl "https://account-a.example.test/alpha/hermes_chatgpt/mcp"
+    Set-WatchdogNgrokProfileTestState $config $savedA.id "ready" "candidate verified"
+    $testedProfile = @(Get-WatchdogNgrokProfiles $config | Where-Object { $_.id -eq $savedA.id })[0]
+    Assert-Equal "ngrok profile readiness persists" $testedProfile.testStatus "ready"
+    Assert-Equal "ngrok profile test detail persists" $testedProfile.testDetail "candidate verified"
+    Assert-True "ngrok profile test timestamp persists" (-not [string]::IsNullOrWhiteSpace([string]$testedProfile.testedUtc))
+    Assert-True "ngrok readiness metadata never exposes token" (-not ($testedProfile.PSObject.Properties.Name -contains "authToken") -and -not ($testedProfile.PSObject.Properties.Name -contains "protectedToken"))
     $resolvedProfile = Get-WatchdogNgrokProfileForSwitch $config $savedA.id
     Assert-Equal "ngrok profile decrypts selected token" $resolvedProfile.authToken $profileTokenA
     $resolvedProfile.authToken = $null

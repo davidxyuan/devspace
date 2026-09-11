@@ -147,7 +147,7 @@
         <div class="card-head"><div><h2>Saved ngrok accounts</h2><div class="muted">Store multiple ngrok account profiles on this Windows user and switch between them without retyping the Auth Token.</div></div><button id="refresh-ngrok-profiles" type="button">Refresh</button></div>
         <div id="ngrok-profiles-empty" class="muted">No saved ngrok accounts yet.</div>
         <div id="ngrok-profiles-table" class="table-wrap" hidden>
-          <table><thead><tr><th>Profile</th><th>Mode</th><th>Domain</th><th>State</th><th>Actions</th></tr></thead><tbody id="ngrok-profiles-body"></tbody></table>
+          <table><thead><tr><th>Profile</th><th>Mode</th><th>Domain &amp; MCP URLs</th><th>Readiness</th><th>Actions</th></tr></thead><tbody id="ngrok-profiles-body"></tbody></table>
         </div>
         <form id="ngrok-profile-form" style="margin-top:1rem">
           <input name="profileId" type="hidden">
@@ -461,14 +461,48 @@
       const empty = $("#ngrok-profiles-empty"), table = $("#ngrok-profiles-table"), body = $("#ngrok-profiles-body");
       body.replaceChildren(); empty.hidden = state.ngrokProfiles.length > 0; table.hidden = state.ngrokProfiles.length === 0;
       for (const profile of state.ngrokProfiles) {
-        const row = el("tr"); addCell(row, profile.name); addCell(row, profile.endpointMode); addCell(row, profile.publicDomain);
-        const stateCell = document.createElement("td"), chip = el("span", null, "chip"); chip.append(el("span", null, `dot ${profile.active ? "GREEN" : "GRAY"}`), el("span", profile.active ? "ACTIVE" : "Saved")); stateCell.append(chip); row.append(stateCell);
+        const row = el("tr"); addCell(row, profile.name); addCell(row, profile.endpointMode);
+        const endpointCell = document.createElement("td");
+        endpointCell.append(el("div", profile.publicDomain));
+        endpointCell.append(el("div", `DevSpace: ${profile.devspaceUrl || "—"}`, "muted"));
+        endpointCell.append(el("div", `Hermes: ${profile.hermesUrl || "—"}`, "muted"));
+        row.append(endpointCell);
+        let label = "UNTESTED", color = "GRAY";
+        if (profile.active) { label = "ACTIVE"; color = "GREEN"; }
+        else if (profile.testStatus === "ready") { label = "READY"; color = "GREEN"; }
+        else if (profile.testStatus === "failed") { label = "FAILED"; color = "RED"; }
+        else if (profile.testStatus === "switch_only") { label = "VERIFY ON SWITCH"; color = "YELLOW"; }
+        const stateCell = document.createElement("td"), chip = el("span", null, "chip");
+        chip.append(el("span", null, `dot ${color}`), el("span", label)); stateCell.append(chip);
+        if (profile.testedUtc) stateCell.append(el("div", new Date(profile.testedUtc).toLocaleString(), "muted"));
+        if (profile.testDetail) stateCell.append(el("div", profile.testDetail, profile.testStatus === "failed" ? "warning" : "muted"));
+        row.append(stateCell);
         const actionCell = document.createElement("td"), actions = el("div", null, "actions");
+        const test = el("button", "Test"); test.type = "button"; test.disabled = Boolean(profile.active); test.addEventListener("click", () => testSavedNgrokProfile(profile, test));
         const use = el("button", profile.active ? "Active" : "Switch", profile.active ? "" : "primary"); use.type = "button"; use.disabled = Boolean(profile.active); use.addEventListener("click", () => switchSavedNgrokProfile(profile));
+        const copy = el("button", "Copy URLs"); copy.type = "button"; copy.addEventListener("click", () => copyNgrokProfileUrls(profile));
         const edit = el("button", "Edit"); edit.type = "button"; edit.addEventListener("click", () => editNgrokProfile(profile));
         const remove = el("button", "Delete", "danger"); remove.type = "button"; remove.addEventListener("click", () => deleteNgrokProfile(profile));
-        actions.append(use, edit, remove); actionCell.append(actions); row.append(actionCell); body.append(row);
+        actions.append(test, use, copy, edit, remove); actionCell.append(actions); row.append(actionCell); body.append(row);
       }
+    }
+
+    async function copyNgrokProfileUrls(profile) {
+      const text = `DevSpace\n${profile.devspaceUrl || ""}\n\nHermes\n${profile.hermesUrl || ""}`;
+      try { await navigator.clipboard.writeText(text); toast(`MCP URLs for ${profile.name} copied.`); }
+      catch { toast("Clipboard unavailable; select the URLs from the table manually.", true); }
+    }
+
+    async function testSavedNgrokProfile(profile, button) {
+      const original = button.textContent; button.disabled = true; button.textContent = "Testing…";
+      try {
+        const result = await api("/api/ngrok/profile/test", { method:"POST", body:JSON.stringify({ id:profile.id }) });
+        renderNgrokProfiles(result.profiles || []);
+        if (result.status === "ready") toast(`${profile.name} is READY. Auth Token + domain bind succeeded without switching the live stack.`);
+        else if (result.status === "switch_only") toast(result.message || `${profile.name} will be verified during Switch.`);
+        else toast(result.message || `${profile.name} preflight failed.`, true);
+      } catch (error) { toast(error.message, true); await refreshNgrokProfiles(); }
+      finally { button.disabled = false; button.textContent = original; }
     }
 
     async function refreshNgrokProfiles() {
@@ -491,7 +525,7 @@
       const button = $("#save-ngrok-profile"); button.disabled = true;
       try {
         const result = await api("/api/ngrok/profile/save", { method:"POST", body:JSON.stringify(payload) });
-        renderNgrokProfiles(result.profiles || []); resetNgrokProfileForm(); toast(id ? "ngrok account updated. It is not switched until you press Switch." : "ngrok account saved securely.");
+        renderNgrokProfiles(result.profiles || []); resetNgrokProfileForm(); toast(id ? "ngrok account updated. Run Test again before switching." : "ngrok account saved securely. Run Test to preflight it before switching.");
       } catch (error) { toast(error.message, true); }
       finally { payload.authToken = ""; form.elements.profileAuthToken.value = ""; button.disabled = false; }
     }
