@@ -575,9 +575,13 @@ function Start-Ngrok {
         return
     }
 
+    $storedToken = Get-WatchdogNgrokCredential $config
     $ngrokArgs = @("http", $upstream)
     $ngrokArgs += @("--url", $ngrokAgentBaseUrl)
-    if ($ngrokWebAddrSupported) {
+    if ($storedToken) {
+        $ngrokArgs += @("--config", (Ensure-WatchdogManagedNgrokConfig $config))
+        Write-WatchdogLog "starting ngrok with Watchdog-managed credential and isolated agent config"
+    } elseif ($ngrokWebAddrSupported) {
         $ngrokArgs += @("--web-addr", "127.0.0.1:$ngrokInspectorPort")
     } else {
         Write-WatchdogLog "ngrok does not support --web-addr; using its default inspector at $ngrokInspectorUrl"
@@ -588,7 +592,6 @@ function Start-Ngrok {
     $ngrokArgs += @("--log", "stdout")
 
     Write-WatchdogLog "starting ngrok agent endpoint $ngrokAgentBaseUrl for public $publicBaseUrl -> $upstream; inspector=$ngrokInspectorUrl"
-    $storedToken = Get-WatchdogNgrokCredential $config
     $ngrokEnvironment = @{}
     if ($storedToken) { $ngrokEnvironment['NGROK_AUTHTOKEN'] = $storedToken }
     try { Invoke-WithWatchdogEnvironment $ngrokEnvironment {

@@ -168,7 +168,13 @@ try {
     Assert-Equal "ngrok DPAPI credential roundtrip" (Get-WatchdogNgrokCredential $config) $testNgrokToken
     $credentialText = [System.IO.File]::ReadAllText($credentialPath, [System.Text.Encoding]::UTF8)
     Assert-True "ngrok plaintext token is not stored" (-not $credentialText.Contains($testNgrokToken))
+    $managedNgrokConfigPath = Ensure-WatchdogManagedNgrokConfig $config
+    Assert-True "managed ngrok config exists" ([System.IO.File]::Exists($managedNgrokConfigPath))
+    $managedNgrokConfigText = [System.IO.File]::ReadAllText($managedNgrokConfigPath, [System.Text.Encoding]::UTF8)
+    Assert-Contains "managed ngrok config pins isolated inspector" $managedNgrokConfigText 'web_addr: "127.0.0.1:4040"'
+    Assert-True "managed ngrok config contains no credential" (-not $managedNgrokConfigText.Contains($testNgrokToken) -and -not $managedNgrokConfigText.Contains("authtoken"))
     [System.IO.File]::Delete($credentialPath)
+    [System.IO.File]::Delete($managedNgrokConfigPath)
 
     $profileTokenA = "profile-a-" + [Guid]::NewGuid().ToString("N")
     $profileTokenB = "profile-b-" + [Guid]::NewGuid().ToString("N")
@@ -374,6 +380,7 @@ try {
     Assert-True "rollback removes newly generated merge rule" (-not [System.IO.File]::Exists([string]$cloudConfig.cloudEndpointRulePath))
 
     $traySource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray.ps1"), [System.Text.Encoding]::UTF8)
+    $watchdogSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog.ps1"), [System.Text.Encoding]::UTF8)
     $trayUiSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray-ui.ps1"), [System.Text.Encoding]::UTF8)
     $bootstrapSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-bootstrap.ps1"), [System.Text.Encoding]::UTF8)
     $coreSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "watchdog-control-core.ps1"), [System.Text.Encoding]::UTF8)
@@ -389,6 +396,10 @@ try {
     Assert-Contains "ngrok profile preflight passes isolated config to candidate" $coreSource '"--config", $temporaryAgentConfigPath'
     Assert-Contains "ngrok profile preflight validates temporary config" $coreSource '"config", "check", "--config", $temporaryAgentConfigPath'
     Assert-Contains "ngrok profile preflight cleans temporary config" $coreSource '@($stdoutPath, $stderrPath, $temporaryAgentConfigPath)'
+    Assert-Contains "managed ngrok start isolates user default config" $coreSource 'Ensure-WatchdogManagedNgrokConfig $Config'
+    Assert-Contains "legacy watchdog restart isolates user default config" $watchdogSource 'Ensure-WatchdogManagedNgrokConfig $config'
+    Assert-Contains "managed ngrok credential stays in environment" $coreSource '$environment["NGROK_AUTHTOKEN"] = $storedToken'
+    Assert-Contains "failed switch is persisted in event history" $traySource '"account_switch_failed"'
     Assert-Contains "manual service actions reload on-disk config" $traySource 'function Refresh-ManualActionConfig'
     Assert-Contains "manual service action config reload happens before service selection" $traySource 'Refresh-ManualActionConfig'
     Assert-Contains "manual config reload rejects stateDir changes" $traySource 'Watchdog stateDir changed on disk; restart the Host before using service controls.'
@@ -415,6 +426,8 @@ try {
     Assert-Contains "dashboard loads saved ngrok profiles" $dashboardSource '/api/ngrok/profiles'
     Assert-Contains "dashboard switches saved ngrok profile" $dashboardSource '/api/ngrok/profile/switch'
     Assert-Contains "dashboard deletes saved ngrok profile" $dashboardSource '/api/ngrok/profile/delete'
+    Assert-Contains "saved ngrok switch shows persistent progress" $dashboardSource 'button.textContent = "Switching..."'
+    Assert-Contains "saved ngrok switch shows persistent failure" $dashboardSource 'Switch to ${profile.name} failed'
     Assert-Contains "dashboard has DevSpace ChatGPT connection card" $dashboardSource 'DevSpace ChatGPT Connection'
     Assert-Contains "dashboard has Hermes ChatGPT connection card" $dashboardSource 'Hermes ChatGPT Connection'
     Assert-Contains "dashboard copies current DevSpace MCP URL" $dashboardSource 'id="copy-devspace-url"'

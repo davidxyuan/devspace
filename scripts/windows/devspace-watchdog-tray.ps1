@@ -789,6 +789,10 @@ function Complete-ControlNgrokSwitch {
                 $script:state.maintenanceMode = $true
                 Save-WatchdogState $script:statePath $script:state
             }
+            try {
+                $rollbackResult = if ($completed.needsAttention) { "rollback needs operator attention" } else { "rolled back" }
+                Write-WatchdogEvent $script:stateDir $script:config "ngrok" "account_switch_failed" "user request" $rollbackResult ([string]$completed.error)
+            } catch { }
             Request-ImmediatePublicProbe "ngrok_switch_failed"
             $response = @{ error=[string]$completed.error }
         }

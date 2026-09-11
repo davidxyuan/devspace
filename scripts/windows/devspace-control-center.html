@@ -212,7 +212,7 @@
           <div class="actions"><button id="switch-ngrok-account" class="primary" type="submit">Switch Account &amp; Verify</button><button id="restore-ngrok-account" type="button">Restore Previous ngrok Account</button></div>
           <p class="muted">Restore reuses the domain and encrypted credential saved before the last switch, then verifies public MCP. It also works after restarting the Host. If the old account used ngrok.yml, that file must still contain its credential.</p>
         </form>
-        <div id="ngrok-switch-result" class="impact GREEN" hidden><h3>New ChatGPT MCP URLs</h3><pre id="ngrok-switch-urls"></pre><p class="warning">Update/reconnect the ChatGPT MCP connectors to these URLs after a successful domain switch.</p></div>
+        <div id="ngrok-switch-result" class="impact GREEN" hidden><h3 id="ngrok-switch-result-title">New ChatGPT MCP URLs</h3><pre id="ngrok-switch-urls"></pre><p id="ngrok-switch-result-note" class="warning">Update/reconnect the ChatGPT MCP connectors to these URLs after a successful domain switch.</p></div>
       </div>
       <div class="panel"><h2>Credential policy</h2><p>ngrok Auth Token is stored only as a Windows DPAPI CurrentUser encrypted record. No plaintext ngrok token or API key is stored in the normal Control Center configuration or event log.</p></div>
     </section>
@@ -559,7 +559,7 @@
         row.append(stateCell);
         const actionCell = document.createElement("td"), actions = el("div", null, "actions");
         const test = el("button", "Test"); test.type = "button"; test.disabled = Boolean(profile.active); test.addEventListener("click", () => testSavedNgrokProfile(profile, test));
-        const use = el("button", profile.active ? "Active" : "Switch", profile.active ? "" : "primary"); use.type = "button"; use.disabled = Boolean(profile.active); use.addEventListener("click", () => switchSavedNgrokProfile(profile));
+        const use = el("button", profile.active ? "Active" : "Switch", profile.active ? "" : "primary"); use.type = "button"; use.disabled = Boolean(profile.active); use.addEventListener("click", () => switchSavedNgrokProfile(profile, use));
         const copy = el("button", "Copy URLs"); copy.type = "button"; copy.addEventListener("click", () => copyNgrokProfileUrls(profile));
         const edit = el("button", "Edit"); edit.type = "button"; edit.addEventListener("click", () => editNgrokProfile(profile));
         const remove = el("button", "Delete", "danger"); remove.type = "button"; remove.addEventListener("click", () => deleteNgrokProfile(profile));
@@ -631,15 +631,31 @@
       } catch (error) { toast(error.message, true); }
     }
 
-    async function switchSavedNgrokProfile(profile) {
+    function showNgrokSwitchResult(level, title, body, note) {
+      const panel = $("#ngrok-switch-result");
+      panel.className = `impact ${level}`;
+      $("#ngrok-switch-result-title").textContent = title;
+      $("#ngrok-switch-urls").textContent = body || "";
+      const noteNode = $("#ngrok-switch-result-note"); noteNode.textContent = note || ""; noteNode.hidden = !note;
+      panel.hidden = false;
+    }
+
+    async function switchSavedNgrokProfile(profile, button) {
       if (!confirm(`Switch to ngrok account “${profile.name}”? Affected MCP services will restart and the new public endpoints will be verified automatically.`)) return;
+      const original = button.textContent; button.disabled = true; button.textContent = "Switching...";
+      showNgrokSwitchResult("YELLOW", `Switching to ${profile.name}…`, "Restarting affected MCP services and verifying the new public endpoints. Do not close this Dashboard.", "If verification fails, the previous account will be restored automatically.");
       try {
         const result = await api("/api/ngrok/profile/switch", { method:"POST", body:JSON.stringify({ id:profile.id, confirmation:"SWITCH NGROK PROFILE" }) });
-        $("#ngrok-switch-urls").textContent = `DevSpace\n${result.devspaceUrl}\n\nHermes\n${result.hermesUrl}`;
-        $("#ngrok-switch-result").hidden = false;
+        showNgrokSwitchResult("GREEN", `Switched to ${result.profileName || profile.name}`, `DevSpace\n${result.devspaceUrl}\n\nHermes\n${result.hermesUrl}`, "Update/reconnect the ChatGPT MCP connectors to these URLs after the successful domain switch.");
         toast(`Switched to ${result.profileName || profile.name} and verified.${result.backupId ? ` Backup: ${result.backupId}` : ""}`);
         await refreshStatus(); await refreshNgrokProfiles(); await refreshBackups();
-      } catch (error) { toast(error.message, true); }
+      } catch (error) {
+        showNgrokSwitchResult("RED", `Switch to ${profile.name} failed`, error.message, "The live profile list and service health have been refreshed below. If rollback completed, the previous account remains ACTIVE.");
+        toast(error.message, true);
+        await refreshStatus(); await refreshNgrokProfiles(); await refreshBackups();
+      } finally {
+        if (button.isConnected) { button.disabled = false; button.textContent = original; }
+      }
     }
 
     async function restoreNgrokAccount() {

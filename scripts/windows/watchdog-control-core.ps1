@@ -1430,6 +1430,25 @@ function Get-WatchdogNgrokCredentialPath($Config) {
     return Join-Path $stateDir "ngrok-auth.dpapi.json"
 }
 
+function Get-WatchdogManagedNgrokConfigPath($Config) {
+    $stateDir = [System.IO.Path]::GetFullPath([string](Get-WatchdogProperty $Config "stateDir" ""))
+    if (-not $stateDir) { throw "Watchdog configuration has no stateDir." }
+    return Join-Path $stateDir "ngrok-managed-agent.yml"
+}
+
+function Ensure-WatchdogManagedNgrokConfig($Config) {
+    $port = [int](Get-WatchdogProperty $Config "ngrokInspectorPort" 4040)
+    if ($port -lt 1 -or $port -gt 65535) { throw "ngrok Inspector Port is invalid." }
+    $path = Get-WatchdogManagedNgrokConfigPath $Config
+    # This file is intentionally credential-free. When Watchdog owns the credential,
+    # NGROK_AUTHTOKEN is injected into the child process and the user's default ngrok.yml
+    # is excluded so an older account credential cannot override the selected profile.
+    $content = "version: `"3`"`r`nagent:`r`n  web_addr: `"127.0.0.1:$port`"`r`n"
+    $existing = if ([System.IO.File]::Exists($path)) { [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) } else { "" }
+    if ($existing -ne $content) { Write-WatchdogAtomicText $path $content }
+    return $path
+}
+
 function Assert-WatchdogNgrokToken([string]$Token) {
     if ([string]::IsNullOrWhiteSpace($Token)) { throw "ngrok Auth Token is required." }
     if ($Token.Length -gt 4096 -or $Token.Contains("`r") -or $Token.Contains("`n") -or $Token.Contains([char]0)) {
@@ -1995,13 +2014,19 @@ function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Co
             "ngrok" {
                 $ngrok = [string]$Config.ngrokPath
                 $upstreamPort = [int](Get-WatchdogProperty $Config "publicUpstreamPort" $Config.routerPort)
+                $storedToken = Get-WatchdogNgrokCredential $Config
                 $arguments = @("http", "http://127.0.0.1:$upstreamPort", "--url", [string]$Config.ngrokAgentBaseUrl)
-                $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)
-                if (-not $webSupported -and [int](Get-WatchdogProperty $Config "ngrokInspectorPort" 4040) -ne 4040) { throw "ngrok --web-addr support is not confirmed; ngrok Inspector Port must remain 4040." }
-                if ($webSupported) { $arguments += @("--web-addr", "127.0.0.1:$([int]$Config.ngrokInspectorPort)") }
+                if ($storedToken) {
+                    # A Watchdog-managed credential must never be combined with the user's
+                    # default ngrok.yml, because that file may belong to a different account.
+                    $arguments += @("--config", (Ensure-WatchdogManagedNgrokConfig $Config))
+                } else {
+                    $webSupported = [bool](Get-WatchdogProperty $Config "ngrokWebAddrSupported" $false)
+                    if (-not $webSupported -and [int](Get-WatchdogProperty $Config "ngrokInspectorPort" 4040) -ne 4040) { throw "ngrok --web-addr support is not confirmed; ngrok Inspector Port must remain 4040." }
+                    if ($webSupported) { $arguments += @("--web-addr", "127.0.0.1:$([int]$Config.ngrokInspectorPort)") }
+                }
                 if ([string](Get-WatchdogProperty $Config "ngrokBinding" "")) { $arguments += @("--binding", [string]$Config.ngrokBinding) }
                 $arguments += @("--log", "stdout")
-                $storedToken = Get-WatchdogNgrokCredential $Config
                 $environment = @{}
                 if ($storedToken) { $environment["NGROK_AUTHTOKEN"] = $storedToken }
                 $process = Invoke-WithWatchdogEnvironment $environment { Start-WatchdogHiddenProcess $ngrok $arguments (Split-Path -Parent $ngrok) $outPath $errPath }
