@@ -37,8 +37,11 @@ Assert-Contains 'blocks Kaspersky-managed Apply before writes' 'Kaspersky Endpoi
 if ($source.IndexOf('if (Test-UpdateKasperskyEndpointSecurity)') -gt $source.IndexOf('$backupDir = Join-Path')) { throw 'Kaspersky guard must run before backup/copy mutation.' }
 Assert-NotContains 'does not disable legacy scheduled task' 'Disable-ScheduledTask'
 Assert-NotContains 'does not unregister legacy scheduled task' 'Unregister-ScheduledTask'
-Assert-NotContains 'does not register replacement scheduled task' 'Register-ScheduledTask'
+Assert-Contains 'migrates only verified supervisor action' 'Convert-InstallSupervisorTaskAction $InstallDir'
+Assert-Contains 'backs up supervisor XML before action migration' '$previousSupervisorTaskXml = Export-ScheduledTask'
+Assert-Contains 'restores prior supervisor XML on rollback' 'Register-ScheduledTask -TaskName $supervisorSpec.name'
+Assert-Contains 'rollback uses backed-up supervisor XML' '-Xml $previousSupervisorTaskXml'
 Assert-NotContains 'does not stop DevSpace service' "Stop-WatchdogManagedService 'devspace'"
 Assert-NotContains 'does not stop Hermes service' "Stop-WatchdogManagedService 'hermes'"
 Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'ngrok'"
-Write-Host 'installed runtime updater checks passed: existing-install-only, no legacy ACL mutation, lifecycle proof, backup and router-only restart.'
+Write-Host 'installed runtime updater checks passed: existing-install-only, bounded supervisor action migration, lifecycle proof, backup and router-only restart.'

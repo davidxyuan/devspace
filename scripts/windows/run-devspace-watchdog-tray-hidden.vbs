@@ -9,6 +9,7 @@ Dim powershellPath
 Dim command
 Dim exitCode
 Dim mode
+Dim scheduledSupervisor
 
 Function QuoteArg(value)
   QuoteArg = Chr(34) & Replace(value, Chr(34), Chr(34) & Chr(34)) & Chr(34)
@@ -26,15 +27,22 @@ If Not fileSystem.FileExists(configPath) Then WScript.Quit 3
 If Not fileSystem.FileExists(powershellPath) Then WScript.Quit 4
 
 mode = "Watch"
+scheduledSupervisor = ""
 If WScript.Arguments.Count > 1 Then WScript.Quit 5
 If WScript.Arguments.Count = 1 Then
-  If LCase(WScript.Arguments(0)) <> "-stop" Then WScript.Quit 5
-  mode = "Stop"
+  Select Case LCase(WScript.Arguments(0))
+    Case "-stop"
+      mode = "Stop"
+    Case "-supervisor"
+      scheduledSupervisor = " -ScheduledSupervisor"
+    Case Else
+      WScript.Quit 5
+  End Select
 End If
 
 command = QuoteArg(powershellPath) & _
   " -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File " & _
-  QuoteArg(bootstrapPath) & " -Mode " & mode & " -ConfigPath " & QuoteArg(configPath)
+  QuoteArg(bootstrapPath) & " -Mode " & mode & scheduledSupervisor & " -ConfigPath " & QuoteArg(configPath)
 
 exitCode = shell.Run(command, 0, True)
 WScript.Quit exitCode

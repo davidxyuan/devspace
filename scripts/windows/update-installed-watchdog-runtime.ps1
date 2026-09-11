@@ -162,7 +162,9 @@ $record = Read-WatchdogJson $recordPath
 if ([IO.Path]::GetFullPath([string]$record.installDir) -ne $InstallDir) { throw 'Tray install record belongs to another installation directory.' }
 $supervisorSpec = Get-InstallSupervisorTaskSpec $InstallDir
 $supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
-Assert-InstallSupervisorTask $supervisorTask $supervisorSpec
+Assert-InstallSupervisorTask $supervisorTask $supervisorSpec -AllowLegacyAction
+$previousSupervisorTaskXml = Export-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
+$supervisorActionChanged = $false
 if ([string]$supervisorTask.State -notin @('Running','Ready')) { throw "Supervisor task is not in a usable state: $($supervisorTask.State)" }
 
 $installedMap = @{}
@@ -233,6 +235,8 @@ try {
         $entry.sha256 = Get-WatchdogFileSha256 (Join-Path $InstallDir $name)
     }
     Write-WatchdogAtomicJson $recordPath $record
+    $supervisorAction = Convert-InstallSupervisorTaskAction $InstallDir
+    $supervisorActionChanged = [bool]$supervisorAction.changed
 
     & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath
     Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
@@ -251,6 +255,9 @@ try {
         }
         if ((Get-WatchdogFileSha256 $recordBackup) -ne $recordBackupHash) { throw 'Install-record rollback backup hash mismatch.' }
         Copy-UpdateFile $recordBackup $recordPath
+        if ($supervisorActionChanged -and $previousSupervisorTaskXml) {
+            Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Xml $previousSupervisorTaskXml -Force -ErrorAction Stop | Out-Null
+        }
         & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath
         Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
     } catch { throw "Runtime update failed: $failure. Rollback also needs attention: $($_.Exception.Message). Backup: $backupDir" }

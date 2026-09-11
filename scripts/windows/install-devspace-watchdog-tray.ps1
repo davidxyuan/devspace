@@ -234,9 +234,10 @@ $supervisorSpec = Get-InstallSupervisorTaskSpec $InstallDir
 $previousRecord = if ([IO.File]::Exists($recordPath)) { [IO.File]::ReadAllBytes($recordPath) } else { $null }
 $recordChanged = $false
 $supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction SilentlyContinue
-if ($supervisorTask) { Assert-InstallSupervisorTask $supervisorTask $supervisorSpec }
+if ($supervisorTask) { Assert-InstallSupervisorTask $supervisorTask $supervisorSpec -AllowLegacyAction }
 $previousSupervisorTaskXml = if ($supervisorTask) { Export-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop } else { $null }
 $supervisorRecoveryPolicyChanged = $false
+$supervisorActionChanged = $false
 
 try {
     if (-not $PSCmdlet.ShouldProcess($InstallDir, "install and start DevSpace Watchdog Tray")) { return }
@@ -303,7 +304,7 @@ try {
     catch { $existingTrayWasRunning = $true }
     if (-not (Invoke-InstalledWatchdogStop)) { throw "Watchdog lifecycle stop is unavailable; refusing deployment." }
     if ($supervisorTask) {
-        Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop) $supervisorSpec
+        Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop) $supervisorSpec -AllowLegacyAction
         Wait-InstallSupervisorTaskStopped $InstallDir
     }
     if (-not (Invoke-InstalledWatchdogBootstrap "CheckStopped")) { throw "Watchdog exit proof is unavailable; refusing deployment." }
@@ -392,6 +393,11 @@ try {
         Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Action $action -Principal $principal -Settings $taskSettings -ErrorAction Stop | Out-Null
         $supervisorTaskCreated = $true
     }
+    if ($supervisorTask) {
+        $supervisorAction = Convert-InstallSupervisorTaskAction $InstallDir
+        $supervisorTask = $supervisorAction.task
+        $supervisorActionChanged = [bool]$supervisorAction.changed
+    }
     $supervisorRecovery = Ensure-InstallSupervisorRecoveryPolicy $InstallDir
     $supervisorTask = $supervisorRecovery.task
     $supervisorRecoveryPolicyChanged = [bool]$supervisorRecovery.changed
@@ -406,7 +412,7 @@ try {
         $supervisorReady = $false
         if ((Test-InstallerHeartbeatFresh $supervisorHeartbeat 'supervisor') -and $supervisorHeartbeat.timestamp -ge $supervisorStartedAt) {
             $supervisorProcess = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop
-            $supervisorReady = $supervisorProcess -and $supervisorProcess.ExecutablePath -eq $supervisorSpec.executable -and
+            $supervisorReady = $supervisorProcess -and $supervisorProcess.ExecutablePath -eq $supervisorSpec.workerExecutable -and
                 (Test-WatchdogCommandToken $supervisorProcess.CommandLine (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1')) -and
                 (Test-WatchdogCommandToken $supervisorProcess.CommandLine $configPath) -and
                 (Test-WatchdogCommandToken $supervisorProcess.CommandLine '-ScheduledSupervisor')
@@ -444,10 +450,10 @@ try {
         if ($supervisorTaskCreated) { Remove-InstallSupervisorTask $InstallDir }
         elseif ($supervisorTask) {
             Wait-InstallSupervisorTaskStopped $InstallDir
-            if ($supervisorRecoveryPolicyChanged -and $previousSupervisorTaskXml) {
+            if (($supervisorRecoveryPolicyChanged -or $supervisorActionChanged) -and $previousSupervisorTaskXml) {
                 Register-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -Xml $previousSupervisorTaskXml -Force -ErrorAction Stop | Out-Null
                 $supervisorTask = Get-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
-                Assert-InstallSupervisorTask $supervisorTask $supervisorSpec
+                Assert-InstallSupervisorTask $supervisorTask $supervisorSpec -AllowLegacyAction
             }
         }
         foreach ($item in $overwritten) {

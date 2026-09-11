@@ -313,6 +313,8 @@ End Class
     Assert-True "VBS Stop reaches bootstrap and propagates exit" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Stop -ConfigPath ')
     $output = & cscript.exe //NoLogo $vbsPath
     Assert-True "VBS starts persistent supervisor" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Watch -ConfigPath ')
+    $output = & cscript.exe //NoLogo $vbsPath -Supervisor
+    Assert-True "VBS starts scheduled supervisor without a console" ($LASTEXITCODE -eq 7 -and $output -match ' -Mode Watch -ScheduledSupervisor -ConfigPath ')
     $output = & cscript.exe //NoLogo $vbsPath -Invalid
     Assert-True "VBS rejects invalid mode without launch" ($LASTEXITCODE -eq 5 -and -not $output)
     $global:LASTEXITCODE = 0

@@ -6,10 +6,16 @@ function Get-InstallSupervisorTaskSpec([string]$InstallDir) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))).Replace('-', '').Substring(0,12).ToLowerInvariant() }
     finally { $sha.Dispose() }
+    $workerExecutable = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $workerArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $root 'devspace-watchdog-bootstrap.ps1') + '" -Mode Watch -ScheduledSupervisor -ConfigPath "' + (Join-Path $root 'devspace-watchdog.config.json') + '"'
     return [pscustomobject]@{
         name = "DevSpaceWatchdogSupervisor-$hash"
-        executable = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $root 'devspace-watchdog-bootstrap.ps1') + '" -Mode Watch -ScheduledSupervisor -ConfigPath "' + (Join-Path $root 'devspace-watchdog.config.json') + '"'
+        executable = Join-Path $env:WINDIR 'System32\wscript.exe'
+        arguments = '//B //NoLogo "' + (Join-Path $root 'run-devspace-watchdog-tray-hidden.vbs') + '" -supervisor'
+        workerExecutable = $workerExecutable
+        workerArguments = $workerArguments
+        legacyExecutable = $workerExecutable
+        legacyArguments = $workerArguments
         user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     }
 }
@@ -43,20 +49,48 @@ function Test-InstallSupervisorKnownRecoveryPolicy($Task) {
         ($restartCount -eq 3 -and $restartInterval -eq 'PT1M')
 }
 
-function Assert-InstallSupervisorTask($Task, $Spec) {
+function Test-InstallSupervisorTaskAction($Task, $Spec, [switch]$AllowLegacyAction) {
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1) { return $false }
+    $action = $actions[0]
+    if ([string]$action.Execute -eq [string]$Spec.executable -and [string]$action.Arguments -ceq [string]$Spec.arguments) { return $true }
+    if ($AllowLegacyAction -and [string]$action.Execute -eq [string]$Spec.legacyExecutable -and [string]$action.Arguments -ceq [string]$Spec.legacyArguments) { return $true }
+    return $false
+}
+
+function Assert-InstallSupervisorTask($Task, $Spec, [switch]$AllowLegacyAction) {
     $taskUser = [string]$Task.Principal.UserId
     if ($taskUser -and $taskUser -notmatch '^S-1-') {
         try { $taskUser = ([Security.Principal.NTAccount]::new($taskUser)).Translate([Security.Principal.SecurityIdentifier]).Value }
         catch { throw 'Cannot resolve supervisor task account identity.' }
     }
     if (-not $Task -or $Task.TaskPath -ne '\' -or $Task.TaskName -ne $Spec.name -or
-        @($Task.Actions).Count -ne 1 -or $Task.Actions[0].Execute -ne $Spec.executable -or
-        $Task.Actions[0].Arguments -cne $Spec.arguments -or $taskUser -ne $Spec.user -or
+        -not (Test-InstallSupervisorTaskAction $Task $Spec -AllowLegacyAction:$AllowLegacyAction) -or $taskUser -ne $Spec.user -or
         [string]$Task.Principal.LogonType -ne 'Interactive' -or [string]$Task.Principal.RunLevel -ne 'Limited' -or
         -not $Task.Settings.Enabled -or [string]$Task.Settings.MultipleInstances -ne 'IgnoreNew' -or
         [string]$Task.Settings.ExecutionTimeLimit -ne 'PT0S' -or -not (Test-InstallSupervisorKnownRecoveryPolicy $Task)) {
         throw 'Supervisor scheduled task identity/settings changed; refusing to use or remove it.'
     }
+}
+
+function Convert-InstallSupervisorTaskAction([string]$InstallDir) {
+    $spec = Get-InstallSupervisorTaskSpec $InstallDir
+    $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    Assert-InstallSupervisorTask $task $spec -AllowLegacyAction
+    if (Test-InstallSupervisorTaskAction $task $spec) { return [pscustomobject]@{ task=$task; changed=$false } }
+    if ([string]$task.State -in @('Running','Queued')) { throw 'Supervisor task must be stopped before migrating its hidden launcher action.' }
+    $xmlText = Export-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    [xml]$xml = $xmlText
+    $namespace = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+    $namespace.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
+    $exec = $xml.SelectSingleNode('//t:Actions/t:Exec', $namespace)
+    if (-not $exec) { throw 'Supervisor task action XML is missing.' }
+    $exec.Command = [string]$spec.executable
+    $exec.Arguments = [string]$spec.arguments
+    Register-ScheduledTask -TaskName $spec.name -TaskPath '\' -Xml $xml.OuterXml -Force -ErrorAction Stop | Out-Null
+    $updated = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
+    Assert-InstallSupervisorTask $updated $spec
+    return [pscustomobject]@{ task=$updated; changed=$true }
 }
 
 function Ensure-InstallSupervisorRecoveryPolicy([string]$InstallDir) {
@@ -88,7 +122,7 @@ function Wait-InstallSupervisorTaskStopped([string]$InstallDir) {
     do {
         $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction SilentlyContinue
         if (-not $task) { return }
-        Assert-InstallSupervisorTask $task $spec
+        Assert-InstallSupervisorTask $task $spec -AllowLegacyAction
         if ([string]$task.State -notin @('Running','Queued')) { return }
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
@@ -100,7 +134,7 @@ function Remove-InstallSupervisorTask([string]$InstallDir) {
     $spec = Get-InstallSupervisorTaskSpec $InstallDir
     $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction SilentlyContinue
     if (-not $task) { return }
-    Assert-InstallSupervisorTask $task $spec
+    Assert-InstallSupervisorTask $task $spec -AllowLegacyAction
     Unregister-ScheduledTask -TaskName $spec.name -TaskPath '\' -Confirm:$false -ErrorAction Stop
 }
 
