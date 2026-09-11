@@ -91,6 +91,7 @@ try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $launcherPath
+        $shortcut.Arguments = ''
         $shortcut.WorkingDirectory = $OpenCodexHome
         $shortcut.Description = 'Start OpenCodex Tray'
         $shortcut.Save()

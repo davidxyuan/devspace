@@ -16,6 +16,7 @@ $required=@(
   'MultipleInstances IgnoreNew'
 )
 foreach($needle in $required){if(-not $installerText.Contains($needle)){throw "installer missing expected behavior: $needle"}}
+if(-not $installerText.Contains('$shortcut.Arguments = ''''')){throw 'installer does not clear stale desktop shortcut arguments'}
 if(-not $bootstrapText.Contains('opencodex-tray-launcher.exe')){throw 'bootstrap repair does not prefer native launcher'}
 if(-not $bootstrapText.Contains('opencodex-tray.vbs')){throw 'bootstrap repair lost VBS compatibility fallback'}
 $null=[scriptblock]::Create($installerText)
