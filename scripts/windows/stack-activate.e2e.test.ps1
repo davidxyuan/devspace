@@ -30,6 +30,7 @@ try {
     Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$candidate\.hermesAgentExe\)') 'Hermes Agent activation does not refresh the installed gateway launcher.'
     Assert-StackE2E ($activationSource -match 'Undo-InstallTransaction[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$config\.hermesAgentExe\)') 'Hermes Agent rollback does not regenerate the launcher from the restored runtime.'
     Assert-StackE2E ($activationSource -match 'function Stop-StackServiceIfPresent') 'Rollback is missing bounded candidate-process cleanup.'
+    Assert-StackE2E ($activationSource -match '\$task\.name -notin \$transaction\.disabledTasks') 'Activation must not rewrite legacy tasks that were only logically quiesced because their ACL blocked task changes.'
     Assert-StackE2E (([regex]::Matches($activationSource, 'Stop-StackServiceIfPresent \$change\.service \$change\.config')).Count -eq 2) 'Rollback must sweep the candidate service both before and after transaction restore.'
     Assert-StackE2E ($activationSource -match 'Pre-restore candidate cleanup''\)[\s\S]+Undo-InstallTransaction[\s\S]+Post-restore candidate cleanup') 'Candidate cleanup is not ordered around transaction restore.'
     @('devspace-stack-setup.cjs', 'stack-management.cjs', 'stack-host-management.ps1', 'install-devspace-watchdog-tray.ps1') | ForEach-Object {

@@ -191,6 +191,7 @@ try {
         Assert-StackServiceReady $change.service $change.config
     }
     foreach ($task in $tasks) {
+        if ($task.name -notin $transaction.disabledTasks) { continue }
         if ($task.enabled) { Enable-ScheduledTask -TaskName $task.name -TaskPath $task.path -ErrorAction Stop | Out-Null }
         if ($task.running -and $task.enabled) { Start-ScheduledTask -TaskName $task.name -TaskPath $task.path -ErrorAction Stop }
     }
