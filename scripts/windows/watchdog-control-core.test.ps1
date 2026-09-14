@@ -58,6 +58,11 @@ try {
     Write-WatchdogAtomicJson $configPath $config 30
     Write-WatchdogAtomicJson $devspaceConfigPath ([pscustomobject]@{host="127.0.0.1";port=17676;allowedRoots=@($tempRoot);publicBaseUrl=$config.publicBaseUrl}) 10
 
+    $orderedConfig = [ordered]@{alpha=7; nullValue=$null}
+    Assert-Equal "ordered dictionary property lookup" (Get-WatchdogProperty $orderedConfig "alpha" 99) 7
+    Assert-Equal "ordered dictionary missing property uses default" (Get-WatchdogProperty $orderedConfig "missing" 99) 99
+    Assert-Equal "ordered dictionary null property uses default" (Get-WatchdogProperty $orderedConfig "nullValue" 99) 99
+
     $legacyHermesResponse = [pscustomobject]@{
         reachable=$true;status=405
         headers=@{"allow"="GET, POST, DELETE";"content-type"="application/json"}

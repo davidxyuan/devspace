@@ -3,6 +3,10 @@ $script:WatchdogServiceNames = @("devspace", "hermes", "router", "ngrok")
 
 function Get-WatchdogProperty($Object, [string]$Name, $Default = $null) {
     if ($null -eq $Object) { return $Default }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if (-not $Object.Contains($Name) -or $null -eq $Object[$Name]) { return $Default }
+        return $Object[$Name]
+    }
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property -or $null -eq $property.Value) { return $Default }
     return $property.Value
