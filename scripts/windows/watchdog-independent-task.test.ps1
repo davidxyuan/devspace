@@ -70,14 +70,14 @@ try {
 Write-Host 'Installer task creation/reuse/failure and installation-record rollback passed.'
 # Exercise the real Watch dispatch: clear manual pause and start only the verified task.
 $dispatchAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'),[ref]$tokens,[ref]$errors)
-$dispatch=$dispatchAst.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "$('$Mode') -eq 'Watch' -and -not $('$ScheduledSupervisor')"},$true)
+$dispatch=$dispatchAst.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "$('$Mode') -eq 'Watch' -and -not $('$ScheduledSupervisor') -and -not $('$ScheduledSupervisorLauncher')"},$true)
 $stateDir=[IO.Path]::GetFullPath((Join-Path $env:TEMP ('devspace-dispatch-test-'+[guid]::NewGuid().ToString('N'))))
 [void][IO.Directory]::CreateDirectory($stateDir)
 $spec=Get-InstallSupervisorTaskSpec $stateDir
 $script:task=[pscustomobject]@{TaskName=$spec.name;TaskPath='\';Actions=@([pscustomobject]@{Execute=$spec.executable;Arguments=$spec.arguments});Principal=[pscustomobject]@{UserId=$spec.user;LogonType='Interactive';RunLevel='Limited'};Triggers=@();Settings=[pscustomobject]@{Enabled=$true;MultipleInstances='IgnoreNew';ExecutionTimeLimit='PT0S'}}
 $script:starts=0
 function Start-ScheduledTask { param($TaskName,$TaskPath) if ($TaskName -ne $spec.name -or $TaskPath -ne '\') { throw 'Wrong task started' }; $script:starts++ }
-$Mode='Watch'; $ScheduledSupervisor=$false
+$Mode='Watch'; $ScheduledSupervisor=$false; $ScheduledSupervisorLauncher=$false
 try {
     [IO.File]::WriteAllText((Join-Path $stateDir 'watchdog-tray-install.json'), (@{installDir=$stateDir;supervisorTask=$spec.name} | ConvertTo-Json))
     [IO.File]::WriteAllText((Join-Path $stateDir 'watchdog-manual-stop.flag'),'pause')
@@ -86,6 +86,9 @@ try {
     $ScheduledSupervisor=$true
     Invoke-Expression ($dispatch.Extent.Text.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'")))
     if ($script:starts -ne 1) { throw 'Scheduled Watch recursively dispatched itself' }
+    $ScheduledSupervisor=$false; $ScheduledSupervisorLauncher=$true
+    Invoke-Expression ($dispatch.Extent.Text.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'")))
+    if ($script:starts -ne 1) { throw 'Scheduled supervisor launcher recursively dispatched the task' }
 } finally {
     [IO.File]::Delete((Join-Path $stateDir 'watchdog-tray-install.json'))
     [IO.File]::Delete((Join-Path $stateDir 'watchdog-manual-stop.flag'))

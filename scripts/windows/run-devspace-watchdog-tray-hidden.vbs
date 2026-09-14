@@ -34,7 +34,7 @@ If WScript.Arguments.Count = 1 Then
     Case "-stop"
       mode = "Stop"
     Case "-supervisor"
-      scheduledSupervisor = " -ScheduledSupervisor"
+      scheduledSupervisor = " -ScheduledSupervisorLauncher"
     Case Else
       WScript.Quit 5
   End Select
