@@ -8,14 +8,18 @@ function Get-InstallSupervisorTaskSpec([string]$InstallDir) {
     finally { $sha.Dispose() }
     $workerExecutable = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $workerArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $root 'devspace-watchdog-bootstrap.ps1') + '" -Mode Watch -ScheduledSupervisor -ConfigPath "' + (Join-Path $root 'devspace-watchdog.config.json') + '"'
+    $bridgeExecutable = Join-Path $env:WINDIR 'System32\wscript.exe'
+    $bridgeArguments = '//B //NoLogo "' + (Join-Path $root 'run-devspace-watchdog-tray-hidden.vbs') + '" -supervisor'
     return [pscustomobject]@{
         name = "DevSpaceWatchdogSupervisor-$hash"
-        executable = Join-Path $env:WINDIR 'System32\wscript.exe'
-        arguments = '//B //NoLogo "' + (Join-Path $root 'run-devspace-watchdog-tray-hidden.vbs') + '" -supervisor'
+        executable = Join-Path $env:WINDIR 'System32\conhost.exe'
+        arguments = '--headless "' + $workerExecutable + '" ' + $workerArguments
         workerExecutable = $workerExecutable
         workerArguments = $workerArguments
         legacyExecutable = $workerExecutable
         legacyArguments = $workerArguments
+        bridgeExecutable = $bridgeExecutable
+        bridgeArguments = $bridgeArguments
         user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     }
 }
@@ -54,7 +58,10 @@ function Test-InstallSupervisorTaskAction($Task, $Spec, [switch]$AllowLegacyActi
     if ($actions.Count -ne 1) { return $false }
     $action = $actions[0]
     if ([string]$action.Execute -eq [string]$Spec.executable -and [string]$action.Arguments -ceq [string]$Spec.arguments) { return $true }
-    if ($AllowLegacyAction -and [string]$action.Execute -eq [string]$Spec.legacyExecutable -and [string]$action.Arguments -ceq [string]$Spec.legacyArguments) { return $true }
+    if ($AllowLegacyAction) {
+        if ([string]$action.Execute -eq [string]$Spec.legacyExecutable -and [string]$action.Arguments -ceq [string]$Spec.legacyArguments) { return $true }
+        if ([string]$action.Execute -eq [string]$Spec.bridgeExecutable -and [string]$action.Arguments -ceq [string]$Spec.bridgeArguments) { return $true }
+    }
     return $false
 }
 

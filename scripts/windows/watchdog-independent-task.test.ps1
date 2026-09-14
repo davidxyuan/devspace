@@ -1,12 +1,18 @@
 ﻿$ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
 $spec = Get-InstallSupervisorTaskSpec (Join-Path $env:TEMP 'devspace task test')
+if ([IO.Path]::GetFileName([string]$spec.executable) -ne 'conhost.exe' -or [string]$spec.arguments -notmatch '^--headless ' -or [string]$spec.arguments -notmatch 'ScheduledSupervisor') { throw 'Supervisor task is not using headless conhost.' }
 $script:task = [pscustomobject]@{TaskName=$spec.name;TaskPath='\';Actions=@([pscustomobject]@{Execute=$spec.executable;Arguments=$spec.arguments});Principal=[pscustomobject]@{UserId=$spec.user;LogonType='Interactive';RunLevel='Limited'};Triggers=@();Settings=[pscustomobject]@{Enabled=$true;MultipleInstances='IgnoreNew';ExecutionTimeLimit='PT0S'}}
 $script:removed = 0
 function Get-ScheduledTask { param($TaskName,$TaskPath) return $script:task }
 function Stop-ScheduledTask { param($TaskName,$TaskPath) if ($TaskName -ne $spec.name) { throw 'Wrong task stopped' } }
 function Unregister-ScheduledTask { param($TaskName,$TaskPath,$Confirm) $script:removed++ }
 Assert-InstallSupervisorTask $script:task $spec
+$script:task.Actions[0].Execute=$spec.legacyExecutable; $script:task.Actions[0].Arguments=$spec.legacyArguments
+Assert-InstallSupervisorTask $script:task $spec -AllowLegacyAction
+$script:task.Actions[0].Execute=$spec.bridgeExecutable; $script:task.Actions[0].Arguments=$spec.bridgeArguments
+Assert-InstallSupervisorTask $script:task $spec -AllowLegacyAction
+$script:task.Actions[0].Execute=$spec.executable; $script:task.Actions[0].Arguments=$spec.arguments
 $script:task.Settings | Add-Member -NotePropertyName RestartCount -NotePropertyValue 3
 $script:task.Settings | Add-Member -NotePropertyName RestartInterval -NotePropertyValue 'PT1M'
 $script:task.Triggers=@([pscustomobject]@{Enabled=$true;DaysInterval=1;StartBoundary='2026-09-10T00:00:00';CimClass=[pscustomobject]@{CimClassName='MSFT_TaskDailyTrigger'};Repetition=[pscustomobject]@{Interval='PT1M';Duration='P1D';StopAtDurationEnd=$false}})
