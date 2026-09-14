@@ -4,8 +4,7 @@ param(
     [string]$RuntimeDirectory,
     [ValidateSet("Run", "Watch", "Stop", "CheckStopped", "RepairHost", "RepairOpenCodexTray")]
     [string]$Mode = "Run",
-    [switch]$ScheduledSupervisor,
-    [switch]$ScheduledSupervisorLauncher
+    [switch]$ScheduledSupervisor
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +27,7 @@ $stateDir = [System.IO.Path]::GetFullPath($stateDirValue)
 $hostHeartbeatPath = Join-Path $stateDir "watchdog-host-heartbeat.json"
 $trayHeartbeatPath = Join-Path $stateDir "watchdog-tray-heartbeat.json"
 
-if ($Mode -eq 'Watch' -and -not $ScheduledSupervisor -and -not $ScheduledSupervisorLauncher) {
+if ($Mode -eq 'Watch' -and -not $ScheduledSupervisor) {
     $installRecord = Join-Path $stateDir 'watchdog-tray-install.json'
     if ([IO.File]::Exists($installRecord)) {
         $record = [IO.File]::ReadAllText($installRecord) | ConvertFrom-Json
@@ -209,27 +208,6 @@ function Test-RoleHeartbeatFresh([string]$Path, [int]$ExpectedSessionId = -1) {
     return $matches.Count -eq 1 -and ($ExpectedSessionId -lt 0 -or [int]$matches[0].SessionId -eq $ExpectedSessionId)
 }
 
-function Test-SupervisorHeartbeatFresh {
-    $path = Join-Path $stateDir 'watchdog-supervisor-heartbeat.json'
-    if (-not [IO.File]::Exists($path)) { return $false }
-    try {
-        $value = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json
-        if ([string](Get-WatchdogProperty $value 'role' '') -ne 'supervisor') { return $false }
-        $pidValue = 0
-        if (-not [int]::TryParse([string](Get-WatchdogProperty $value 'pid' ''), [ref]$pidValue) -or $pidValue -le 0) { return $false }
-        $timestamp = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse([string](Get-WatchdogProperty $value 'timestamp' ''), [ref]$timestamp)) { return $false }
-        $age = ([DateTimeOffset]::UtcNow - $timestamp.ToUniversalTime()).TotalSeconds
-        if ($age -lt -5 -or $age -gt 30) { return $false }
-        $process = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pidValue) -ErrorAction SilentlyContinue
-        if (-not $process -or -not (Test-WatchdogExecutablePath $process $powershell) -or -not $process.CreationDate) { return $false }
-        $command = [string]$process.CommandLine
-        return (Test-WatchdogCommandToken $command $PSCommandPath) -and
-            (Test-WatchdogCommandToken $command $ConfigPath) -and
-            (Test-WatchdogCommandToken $command '-ScheduledSupervisor')
-    } catch { return $false }
-}
-
 function Get-RoleProcesses([string]$HeartbeatPath) {
     $isHost = $HeartbeatPath -eq $hostHeartbeatPath
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop)) {
@@ -338,16 +316,6 @@ function Stop-RoleReliably([string]$HeartbeatPath, [string]$ScriptPath, [string]
     if (Test-RoleRunning $HeartbeatPath) { Stop-RoleFromHeartbeat $HeartbeatPath }
     Assert-RoleStopped $HeartbeatPath
     Remove-StaleHeartbeat $HeartbeatPath
-}
-
-if ($Mode -eq 'Watch' -and $ScheduledSupervisorLauncher) {
-    if (Test-SupervisorHeartbeatFresh) { return }
-    [void](Start-HiddenNativeProcess $powershell @(
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-STA',
-        '-WindowStyle', 'Hidden',
-        '-File', $PSCommandPath, '-Mode', 'Watch', '-ScheduledSupervisor', '-ConfigPath', $ConfigPath
-    ))
-    return
 }
 
 if ($Mode -eq "CheckStopped") {
