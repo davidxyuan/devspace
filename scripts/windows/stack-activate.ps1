@@ -53,25 +53,42 @@ function Assert-StackServiceStopped([string]$Service, $Config) {
 }
 
 function Stop-StackServiceIfPresent([string]$Service, $Config, [string]$Phase) {
-    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-    $layer = Get-WatchdogProcessLayer $Service $Config $processes
-    $managed = @($processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config })
-    if ($layer.identityConflict) { throw "$Phase found an unrecognized process on the candidate service port." }
-    if (-not $layer.listenerFound -and $managed.Count -eq 0) { return $false }
-    $stopped = Stop-WatchdogManagedService $Service $Config
-    if (-not $stopped.success) { throw $stopped.error }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(3)
+    $stoppedAny = $false
+    $cleanSamples = 0
+    do {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $layer = Get-WatchdogProcessLayer $Service $Config $processes
+        $managed = @($processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config })
+        if ($layer.identityConflict) { throw "$Phase found an unrecognized process on the candidate service port." }
+        if (-not $layer.listenerFound -and $managed.Count -eq 0) {
+            $cleanSamples++
+            if ($cleanSamples -ge 2) { return $stoppedAny }
+            Start-Sleep -Milliseconds 250
+            continue
+        }
+        $cleanSamples = 0
+        $stopped = Stop-WatchdogManagedService $Service $Config
+        if (-not $stopped.success) { throw $stopped.error }
+        $stoppedAny = $true
+        Start-Sleep -Milliseconds 250
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
     Assert-StackServiceStopped $Service $Config
-    return $true
+    return $stoppedAny
 }
 
 function Assert-StackServiceReady([string]$Service, $Config) {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    $health = $null
     do {
         $health = Get-WatchdogServiceHealth $Service $Config @(Get-CimInstance Win32_Process -ErrorAction Stop)
         if ($health.healthy) { return }
         Start-Sleep -Milliseconds 500
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "Service $Service failed its local health check."
+    $summary = if ($health) {
+        "process=$([bool]$health.processFound); listener=$([bool]$health.listenerFound); identityConflict=$([bool]$health.identityConflict); http=$([bool]$health.httpReachable); protocol=$([bool]$health.protocolHealthy); detail=$([string]$health.detail); error=$([string]$health.error)"
+    } else { 'no health sample' }
+    throw "Service $Service failed its local health check: $summary"
 }
 
 function Get-HermesGatewayServiceDirectory {
