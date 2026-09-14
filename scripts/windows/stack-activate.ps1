@@ -52,6 +52,18 @@ function Assert-StackServiceStopped([string]$Service, $Config) {
     if ($layer.identityConflict -or $layer.listenerFound -or @($processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config }).Count) { throw "Service $Service has not released its verified processes and listener." }
 }
 
+function Stop-StackServiceIfPresent([string]$Service, $Config, [string]$Phase) {
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $layer = Get-WatchdogProcessLayer $Service $Config $processes
+    $managed = @($processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config })
+    if ($layer.identityConflict) { throw "$Phase found an unrecognized process on the candidate service port." }
+    if (-not $layer.listenerFound -and $managed.Count -eq 0) { return $false }
+    $stopped = Stop-WatchdogManagedService $Service $Config
+    if (-not $stopped.success) { throw $stopped.error }
+    Assert-StackServiceStopped $Service $Config
+    return $true
+}
+
 function Assert-StackServiceReady([string]$Service, $Config) {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
     do {
@@ -183,11 +195,15 @@ try {
                 & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir
             }
             if ($serviceStopped -and $candidateActivated -and $change.service) {
-                $stopped = Stop-WatchdogManagedService $change.service $change.config
-                if (-not $stopped.success) { throw $stopped.error }
-                Assert-StackServiceStopped $change.service $change.config
+                [void](Stop-StackServiceIfPresent $change.service $change.config 'Pre-restore candidate cleanup')
             }
             Undo-InstallTransaction $transaction
+            # Restoring scheduled tasks/control state can race with a candidate child that is still
+            # exiting or gets relaunched during rollback. Sweep the candidate identity a second time
+            # before the previous service is allowed to reclaim its fixed port.
+            if ($serviceStopped -and $candidateActivated -and $change.service) {
+                [void](Stop-StackServiceIfPresent $change.service $change.config 'Post-restore candidate cleanup')
+            }
             if ($gatewayLauncherRefreshed -and $config.hermesAgentExe) {
                 # The launcher lives outside the install transaction. Regenerate it from the restored
                 # Agent so a failed update cannot leave a candidate VBS/CMD pointing at the wrong venv.
