@@ -197,10 +197,15 @@ function Get-OverallTrayState {
         }
     }
     if ($script:state.maintenanceMode) { return [pscustomobject]@{ color="YELLOW"; label="Maintenance" } }
+    $busyProtected = $false
     foreach ($service in $enabled) {
         if ([string](Get-WatchdogProperty $script:state.desired $service "running") -eq "stopped_by_user") { return [pscustomobject]@{ color="YELLOW"; label="Partially stopped" } }
         $health = Get-ServiceFromSnapshot $service
-        if (-not [bool](Get-WatchdogProperty $health "healthy" $false)) { return [pscustomobject]@{ color="YELLOW"; label="Degraded" } }
+        if (-not [bool](Get-WatchdogProperty $health "healthy" $false)) {
+            $protectedBusy = [bool](Get-WatchdogProperty $health "busyIndeterminate" $false) -and [bool](Get-WatchdogProperty $health "activeRequestProtected" $false)
+            if ($protectedBusy) { $busyProtected = $true; continue }
+            return [pscustomobject]@{ color="YELLOW"; label="Degraded" }
+        }
     }
     $routerHealth = Get-ServiceFromSnapshot "router"
     $connectionMetrics = Get-WatchdogProperty $routerHealth "connections" $null
@@ -227,6 +232,7 @@ function Get-OverallTrayState {
             }
         }
     }
+    if ($busyProtected) { return [pscustomobject]@{ color="GREEN"; label="Busy (active MCP request)" } }
     if ($publicVerificationPending) { return [pscustomobject]@{ color="GREEN"; label="Healthy (public verification pending)" } }
     return [pscustomobject]@{ color="GREEN"; label="Healthy" }
 }

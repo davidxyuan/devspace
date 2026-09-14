@@ -50,6 +50,8 @@ $overall = @($ast.FindAll({ param($node) $node -is [System.Management.Automation
 if (-not $overall) { throw "Get-OverallTrayState is missing" }
 $overallText = $overall.Extent.Text
 if ($overallText -notmatch [regex]::Escape('Healthy (public verification pending)')) { throw "pending-public healthy state is missing" }
+if ($overallText -notmatch [regex]::Escape('Busy (active MCP request)')) { throw "active-request busy state is missing" }
+if ($overallText -notmatch [regex]::Escape('activeRequestProtected')) { throw "overall state does not honor active-request protection" }
 if ($overallText -notmatch [regex]::Escape('Test-RecentCompletedRouterRequest $service')) { throw "public-degraded branch does not consult recent real traffic" }
 
 Write-Output "PASS: Tray trusts only recent completed Router traffic while public verification is pending."
