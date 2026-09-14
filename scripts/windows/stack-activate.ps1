@@ -158,8 +158,9 @@ try {
     }
     $tasks = @(Get-InstallTaskSnapshots $InstallDir)
     $legacyProcesses = @(Get-InstallLegacyProcessSnapshots $InstallDir)
-    $transaction = Start-InstallTransaction $InstallDir @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json')) $tasks $legacyProcesses
-    Disable-InstallLegacyTasks $transaction
+    $logicalQuiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
+    $transaction = Start-InstallTransaction $InstallDir @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json'),$logicalQuiesceMarker) $tasks $legacyProcesses
+    Disable-InstallLegacyTasks $transaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
     Stop-InstallLegacyProcesses $transaction
     $bootstrap = Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'
     try { & $bootstrap -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir }

@@ -14,10 +14,11 @@ try {
     $global:DevSpaceInstallerTestTask = $task
     $global:DevSpaceInstallerTaskEnabled = $false
     $global:DevSpaceInstallerTaskWrites = 0
+    $global:DevSpaceInstallerTaskDenyDisable = $false
     $global:DevSpaceInstallerProcesses = @()
     function Get-ScheduledTask { param($TaskName,$TaskPath) $global:DevSpaceInstallerTestTask }
     function Export-ScheduledTask { param($TaskName,$TaskPath) '<Task><Settings><Enabled>false</Enabled></Settings></Task>' }
-    function Disable-ScheduledTask { param($TaskName,$TaskPath) $global:DevSpaceInstallerTaskEnabled=$false; $global:DevSpaceInstallerTaskWrites++ }
+    function Disable-ScheduledTask { param($TaskName,$TaskPath) if ($global:DevSpaceInstallerTaskDenyDisable) { throw 'fixture access denied' }; $global:DevSpaceInstallerTaskEnabled=$false; $global:DevSpaceInstallerTaskWrites++ }
     function Enable-ScheduledTask { param($TaskName,$TaskPath) $global:DevSpaceInstallerTaskEnabled=$true; $global:DevSpaceInstallerTaskWrites++ }
     function Stop-ScheduledTask { param($TaskName,$TaskPath) throw 'Stopped task must not be started or stopped.' }
     function Start-ScheduledTask { param($TaskName,$TaskPath) throw 'Stopped task must not be started or stopped.' }
@@ -93,6 +94,20 @@ try {
     [IO.File]::WriteAllText($created, 'created')
     Undo-InstallTransaction $transaction
     Assert-InstallTest ([IO.File]::ReadAllText($configPath) -eq $saved -and -not [IO.File]::Exists($created) -and -not $global:DevSpaceInstallerTaskEnabled) 'Rollback failed to restore files and disabled task state.'
+
+    $logicalQuiesceMarker = Join-Path $testRoot 'legacy-watchdog-poller.disabled'
+    [IO.File]::WriteAllText((Join-Path $testRoot 'devspace-watchdog.ps1'), @'
+$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"
+if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }
+'@)
+    $global:DevSpaceInstallerTaskDenyDisable = $true
+    $quiesceTransaction = Start-InstallTransaction $testRoot @($logicalQuiesceMarker) @(Get-InstallTaskSnapshots $testRoot)
+    Disable-InstallLegacyTasks $quiesceTransaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
+    Assert-InstallTest ([IO.File]::Exists($logicalQuiesceMarker) -and $quiesceTransaction.disabledTasks.Count -eq 0) 'ACL-blocked legacy task did not fall back to logical quiesce.'
+    Undo-InstallTransaction $quiesceTransaction
+    Assert-InstallTest (-not [IO.File]::Exists($logicalQuiesceMarker)) 'Rollback did not restore the logical-quiesce marker to its original absent state.'
+    $global:DevSpaceInstallerTaskDenyDisable = $false
+
     [IO.File]::WriteAllText($transaction.files[0].backup, 'tampered')
     try { Undo-InstallTransaction $transaction; throw 'Corrupt backup accepted.' } catch { if ($_.Exception.Message -eq 'Corrupt backup accepted.') { throw } }
     $newTaskTransaction = Start-InstallTransaction $testRoot @() @()
@@ -115,7 +130,7 @@ try {
     try { Get-StackCandidateConfiguration $after $candidate | Out-Null; throw 'Outside candidate path accepted.' } catch { if ($_.Exception.Message -eq 'Outside candidate path accepted.') { throw } }
     Write-Host 'installer preservation, missing-only runtime reuse, task identity and rollback tests passed.'
 } finally {
-    Remove-Variable DevSpaceInstallerTestTask,DevSpaceInstallerTaskEnabled,DevSpaceInstallerTaskWrites,DevSpaceInstallerTaskRemoved,DevSpaceInstallerProcesses,DevSpaceInstallerFakeProcess,DevSpaceInstallerRestarts -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable DevSpaceInstallerTestTask,DevSpaceInstallerTaskEnabled,DevSpaceInstallerTaskWrites,DevSpaceInstallerTaskDenyDisable,DevSpaceInstallerTaskRemoved,DevSpaceInstallerProcesses,DevSpaceInstallerFakeProcess,DevSpaceInstallerRestarts -Scope Global -ErrorAction SilentlyContinue
     $env:LOCALAPPDATA = $originalLocalAppData
     $env:NGROK_AUTHTOKEN = $originalNgrokToken
     $resolved = [IO.Path]::GetFullPath($testRoot)

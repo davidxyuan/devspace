@@ -282,16 +282,33 @@ function Start-InstallTransaction([string]$InstallDir, [string[]]$Paths, [object
     return $transaction
 }
 
-function Disable-InstallLegacyTasks($Transaction) {
+function Disable-InstallLegacyTasks($Transaction, [string]$LogicalQuiesceMarkerPath = '') {
     foreach ($snapshot in $Transaction.tasks) {
         $task = Get-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop
         if (-not (Test-InstallTaskIdentity $task $Transaction.installDir) -or
             (Export-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path) -ne $snapshot.xml) {
             throw "Legacy task changed after inspection: $($snapshot.name)"
         }
-        Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
-        $Transaction.disabledTasks += $snapshot.name
-        if ($snapshot.running) { Stop-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop }
+        try {
+            Disable-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop | Out-Null
+            $Transaction.disabledTasks += $snapshot.name
+            if ($snapshot.running) { Stop-ScheduledTask -TaskName $snapshot.name -TaskPath $snapshot.path -ErrorAction Stop }
+        } catch {
+            if (-not $LogicalQuiesceMarkerPath) { throw }
+            $legacyScript = Join-Path $Transaction.installDir 'devspace-watchdog.ps1'
+            if (-not [IO.File]::Exists($legacyScript)) { throw }
+            $legacySource = [IO.File]::ReadAllText($legacyScript)
+            if (-not $legacySource.Contains('$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"') -or
+                -not $legacySource.Contains('if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }')) { throw }
+            $marker = [IO.Path]::GetFullPath($LogicalQuiesceMarkerPath)
+            if (-not $marker.StartsWith([IO.Path]::GetFullPath($Transaction.installDir).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Legacy logical-quiesce marker must stay inside the installation directory.'
+            }
+            if (-not [IO.File]::Exists($marker)) {
+                [void][IO.Directory]::CreateDirectory((Split-Path -Parent $marker))
+                [IO.File]::WriteAllText($marker, 'Tray owns monitoring; scheduler ACL prevents disable.', [Text.UTF8Encoding]::new($false))
+            }
+        }
     }
 }
 
