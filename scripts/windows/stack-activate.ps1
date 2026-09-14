@@ -196,7 +196,14 @@ try {
     if ($candidate.componentId -eq 'devspace-tray-fork' -and $candidate.installerPath) {
         $installer = [IO.Path]::GetFullPath([string]$candidate.installerPath)
         if (-not $installer.StartsWith([IO.Path]::GetFullPath([string]$candidate.root).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Candidate Tray installer is outside the staged package.' }
-        & $installer -InstallDir $InstallDir -OriginalTransactionPath (Join-Path $transaction.backupPath 'transaction.json') -Confirm:$false
+        $installerArgs = @{
+            InstallDir = $InstallDir
+            OriginalTransactionPath = (Join-Path $transaction.backupPath 'transaction.json')
+            Confirm = $false
+        }
+        $installerCommand = Get-Command -Name $installer -CommandType ExternalScript -ErrorAction Stop
+        if ($installerCommand.Parameters.ContainsKey('AllowLegacyQuiesce')) { $installerArgs.AllowLegacyQuiesce = $true }
+        & $installer @installerArgs
     } else {
         if ($hostWasRunning) { & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath }
         Restart-InstallLegacyProcesses $transaction

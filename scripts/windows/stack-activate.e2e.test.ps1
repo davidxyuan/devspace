@@ -42,9 +42,9 @@ try {
     $installer = Join-Path $candidateRoot 'fail-installer.ps1'
     [IO.File]::WriteAllText($installer, @'
 [CmdletBinding()]
-param([string]$InstallDir, [string]$OriginalTransactionPath, [switch]$Confirm)
+param([string]$InstallDir, [string]$OriginalTransactionPath, [switch]$Confirm, [switch]$AllowLegacyQuiesce)
 $ErrorActionPreference = 'Stop'
-[IO.File]::WriteAllText((Join-Path $InstallDir 'candidate-touched.txt'), 'candidate ran after config activation')
+[IO.File]::WriteAllText((Join-Path $InstallDir 'candidate-touched.txt'), ('candidate ran after config activation; allowLegacyQuiesce=' + [bool]$AllowLegacyQuiesce))
 throw 'forced activation failure'
 '@)
     $config = [ordered]@{ stateDir=$installDir; cliPath=$oldCli; managementPackageRoot=$oldManagementRoot; nodePath=$powershellExe; custom=@{keep='yes'} }
@@ -81,6 +81,7 @@ throw 'forced activation failure'
     Assert-StackE2E ($global:StackE2ETask.Settings.Enabled -and $global:StackE2ETask.State -eq 'Running') 'Rollback did not restore the prior scheduled-task state.'
     Assert-StackE2E ($global:StackE2ETaskEvents -contains 'disable' -and $global:StackE2ETaskEvents -contains 'enable' -and $global:StackE2ETaskEvents -contains 'stop' -and $global:StackE2ETaskEvents -contains 'start') 'The transaction did not exercise task stop/restore.'
     Assert-StackE2E ([IO.File]::Exists((Join-Path $installDir 'candidate-touched.txt'))) 'Failure fixture did not run after candidate activation.'
+    Assert-StackE2E (([IO.File]::ReadAllText((Join-Path $installDir 'candidate-touched.txt'))) -match 'allowLegacyQuiesce=True') 'Stack activation did not forward supported legacy-task quiesce capability to the Tray installer.'
     Assert-StackE2E (-not [IO.File]::Exists((Join-Path $installDir 'stack-management\operation.lock')) -or [IO.File]::ReadAllText((Join-Path $installDir 'stack-management\operation.lock')) -eq '') 'Operation ownership was not released after rollback.'
     Write-Host 'stack-activate: real candidate activation failure restored config, task state and operation ownership.'
 } finally {
