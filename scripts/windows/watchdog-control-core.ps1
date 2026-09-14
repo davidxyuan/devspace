@@ -948,6 +948,30 @@ function Invoke-WatchdogJsonProbe([string]$Url, [scriptblock]$Validator) {
     }
 }
 
+function Test-WatchdogLegacyHermesMcpFingerprint($Response) {
+    if (-not $Response -or -not [bool](Get-WatchdogProperty $Response "reachable" $false) -or [int](Get-WatchdogProperty $Response "status" 0) -ne 405) { return $false }
+    $headers = Get-WatchdogProperty $Response "headers" $null
+    if ($null -eq $headers) { return $false }
+    if ($headers -is [System.Collections.IDictionary]) {
+        $allow = [string]$headers["allow"]
+        $contentType = [string]$headers["content-type"]
+    } else {
+        $allow = [string](Get-WatchdogProperty $headers "allow" "")
+        $contentType = [string](Get-WatchdogProperty $headers "content-type" "")
+    }
+    if ($contentType -notmatch '(?i)^application/json(?:\s*;|$)' -or
+        $allow -notmatch '(?i)(?:^|,\s*)GET(?:\s*,|$)' -or
+        $allow -notmatch '(?i)(?:^|,\s*)POST(?:\s*,|$)' -or
+        $allow -notmatch '(?i)(?:^|,\s*)DELETE(?:\s*,|$)') { return $false }
+    try {
+        $payload = ([string](Get-WatchdogProperty $Response "body" "")) | ConvertFrom-Json
+        $error = Get-WatchdogProperty $payload "error" $null
+        return [string](Get-WatchdogProperty $payload "jsonrpc" "") -eq "2.0" -and
+            [int](Get-WatchdogProperty $error "code" 0) -eq -32600 -and
+            [string](Get-WatchdogProperty $error "message" "") -eq "Method Not Allowed"
+    } catch { return $false }
+}
+
 function Get-WatchdogListenOwners([int]$Port) {
     return @(
         Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
@@ -1101,19 +1125,25 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
                 $probeError = if (-not $healthProbe.semanticHealthy) { $healthProbe.error } else { $mcpProbe.error }
             }
             "hermes" {
-                # Probe only Hermes' lightweight root health endpoint on the local cycle.
-                # Long synchronous tool calls can temporarily block the HTTP event loop; when
-                # that happens the Tray's Router activity evidence marks the health result as
-                # activeRequestProtected so legitimate in-flight MCP work is never recovered.
+                # Prefer the lightweight v0.10+ root health endpoint. Older tested Hermes builds
+                # return a fast 404 at / but expose a stable FastMCP OPTIONS fingerprint at /mcp.
+                # Only that explicit 404 enables the compatibility probe; timeouts and other root
+                # failures remain indeterminate so active-request protection and recovery gates apply.
                 $healthProbe = Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/" { param($json)
                     [string](Get-WatchdogProperty $json "status" "") -eq "ok" -and
                     [string](Get-WatchdogProperty $json "server" "") -eq "hermes-gpt" -and
                     [string](Get-WatchdogProperty $json "mcp_path" "") -eq "/mcp"
                 }
-                $httpReachable = $healthProbe.httpReachable
-                $protocolHealthy = $healthProbe.semanticHealthy
-                $detail = "health_root=$($healthProbe.semanticHealthy)"
-                $probeError = $healthProbe.error
+                $legacyProbe = $null
+                $legacyHealthy = $false
+                if (-not $healthProbe.semanticHealthy -and $healthProbe.httpReachable -and $healthProbe.status -eq 404) {
+                    $legacyProbe = Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS" "" 4 -Local
+                    $legacyHealthy = Test-WatchdogLegacyHermesMcpFingerprint $legacyProbe
+                }
+                $httpReachable = $healthProbe.httpReachable -or ($legacyProbe -and $legacyProbe.reachable)
+                $protocolHealthy = $healthProbe.semanticHealthy -or $legacyHealthy
+                $detail = if ($healthProbe.semanticHealthy) { "health_root=True" } elseif ($legacyHealthy) { "health_legacy_mcp=True" } else { "health_root=False" }
+                $probeError = if ($protocolHealthy) { "" } elseif ($legacyProbe -and $legacyProbe.error) { $legacyProbe.error } else { $healthProbe.error }
             }
             "router" {
                 $machineSlug = [string](Get-WatchdogProperty $Config "machineSlug" "")

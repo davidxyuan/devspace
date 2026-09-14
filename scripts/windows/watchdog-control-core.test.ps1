@@ -58,6 +58,22 @@ try {
     Write-WatchdogAtomicJson $configPath $config 30
     Write-WatchdogAtomicJson $devspaceConfigPath ([pscustomobject]@{host="127.0.0.1";port=17676;allowedRoots=@($tempRoot);publicBaseUrl=$config.publicBaseUrl}) 10
 
+    $legacyHermesResponse = [pscustomobject]@{
+        reachable=$true;status=405
+        headers=@{"allow"="GET, POST, DELETE";"content-type"="application/json"}
+        body='{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Method Not Allowed"}}'
+    }
+    Assert-True "legacy Hermes MCP fingerprint is accepted" (Test-WatchdogLegacyHermesMcpFingerprint $legacyHermesResponse)
+    $legacyHermesWrongStatus = Copy-WatchdogObject $legacyHermesResponse
+    $legacyHermesWrongStatus.status = 404
+    Assert-True "legacy Hermes MCP fingerprint rejects wrong status" (-not (Test-WatchdogLegacyHermesMcpFingerprint $legacyHermesWrongStatus))
+    $legacyHermesWrongBody = Copy-WatchdogObject $legacyHermesResponse
+    $legacyHermesWrongBody.body = '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method Not Found"}}'
+    Assert-True "legacy Hermes MCP fingerprint rejects wrong JSON-RPC error" (-not (Test-WatchdogLegacyHermesMcpFingerprint $legacyHermesWrongBody))
+    $legacyHermesWrongAllow = Copy-WatchdogObject $legacyHermesResponse
+    $legacyHermesWrongAllow.headers.allow = "GET, POST"
+    Assert-True "legacy Hermes MCP fingerprint rejects incomplete Allow header" (-not (Test-WatchdogLegacyHermesMcpFingerprint $legacyHermesWrongAllow))
+
     $settings = Get-WatchdogControlSettings $config
     Assert-Equal "default dashboard port" $settings.dashboardPort 18777
     Assert-Equal "backoff count" $settings.backoffSeconds.Count 5
@@ -530,9 +546,12 @@ try {
     # Scheduled launch has no Process.Start handle; query only its heartbeat PID for identity.
     $installerCim = [regex]::Matches($installerSource, 'Get-CimInstance[^\r\n]+')
     Assert-True "installer uses only targeted supervisor PID identity lookup" ($installerCim.Count -eq 1 -and $installerCim[0].Value -eq 'Get-CimInstance Win32_Process -Filter ("ProcessId=" + $supervisorHeartbeat.pid) -ErrorAction Stop')
-    Assert-True "Hermes local health no longer probes FastMCP every local cycle" (-not $coreSource.Contains('Invoke-WatchdogHttpRequest \"http://127.0.0.1:$port/mcp\" \"OPTIONS\"'))
-    Assert-Contains "Hermes local health probes lightweight root endpoint" $coreSource 'Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/"'
-    Assert-Contains "Hermes local health validates Hermes root identity" $coreSource 'health_root=$($healthProbe.semanticHealthy)'
+    Assert-Contains "Hermes local health probes lightweight root endpoint first" $coreSource 'Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/"'
+    Assert-Contains "Hermes legacy compatibility is gated on explicit root 404" $coreSource '$healthProbe.status -eq 404'
+    Assert-Contains "Hermes legacy compatibility probes FastMCP OPTIONS" $coreSource 'Invoke-WatchdogHttpRequest "http://127.0.0.1:$port/mcp" "OPTIONS"'
+    Assert-Contains "Hermes legacy compatibility validates exact MCP fingerprint" $coreSource 'Test-WatchdogLegacyHermesMcpFingerprint $legacyProbe'
+    Assert-Contains "Hermes local health reports modern root identity" $coreSource 'health_root=True'
+    Assert-Contains "Hermes local health reports legacy MCP identity" $coreSource 'health_legacy_mcp=True'
     Assert-Contains "public MCP probes tolerate slower healthy responses" $coreSource 'Invoke-WatchdogMcpProbe $hermesUrl -TimeoutSeconds 12'
     Assert-Contains "ngrok switch diagnostics identify failing public service" $coreSource 'public MCP verification failed: status=$status; behavior=$behavior; error=$error'
     Assert-Contains "recovery executor honors decision-layer hung transport gate" $coreSource 'busyIndeterminate is intentionally not blocked here'
