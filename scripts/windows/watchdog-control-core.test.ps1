@@ -501,6 +501,9 @@ try {
     Assert-Contains "launcher requests hidden PowerShell window" $launcherSource '-WindowStyle Hidden'
     Assert-True "autostart launcher avoids ExecutionPolicy Bypass" (-not $launcherSource.Contains('ExecutionPolicy Bypass'))
     Assert-Contains "launcher waits for hidden bootstrap completion" $launcherSource 'shell.Run(command, 0, True)'
+    Assert-Contains "installer autostart uses console-free wscript" $installerSource 'System32\wscript.exe'
+    Assert-Contains "installer autostart uses batchless VBS bridge" $installerSource "//B //NoLogo"
+    Assert-Contains "installer autostart delegates to hidden VBS" $installerSource "run-devspace-watchdog-tray-hidden.vbs"
     $installerDeployPrefix = $installerSource.Substring(0, $installerSource.IndexOf('$retiredFiles = @('))
     Assert-True "installer no longer deploys native launcher exe" (-not $installerDeployPrefix.Contains('devspace-watchdog-tray-launcher.exe'))
     Assert-Contains "bootstrap detects stale heartbeat" $bootstrapSource '$freshHeartbeatSeconds = 15'
