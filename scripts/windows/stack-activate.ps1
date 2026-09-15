@@ -154,6 +154,7 @@ $gatewayLauncherRefreshRequired = $false
 $gatewayLauncherRefreshed = $false
 $config = $null
 $change = $null
+$phase = 'initialization'
 try {
     $config = Read-WatchdogJson $configPath
     if (-not $config -or [IO.Path]::GetFullPath([string]$config.stateDir) -ne $InstallDir) { throw 'Installed configuration identity is invalid.' }
@@ -175,21 +176,27 @@ try {
     $logicalQuiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
     $transactionPaths = @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json'),$logicalQuiesceMarker)
     if ($candidate.kind -eq 'hermes-agent') { $transactionPaths += @(Get-HermesGatewayLauncherTransactionPaths) }
+    $phase = 'start transaction'
     $transaction = Start-InstallTransaction $InstallDir $transactionPaths $tasks $legacyProcesses
+    $phase = 'quiesce legacy tasks'
     Disable-InstallLegacyTasks $transaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
+    $phase = 'stop legacy processes'
     Stop-InstallLegacyProcesses $transaction
     $bootstrap = Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'
     try { & $bootstrap -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir }
     catch { $hostWasRunning=$true }
+    $phase = 'stop control host'
     & $bootstrap -Mode Stop -ConfigPath $configPath -RuntimeDirectory $InstallDir
     & $bootstrap -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir
     $controlStopped = $true
     if ($change.service) {
+        $phase = "stop service $($change.service)"
         $result = Stop-WatchdogManagedService $change.service $config
         if (-not $result.success) { throw $result.error }
         Assert-StackServiceStopped $change.service $config
         $serviceStopped = $true
     }
+    $phase = 'write candidate configuration'
     Write-WatchdogAtomicJson $configPath $change.config 40
     $candidateActivated = $true
     if ($candidate.kind -eq 'hermes-agent') {
@@ -198,14 +205,17 @@ try {
             # Refresh the generated Scheduled Task/Startup launcher from the newly activated Agent.
             # This keeps Hermes_Gateway.vbs/.cmd aligned with the candidate venv and launcher logic.
             $gatewayLauncherRefreshed = $true
+            $phase = 'refresh Hermes Agent gateway launcher'
             [void](Refresh-HermesAgentGatewayLauncher ([string]$candidate.hermesAgentExe))
         }
     }
     if ($startCandidate) {
+        $phase = "start service $($change.service)"
         $result = Start-WatchdogManagedService $change.service $configPath $change.config
         if (-not $result.success) { throw $result.error }
         Assert-StackServiceReady $change.service $change.config
     }
+    $phase = 'restore disabled legacy tasks'
     foreach ($task in $tasks) {
         if ($task.name -notin $transaction.disabledTasks) { continue }
         if ($task.enabled) { Enable-ScheduledTask -TaskName $task.name -TaskPath $task.path -ErrorAction Stop | Out-Null }
@@ -223,9 +233,11 @@ try {
         if ($installerCommand.Parameters.ContainsKey('AllowLegacyQuiesce')) { $installerArgs.AllowLegacyQuiesce = $true }
         & $installer @installerArgs
     } else {
+        $phase = 'restart control host and legacy processes'
         if ($hostWasRunning) { & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath }
         Restart-InstallLegacyProcesses $transaction
     }
+    $phase = 'complete transaction'
     $transaction.completed=$true
     Write-Host "Staged $($candidate.componentId) activated; previous running/stopped state preserved. Backup: $($transaction.backupPath)"
 } catch {
@@ -259,7 +271,7 @@ try {
             }
             if ($controlStopped -and $hostWasRunning) { & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath }
         } catch { throw "ROLLBACK_FAILED: $($_.Exception.Message). Original failure: $($failure.Exception.Message). Backup: $($transaction.backupPath)" }
-        throw "Component activation failed; original configuration restored. $($failure.Exception.Message)"
+        throw "Component activation failed during '$phase'; original configuration restored. $($failure.Exception.Message)"
     }
     throw
 } finally { Exit-StackOperation $lease }
