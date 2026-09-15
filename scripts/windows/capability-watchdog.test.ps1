@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$watchdog = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Raw
+$watchdog = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1") -Raw
 $installer = Get-Content (Join-Path $PSScriptRoot "install-devspace-watchdog.ps1") -Raw
 $upgrader = Get-Content (Join-Path $PSScriptRoot "upgrade-existing-tested-stack.ps1") -Raw
 $entry = Get-Content (Join-Path $PSScriptRoot "detect-and-apply-tested-stack.ps1") -Raw

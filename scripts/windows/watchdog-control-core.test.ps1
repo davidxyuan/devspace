@@ -401,7 +401,7 @@ try {
     Assert-True "rollback removes newly generated merge rule" (-not [System.IO.File]::Exists([string]$cloudConfig.cloudEndpointRulePath))
 
     $traySource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray.ps1"), [System.Text.Encoding]::UTF8)
-    $watchdogSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog.ps1"), [System.Text.Encoding]::UTF8)
+    $watchdogSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1"), [System.Text.Encoding]::UTF8)
     $trayUiSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-tray-ui.ps1"), [System.Text.Encoding]::UTF8)
     $bootstrapSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "devspace-watchdog-bootstrap.ps1"), [System.Text.Encoding]::UTF8)
     $coreSource = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "watchdog-control-core.ps1"), [System.Text.Encoding]::UTF8)

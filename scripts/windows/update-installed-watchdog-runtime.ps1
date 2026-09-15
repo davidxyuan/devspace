@@ -26,7 +26,7 @@ $payloadFiles = @(
     'uninstall-devspace-watchdog-tray.ps1',
     'restore-old-watchdog.ps1'
 )
-$backendFiles = @('devspace-watchdog.ps1','mcp-router.cjs')
+$backendFiles = @('devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','mcp-router.cjs')
 $allFiles = @($payloadFiles + $backendFiles)
 $configPath = Join-Path $InstallDir 'devspace-watchdog.config.json'
 $recordPath = Join-Path $InstallDir 'watchdog-tray-install.json'

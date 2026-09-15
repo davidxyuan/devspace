@@ -10,7 +10,7 @@ function Assert-Equal([string]$name, $actual, $expected) {
     }
 }
 
-$watchdogPath = Join-Path $PSScriptRoot "devspace-watchdog.ps1"
+$watchdogPath = Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1"
 $watchdogSource = Get-Content -LiteralPath $watchdogPath -Raw
 $tokens = $null
 $parseErrors = $null

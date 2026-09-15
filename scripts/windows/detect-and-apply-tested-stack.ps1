@@ -90,7 +90,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $watchdogScriptNames = @(
     "install-devspace-watchdog.ps1", "watchdog-task-action.ps1", "ngrok-install.ps1",
-    "devspace-watchdog.ps1", "run-devspace-watchdog-hidden.vbs", "mcp-router.cjs",
+    "devspace-watchdog.ps1", "devspace-watchdog-legacy.ps1", "run-devspace-watchdog-hidden.vbs", "mcp-router.cjs",
     "capability-config.ps1"
 )
 $resolved = @{}

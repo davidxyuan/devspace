@@ -292,8 +292,8 @@ try {
         } catch {
             if (-not $AllowLegacyQuiesce) { throw }
             $legacySource = [IO.File]::ReadAllText((Join-Path $InstallDir 'devspace-watchdog.ps1'))
-            if (-not $legacySource.Contains('$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"') -or
-                -not $legacySource.Contains('if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }')) { throw 'Legacy script does not support logical quiesce; administrator task disable is required.' }
+            if (-not $legacySource.Contains("legacy-watchdog-poller.disabled") -or
+                -not $legacySource.Contains('if ($Once -and (Test-Path -LiteralPath $disableMarker)) { exit 0 }')) { throw 'Legacy launcher does not support logical quiesce; administrator task disable is required.' }
             if (-not $markerExisted) { [IO.File]::WriteAllText($quiesceMarker, 'Tray owns monitoring; scheduler disable still requires administrator rights.') }
             $taskQuiesced = $true
             Write-Warning "Legacy task remains scheduled: $($snapshot.name). Its script is quiesced; console creation may still occur."

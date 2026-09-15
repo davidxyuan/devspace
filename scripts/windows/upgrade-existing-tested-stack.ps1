@@ -25,6 +25,7 @@ $PinnedHermesCommit = [string]$testedManifest.'hermes-gpt'.revision
 $PinnedHermesVersion = [version]$testedManifest.'hermes-gpt'.version
 $MigrationSource = Join-Path (Split-Path $PSScriptRoot -Parent) "migrate-oauth-json-to-sqlite.mjs"
 $WatchdogSource = Join-Path $PSScriptRoot "devspace-watchdog.ps1"
+$WatchdogLegacySource = Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1"
 $CapabilityHelper = Join-Path $PSScriptRoot "capability-config.ps1"
 
 function Fail([string]$message) { throw "SAFE EXISTING-MACHINE ACTION REFUSED: $message" }
@@ -233,7 +234,7 @@ function Get-CurrentCapabilityArguments($watchdog) {
 function Copy-CriticalState([string]$source, [string]$destination) {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     foreach ($name in @(
-        "config.json", "auth.json", "devspace-watchdog.config.json", "devspace-watchdog.ps1",
+        "config.json", "auth.json", "devspace-watchdog.config.json", "devspace-watchdog.ps1", "devspace-watchdog-legacy.ps1",
         "mcp-router.cjs", "run-hermes-gpt.cmd", "run-devspace-watchdog-hidden.vbs",
         "ngrok-cloud-endpoint-*.policy.yml", "ngrok-cloud-endpoint-*.rule.yml"
     )) {
@@ -440,6 +441,8 @@ try {
     Move-Item -LiteralPath $tmpConfig -Destination $watchdogPath -Force
     Copy-Item $WatchdogSource "$InstallDir\devspace-watchdog.ps1.tmp-$PID" -Force
     Move-Item "$InstallDir\devspace-watchdog.ps1.tmp-$PID" "$InstallDir\devspace-watchdog.ps1" -Force
+    Copy-Item $WatchdogLegacySource "$InstallDir\devspace-watchdog-legacy.ps1.tmp-$PID" -Force
+    Move-Item "$InstallDir\devspace-watchdog-legacy.ps1.tmp-$PID" "$InstallDir\devspace-watchdog-legacy.ps1" -Force
     if ((Get-Content "$InstallDir\auth.json" -Raw) -ne (Get-Content "$backup\state\auth.json" -Raw)) { Fail "Owner auth changed unexpectedly." }
     if ((Export-ScheduledTask -TaskName $taskSnapshot.Name -TaskPath $taskSnapshot.Path) -ne $taskSnapshot.Xml) { Fail "Task privilege/definition changed unexpectedly." }
     if ($applyCapabilities) {

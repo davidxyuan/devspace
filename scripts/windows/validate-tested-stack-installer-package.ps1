@@ -15,6 +15,7 @@ $required = @(
     "run-existing-tested-stack-upgrade.ps1",
     "capability-config.ps1",
     "devspace-watchdog.ps1",
+    "devspace-watchdog-legacy.ps1",
     "watchdog-task-action.ps1",
     "ngrok-install.ps1",
     "update-cloud-endpoint-domain.ps1",

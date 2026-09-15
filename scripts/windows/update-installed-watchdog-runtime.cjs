@@ -18,7 +18,7 @@ const PAYLOAD_FILES = [
   "uninstall-devspace-watchdog-tray.ps1",
   "restore-old-watchdog.ps1",
 ];
-const BACKEND_FILES = ["devspace-watchdog.ps1", "mcp-router.cjs"];
+const BACKEND_FILES = ["devspace-watchdog.ps1", "devspace-watchdog-legacy.ps1", "mcp-router.cjs"];
 const ALL_FILES = [...PAYLOAD_FILES, ...BACKEND_FILES];
 
 function sha256File(file) {

@@ -4,13 +4,16 @@ $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors)
 if ($errors.Count) { throw $errors[0].Message }
 $source = [IO.File]::ReadAllText($path)
+$legacyLauncher = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'devspace-watchdog.ps1'))
+if ($legacyLauncher.Length -gt 4096) { throw 'legacy watchdog launcher must remain tiny so ACL-protected pollers exit before parsing the full implementation.' }
+if (-not $legacyLauncher.Contains('legacy-watchdog-poller.disabled') -or -not $legacyLauncher.Contains('devspace-watchdog-legacy.ps1') -or -not $legacyLauncher.Contains('if ($Once -and (Test-Path -LiteralPath $disableMarker)) { exit 0 }')) { throw 'legacy watchdog launcher does not preserve fast logical quiesce.' }
 function Assert-Contains([string]$Name,[string]$Text) { if (-not $source.Contains($Text)) { throw "$Name failed." } }
 function Assert-NotContains([string]$Name,[string]$Text) { if ($source.Contains($Text)) { throw "$Name failed." } }
 foreach ($name in @(
     'watchdog-control-core.ps1','stack-operation.ps1','stack-host-management.ps1','watchdog-install-transaction.ps1',
     'devspace-watchdog-tray.ps1','devspace-watchdog-tray-ui.ps1','devspace-watchdog-bootstrap.ps1','devspace-control-center.html',
     'run-devspace-watchdog-tray-hidden.vbs','uninstall-devspace-watchdog-tray.ps1','restore-old-watchdog.ps1',
-    'devspace-watchdog.ps1','mcp-router.cjs')) { Assert-Contains "tracks $name" "'$name'" }
+    'devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','mcp-router.cjs')) { Assert-Contains "tracks $name" "'$name'" }
 Assert-Contains 'requires existing install record' "watchdog-tray-install.json"
 Assert-Contains 'verifies current payload hashes' 'Installed payload changed since the install record'
 Assert-Contains 'backs up changed runtime files' 'runtime-update-manifest.json'

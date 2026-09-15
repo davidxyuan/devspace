@@ -875,7 +875,7 @@ $watchdogConfig['managementPackageRoot'] = $ManagementPackageRoot
 # Everything needed by the new configuration is prepared before activation.
 $taskSnapshots = @(Get-InstallTaskSnapshots $InstallDir)
 $legacyProcessSnapshots = @(Get-InstallLegacyProcessSnapshots $InstallDir)
-$transactionNames = @('config.json','auth.json','ngrok-auth.dpapi.json','devspace-watchdog.config.json','devspace-watchdog.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs','run-hermes-gpt.cmd','mcp-router.cjs','restart-devspace.flag','legacy-watchdog-poller.disabled','watchdog-tray-state.json')
+$transactionNames = @('config.json','auth.json','ngrok-auth.dpapi.json','devspace-watchdog.config.json','devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs','run-hermes-gpt.cmd','mcp-router.cjs','restart-devspace.flag','legacy-watchdog-poller.disabled','watchdog-tray-state.json')
 $transactionPaths = @($transactionNames | ForEach-Object { Join-Path $InstallDir $_ })
 if ($NgrokEndpointMode -eq 'CloudEndpoint') {
     if (-not $CloudEndpointPolicyPath) { $CloudEndpointPolicyPath = Join-Path $InstallDir "ngrok-cloud-endpoint-$machineSlug.policy.yml" }
@@ -892,7 +892,7 @@ if ($existingWatchdogConfig -and $InstallWatchdogTray) {
     & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $watchdogConfigPath -RuntimeDirectory $InstallDir
 }
 if ($installDevSpace) { Write-JsonFile $configPath $devspaceConfig; Write-JsonFile $authPath $authConfig }
-foreach ($name in @('devspace-watchdog.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $InstallDir $name) -Force }
+foreach ($name in @('devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $InstallDir $name) -Force }
 if ($installHermes -and (-not $SkipHermesInstall -or -not [IO.File]::Exists([string]$existingWatchdogConfig.hermesCommand))) {
     [IO.File]::WriteAllText($hermesCommandPath, $hermesCommandContent, [Text.Encoding]::ASCII)
 }

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$source = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Raw
+$source = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1") -Raw
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
@@ -39,7 +39,7 @@ $script:messages = @()
 $script:owners = @{ 102 = New-Owner 102 "node.exe" "node.exe C:\tested\devspace\dist\cli.js serve" }
 if (-not (Test-FixedPortOwnership 7676 "DevSpace")) { throw "Managed DevSpace owner was rejected." }
 
-$watchdog = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog.ps1") -Raw
+$watchdog = Get-Content (Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1") -Raw
 $installer = Get-Content (Join-Path $PSScriptRoot "install-devspace-watchdog.ps1") -Raw
 if ($watchdog -notmatch '--web-addr') { throw "ngrok inspection port is not explicitly bound." }
 if ($watchdog -match '127\.0\.0\.1:4040/api/tunnels') { throw "ngrok health check still assumes port 4040." }
