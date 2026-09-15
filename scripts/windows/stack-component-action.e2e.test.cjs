@@ -181,6 +181,8 @@ const remoteFixture = [
       "    files[DIST + '/RECORD'] = ('\\n'.join(record) + '\\n').encode(); target = os.path.join(wheel_directory, filename)",
       "    with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:\n        [archive.writestr(name, data) for name, data in files.items()]",
       "    return filename",
+      "def prepare_metadata_for_build_editable(metadata_directory, config_settings=None): return prepare_metadata_for_build_wheel(metadata_directory, config_settings)",
+      "def build_editable(wheel_directory, config_settings=None, metadata_directory=None): return build_wheel(wheel_directory, config_settings, metadata_directory)",
     ].join("\n"));
     write(path.join(hermesAuthorRoot, "hermes_cli", "__init__.py"), "");
     write(path.join(hermesAuthorRoot, "hermes_cli", "main.py"), "import sys\ndef main():\n    if '--version' in sys.argv: print('hermes-agent 0.1.0')\n    elif '--help' in sys.argv: print('Usage: hermes-agent [OPTIONS]')\nif __name__ == '__main__': main()\n");

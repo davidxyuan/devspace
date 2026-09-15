@@ -390,7 +390,9 @@ async function executeComponentAction(plan, callbacks = {}) {
         const pythonTests = JSON.parse(declared.stdout);
         if (!pythonTests.tests || !Array.isArray(pythonTests.extras) || pythonTests.extras.some(name => !["dev", "test", "tests"].includes(name))) throw new Error("候選 Hermes 沒有可驗證的測試套件；尚未啟用。");
         for (const requirement of ["requirements-dev.txt", "requirements-test.txt"]) if (exists(path.join(root, requirement))) await invoke(python, ["-m", "pip", "install", "-r", path.join(root, requirement)]);
-        await invoke(python, ["-m", "pip", "install", root + (pythonTests.extras.length ? `[${pythonTests.extras.join(",")}]` : "")]);
+        const installTarget = root + (pythonTests.extras.length ? `[${pythonTests.extras.join(",")}]` : "");
+        const installArgs = ["-m", "pip", "install", ...(plan.componentId === "hermes-agent" ? ["-e"] : []), installTarget];
+        await invoke(python, installArgs);
         candidate = { kind: plan.componentId, componentId: plan.componentId, root, version: productVersion(root), commit: target.commit, pythonPath: python, ...(plan.componentId === "hermes-gpt" ? { hermesServer: path.join(root, "server.py") } : { hermesAgentExe: path.join(venv, "Scripts", "hermes.exe") }) };
         const check = plan.componentId === "hermes-gpt" ? "import ast,pathlib; ast.parse(pathlib.Path('server.py').read_text(encoding='utf-8')); import mcp,uvicorn" : "import hermes_cli.main";
         await invoke(python, ["-c", check], { cwd: root });

@@ -27,6 +27,8 @@ try {
     }
     $activationSource = [IO.File]::ReadAllText((Join-Path $scriptRoot 'stack-activate.ps1'))
     Assert-StackE2E ($activationSource -match 'function Refresh-HermesAgentGatewayLauncher') 'Hermes Agent activation is missing the gateway launcher refresh helper.'
+    Assert-StackE2E ($activationSource -match 'function Get-HermesGatewayLauncherTransactionPaths') 'Hermes Agent activation is missing gateway-launcher transaction backup discovery.'
+    Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+\$transactionPaths \+= @\(Get-HermesGatewayLauncherTransactionPaths\)') 'Hermes Agent activation does not include gateway launchers in the rollback transaction.'
     Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$candidate\.hermesAgentExe\)') 'Hermes Agent activation does not refresh the installed gateway launcher.'
     Assert-StackE2E ($activationSource -match 'Undo-InstallTransaction[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$config\.hermesAgentExe\)') 'Hermes Agent rollback does not regenerate the launcher from the restored runtime.'
     Assert-StackE2E ($activationSource -match 'function Stop-StackServiceIfPresent') 'Rollback is missing bounded candidate-process cleanup.'

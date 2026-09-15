@@ -264,7 +264,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   i = await collect({ checkLatest: true });
   assert.equal(action(i, "hermes-agent", "update").enabled, true);
   const agentPlan = planComponentAction(request(i, "hermes-agent", "update"), i);
-  let agentStageRoot, failAgentSmoke = false, agentSmokeMode = "version";
+  let agentStageRoot, failAgentSmoke = false, agentSmokeMode = "version", agentPipInstallArgs = null;
   const agentRun = async (command, args, options = {}) => {
     if (args[0] === "clone") {
       agentStageRoot = args.at(-1);
@@ -278,6 +278,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
       write(path.join(args[2], "Scripts", "hermes.exe"), "agent executable");
     }
     if (args[0] === "-c" && args[1].includes("tomllib")) return { stdout: JSON.stringify({ extras: ["dev"], tests: true }) };
+    if (args[0] === "-m" && args[1] === "pip" && args[2] === "install") agentPipInstallArgs = [...args];
     if (path.basename(command).toLowerCase() === "hermes.exe" && ["--version", "--help"].includes(args[0])) {
       if (failAgentSmoke) throw Error("candidate Hermes Agent smoke failed");
       if (agentSmokeMode === "help") return { stdout: args[0] === "--version" ? "hermes-agent" : "Usage: hermes-agent [OPTIONS]" };
@@ -291,6 +292,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
     assert.equal(candidate.agentSmoke, "version");
     assert.equal(candidate.hermesAgentExe, path.join(path.dirname(agentStageRoot), "venv", "Scripts", "hermes.exe"));
   } });
+  assert(agentPipInstallArgs?.includes("-e"), "Hermes Agent candidate install must use editable mode");
   agentSmokeMode = "help";
   await executeComponentAction(agentPlan, { inventoryOptions: base, run: agentRun, activate: async candidate => {
     assert.equal(candidate.agentSmoke, "help");

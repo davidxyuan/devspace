@@ -116,6 +116,20 @@ function Test-HermesGatewayLauncherInstalled {
     return $false
 }
 
+function Get-HermesGatewayLauncherTransactionPaths {
+    $serviceDir = Get-HermesGatewayServiceDirectory
+    if (-not $serviceDir) { return @() }
+    $paths = @(
+        (Join-Path $serviceDir 'Hermes_Gateway.vbs'),
+        (Join-Path $serviceDir 'Hermes_Gateway.cmd')
+    )
+    if ([IO.Directory]::Exists($serviceDir)) {
+        $paths += @(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        $paths += @(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    return @($paths | Where-Object { $_ } | Select-Object -Unique)
+}
+
 function Refresh-HermesAgentGatewayLauncher([string]$AgentExe) {
     $agentExePath = [IO.Path]::GetFullPath($AgentExe)
     if (-not [IO.File]::Exists($agentExePath)) { throw 'Hermes Agent executable is missing while refreshing the gateway launcher.' }
@@ -159,7 +173,9 @@ try {
     $tasks = @(Get-InstallTaskSnapshots $InstallDir)
     $legacyProcesses = @(Get-InstallLegacyProcessSnapshots $InstallDir)
     $logicalQuiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
-    $transaction = Start-InstallTransaction $InstallDir @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json'),$logicalQuiesceMarker) $tasks $legacyProcesses
+    $transactionPaths = @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json'),$logicalQuiesceMarker)
+    if ($candidate.kind -eq 'hermes-agent') { $transactionPaths += @(Get-HermesGatewayLauncherTransactionPaths) }
+    $transaction = Start-InstallTransaction $InstallDir $transactionPaths $tasks $legacyProcesses
     Disable-InstallLegacyTasks $transaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
     Stop-InstallLegacyProcesses $transaction
     $bootstrap = Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'
