@@ -106,6 +106,16 @@ if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }
     Assert-InstallTest ([IO.File]::Exists($logicalQuiesceMarker) -and $quiesceTransaction.disabledTasks.Count -eq 0) 'ACL-blocked legacy task did not fall back to logical quiesce.'
     Undo-InstallTransaction $quiesceTransaction
     Assert-InstallTest (-not [IO.File]::Exists($logicalQuiesceMarker)) 'Rollback did not restore the logical-quiesce marker to its original absent state.'
+
+    [IO.File]::WriteAllText((Join-Path $testRoot 'devspace-watchdog.ps1'), @'
+$disableMarker = Join-Path $PSScriptRoot 'legacy-watchdog-poller.disabled'
+if ($Once -and (Test-Path -LiteralPath $disableMarker)) { exit 0 }
+'@)
+    $tinyQuiesceTransaction = Start-InstallTransaction $testRoot @($logicalQuiesceMarker) @(Get-InstallTaskSnapshots $testRoot)
+    Disable-InstallLegacyTasks $tinyQuiesceTransaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
+    Assert-InstallTest ([IO.File]::Exists($logicalQuiesceMarker) -and $tinyQuiesceTransaction.disabledTasks.Count -eq 0) 'Tiny-wrapper legacy task did not fall back to logical quiesce.'
+    Undo-InstallTransaction $tinyQuiesceTransaction
+    Assert-InstallTest (-not [IO.File]::Exists($logicalQuiesceMarker)) 'Tiny-wrapper rollback did not restore the logical-quiesce marker.'
     $global:DevSpaceInstallerTaskDenyDisable = $false
 
     [IO.File]::WriteAllText($transaction.files[0].backup, 'tampered')

@@ -298,8 +298,11 @@ function Disable-InstallLegacyTasks($Transaction, [string]$LogicalQuiesceMarkerP
             $legacyScript = Join-Path $Transaction.installDir 'devspace-watchdog.ps1'
             if (-not [IO.File]::Exists($legacyScript)) { throw }
             $legacySource = [IO.File]::ReadAllText($legacyScript)
-            if (-not $legacySource.Contains('$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"') -or
-                -not $legacySource.Contains('if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }')) { throw }
+            $oldLogicalQuiesce = $legacySource.Contains('$legacyPollerDisableMarker = Join-Path $stateDir "legacy-watchdog-poller.disabled"') -and
+                $legacySource.Contains('if (Test-Path -LiteralPath $legacyPollerDisableMarker) { exit 0 }')
+            $tinyWrapperQuiesce = $legacySource.Contains("`$disableMarker = Join-Path `$PSScriptRoot 'legacy-watchdog-poller.disabled'") -and
+                $legacySource.Contains('if ($Once -and (Test-Path -LiteralPath $disableMarker)) { exit 0 }')
+            if (-not ($oldLogicalQuiesce -or $tinyWrapperQuiesce)) { throw }
             $marker = [IO.Path]::GetFullPath($LogicalQuiesceMarkerPath)
             if (-not $marker.StartsWith([IO.Path]::GetFullPath($Transaction.installDir).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
                 throw 'Legacy logical-quiesce marker must stay inside the installation directory.'
