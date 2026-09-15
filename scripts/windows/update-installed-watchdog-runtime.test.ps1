@@ -17,6 +17,9 @@ foreach ($name in @(
 Assert-Contains 'requires existing install record' "watchdog-tray-install.json"
 Assert-Contains 'verifies current payload hashes' 'Installed payload changed since the install record'
 Assert-Contains 'backs up changed runtime files' 'runtime-update-manifest.json'
+Assert-Contains 'permits additive legacy backend migration only' "-and `$name -ne 'devspace-watchdog-legacy.ps1'"
+Assert-Contains 'tracks whether changed files existed before update' 'targetExisted=$targetExists'
+Assert-Contains 'rollback removes files added by migration' "elseif ([IO.File]::Exists(`$target))"
 Assert-Contains 'ignores line-ending-only differences' 'function Test-UpdateContentEqual'
 Assert-Contains 'normalizes CRLF before deciding a runtime change' '.Replace("`r`n", "`n")'
 Assert-Contains 'verifies backup hashes' 'Backup hash mismatch'

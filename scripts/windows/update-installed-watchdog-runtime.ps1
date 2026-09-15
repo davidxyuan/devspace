@@ -176,7 +176,8 @@ foreach ($name in $payloadFiles) {
     if ((Get-WatchdogFileSha256 $target) -ne [string]$installedMap[$name].sha256) { throw "Installed payload changed since the install record: $name" }
 }
 foreach ($name in $backendFiles) {
-    if (-not [IO.File]::Exists((Join-Path $InstallDir $name))) { throw "Installed backend file is missing: $name" }
+    $target = Join-Path $InstallDir $name
+    if (-not [IO.File]::Exists($target) -and $name -ne 'devspace-watchdog-legacy.ps1') { throw "Installed backend file is missing: $name" }
 }
 [void](Get-UpdateStableHealth)
 
@@ -185,8 +186,11 @@ foreach ($name in $allFiles) {
     $source = Join-Path $SourceDir $name
     $target = Join-Path $InstallDir $name
     $sourceHash = Get-WatchdogFileSha256 $source
-    $targetHash = Get-WatchdogFileSha256 $target
-    if (-not (Test-UpdateContentEqual $source $target)) { $changes += [pscustomobject]@{name=$name;sourceHash=$sourceHash;targetHash=$targetHash} }
+    $targetExists = [IO.File]::Exists($target)
+    $targetHash = if ($targetExists) { Get-WatchdogFileSha256 $target } else { '' }
+    if (-not $targetExists -or -not (Test-UpdateContentEqual $source $target)) {
+        $changes += [pscustomobject]@{name=$name;sourceHash=$sourceHash;targetHash=$targetHash;targetExisted=$targetExists}
+    }
 }
 Write-Host "Machine: $($config.machineSlug)"
 Write-Host "InstallDir: $InstallDir"
@@ -204,10 +208,14 @@ $backupFiles = @()
 foreach ($change in $changes) {
     $target = Join-Path $InstallDir $change.name
     $backup = Join-Path $backupDir $change.name
-    [IO.File]::Copy($target, $backup, $false)
-    $hash = Get-WatchdogFileSha256 $backup
-    if ($hash -ne $change.targetHash) { throw "Backup hash mismatch for $($change.name)" }
-    $backupFiles += [pscustomobject]@{name=$change.name;path=$backup;sha256=$hash}
+    if ($change.targetExisted) {
+        [IO.File]::Copy($target, $backup, $false)
+        $hash = Get-WatchdogFileSha256 $backup
+        if ($hash -ne $change.targetHash) { throw "Backup hash mismatch for $($change.name)" }
+        $backupFiles += [pscustomobject]@{name=$change.name;path=$backup;sha256=$hash;existed=$true}
+    } else {
+        $backupFiles += [pscustomobject]@{name=$change.name;path='';sha256='';existed=$false}
+    }
 }
 $recordBackup = Join-Path $backupDir 'watchdog-tray-install.json'
 [IO.File]::Copy($recordPath, $recordBackup, $false)
@@ -250,8 +258,13 @@ try {
             Wait-InstallSupervisorTaskStopped $InstallDir
         }
         foreach ($item in $backupFiles) {
-            if ((Get-WatchdogFileSha256 $item.path) -ne [string]$item.sha256) { throw "Rollback backup hash mismatch: $($item.name)" }
-            Copy-UpdateFile $item.path (Join-Path $InstallDir $item.name)
+            $target = Join-Path $InstallDir $item.name
+            if ([bool]$item.existed) {
+                if ((Get-WatchdogFileSha256 $item.path) -ne [string]$item.sha256) { throw "Rollback backup hash mismatch: $($item.name)" }
+                Copy-UpdateFile $item.path $target
+            } elseif ([IO.File]::Exists($target)) {
+                [IO.File]::Delete($target)
+            }
         }
         if ((Get-WatchdogFileSha256 $recordBackup) -ne $recordBackupHash) { throw 'Install-record rollback backup hash mismatch.' }
         Copy-UpdateFile $recordBackup $recordPath
