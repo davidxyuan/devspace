@@ -51,7 +51,15 @@ try {
     $script:killError = $false
     $script:exitAfterKill = $true
     $script:inventory = @()
-    function Get-CimInstance { return @($script:inventory | Where-Object { $script:alive }) }
+    $script:cimReads = 0
+    $script:populateUnreadableAfterRead = $false
+    function Get-CimInstance {
+        $script:cimReads++
+        if ($script:populateUnreadableAfterRead -and $script:cimReads -ge 2 -and $script:inventory.Count -gt 1 -and -not [string]$script:inventory[1].CommandLine) {
+            $script:inventory[1].CommandLine = 'powershell.exe -NoProfile -Command unrelated'
+        }
+        return @($script:inventory | Where-Object { $script:alive })
+    }
     $script:childModes = @()
     function Start-HiddenWatchdogProcess { param($ScriptPath, $ChildMode) $script:signals++; $script:childModes += $ChildMode }
     function Get-Process { param($Id) if ($Id -eq 999) { return $null }; return $script:fakeProcess }
@@ -82,6 +90,13 @@ try {
     $script:inventory += [pscustomobject]@{ProcessId=999;CommandLine=$null}
     Assert-True "exited unreadable CIM row does not block role discovery" (@(Get-RoleProcesses $hostHeartbeatPath).Count -eq 1)
     $script:inventory[1].ProcessId=998
+    $script:cimReads = 0
+    $script:populateUnreadableAfterRead = $true
+    Assert-True "transient unreadable live process is retried then ignored when unrelated" (@(Get-RoleProcesses $hostHeartbeatPath).Count -eq 1)
+    Assert-True "transient unreadable process triggered a bounded CIM retry" ($script:cimReads -ge 2)
+    $script:populateUnreadableAfterRead = $false
+    $script:inventory[1].CommandLine = $null
+    $script:cimReads = 0
     Assert-Throws "live unreadable process still blocks recovery" { Get-RoleProcesses $hostHeartbeatPath } 'Cannot verify PowerShell process 998'
     $script:inventory = @($script:inventory[0])
 

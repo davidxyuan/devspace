@@ -213,12 +213,25 @@ function Get-RoleProcesses([string]$HeartbeatPath) {
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop)) {
         $command = [string]$process.CommandLine
         if (-not $command) {
-            # CIM can retain a process that exited during enumeration. Recheck
-            # existence only; a live unreadable process must still block recovery.
+            # CIM can transiently expose a live PowerShell row before CommandLine
+            # is populated. Retry the exact PID briefly, but remain fail-closed if
+            # the live process is still unreadable after the bounded retry window.
             $remaining = Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue
             if (-not $remaining) { continue }
             $remaining.Dispose()
-            throw "Cannot verify PowerShell process $($process.ProcessId)."
+            for ($attempt = 0; $attempt -lt 4 -and -not $command; $attempt++) {
+                Start-Sleep -Milliseconds 75
+                $refreshed = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { [int]$_.ProcessId -eq [int]$process.ProcessId } | Select-Object -First 1)
+                if (-not $refreshed.Count) { break }
+                $process = $refreshed[0]
+                $command = [string]$process.CommandLine
+            }
+            if (-not $command) {
+                $remaining = Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue
+                if (-not $remaining) { continue }
+                $remaining.Dispose()
+                throw "Cannot verify PowerShell process $($process.ProcessId)."
+            }
         }
         if (-not (Test-WatchdogCommandToken $command $ConfigPath)) { continue }
         $matchesHost = (Test-WatchdogCommandToken $command $hostScript) -and $command -match '(?i)(?:^|\s)(?:"-Mode"|-Mode)\s+(?:"Host"|Host)(?=$|\s)'
