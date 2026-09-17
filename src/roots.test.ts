@@ -56,6 +56,10 @@ try {
   }
   assert.throws(() => assertAllowedPath(join(dangling, "new.txt"), [dangling]), AccessDeniedError);
   assert.throws(() => assertAllowedPath(join(outside, "sentinel.txt"), [allowed]), AccessDeniedError);
+  assert.equal(
+    assertAllowedPath(join(allowed, "escape", "sentinel.txt"), [allowed, outside]),
+    join(allowed, "escape", "sentinel.txt"),
+  );
 
   for (const path of ["inside-link/sample.txt", "inside-link/new/nested.txt", "new/nested.txt"]) {
     assert.equal(resolveAllowedPath(path, allowed, [allowed]), resolve(allowed, path));

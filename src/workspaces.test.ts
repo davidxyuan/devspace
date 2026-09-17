@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -89,7 +89,7 @@ test("worktree opens require Git and create an isolated managed workspace", asyn
 
   assert.equal(opened.workspace.mode, "worktree");
   assert.notEqual(opened.workspace.root, gitRoot);
-  assert.equal(opened.workspace.sourceRoot, gitRoot);
+  assert.equal(await realpath(opened.workspace.sourceRoot!), await realpath(gitRoot));
   assert.equal(opened.workspace.worktree?.baseRef, "HEAD");
   assert.equal(opened.workspace.worktree?.dirtySource, true);
   assert.equal(opened.workspace.worktree?.managed, true);
@@ -122,7 +122,7 @@ test("persisted checkout and worktree sessions restore after recreating the regi
     assert.equal(restoredCheckout.mode, "checkout");
     assert.equal(restoredWorktree.root, worktree.workspace.root);
     assert.equal(restoredWorktree.mode, "worktree");
-    assert.equal(restoredWorktree.sourceRoot, gitRoot);
+    assert.equal(await realpath(restoredWorktree.sourceRoot!), await realpath(gitRoot));
     assert.equal(restoredWorktree.worktree?.managed, true);
   } finally {
     secondStore.close();

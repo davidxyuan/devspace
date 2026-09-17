@@ -100,6 +100,14 @@ try {
     Assert-Equal "Hermes v0.10 owner activation gate is explicit" $ownerEnv["HERMES_GPT_OWNER_ACTIVE"] "1"
     Assert-Equal "Hermes owner acknowledgement is preserved" $ownerEnv["HERMES_GPT_OWNER_ACK"] "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"
 
+    $fullScopeConfig = New-TestConfig $tempRoot
+    $explicitRoot = Join-Path $tempRoot "explicit-network-root"
+    $fullScopeConfig.capabilities.hermes = [pscustomobject]@{
+        allowedRoots=@($explicitRoot); filesystemScope="full"
+    }
+    $fullScopeEnv = Get-WatchdogHermesEnvironment $fullScopeConfig
+    Assert-Contains "Hermes full scope preserves explicit roots" $fullScopeEnv["HERMES_GPT_OPERATOR_ALLOWED_PATHS"] $explicitRoot
+
     $statePath = Join-Path $tempRoot "watchdog-tray-state.json"
     $state = New-WatchdogState $config
     Set-WatchdogDesiredState $state "hermes" "stopped_by_user"

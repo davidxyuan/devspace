@@ -1450,7 +1450,8 @@ function Get-WatchdogHermesEnvironment($Config) {
         foreach ($gate in $gates.GetEnumerator()) { $values[$gate.Key] = if ([bool](Get-WatchdogProperty $caps $gate.Value $false)) { "1" } else { $null } }
         $values["HERMES_GPT_ALLOW_WRITE"] = if ([bool](Get-WatchdogProperty $caps "cronWrite" $false) -or [bool](Get-WatchdogProperty $caps "skillWrite" $false)) { "1" } else { $null }
         $roots = @(Get-WatchdogProperty $caps "allowedRoots" @())
-        if ([string](Get-WatchdogProperty $caps "filesystemScope" "restricted") -eq "full") { $roots = @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }) }
+        if ([string](Get-WatchdogProperty $caps "filesystemScope" "restricted") -eq "full") { $roots = @(@(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }) + @($roots))
+            $roots = @($roots | Select-Object -Unique) }
         $rootText = $roots -join ","
         $values["HERMES_GPT_CODEX_ALLOWED_ROOTS"] = $rootText
         $values["HERMES_GPT_OPERATOR_ALLOWED_PATHS"] = $rootText

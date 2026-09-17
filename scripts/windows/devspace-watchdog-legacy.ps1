@@ -411,7 +411,8 @@ function Start-Hermes {
                 }
                 $roots = @($caps.allowedRoots)
                 if ([string]$caps.filesystemScope -eq "full") {
-                    $roots = @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })
+                    $roots = @(@(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }) + @($roots))
+                    $roots = @($roots | Select-Object -Unique)
                 }
                 $rootText = $roots -join ","
                 [Environment]::SetEnvironmentVariable("HERMES_GPT_CODEX_ALLOWED_ROOTS", $rootText, "Process")

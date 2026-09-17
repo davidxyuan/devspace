@@ -238,8 +238,37 @@ function Split-Roots([string]$rootsText) {
     )
 }
 
+function Resolve-NodeRealPath([string]$Path) {
+    if (-not $NodePath -or -not [IO.File]::Exists($NodePath)) { return "" }
+    try {
+        $value = & $NodePath -e 'const fs=require("node:fs");process.stdout.write(fs.realpathSync.native(process.argv[1]));' $Path 2>$null
+        if ($LASTEXITCODE -eq 0 -and $value) { return ([string]$value).Trim() }
+    } catch {}
+    return ""
+}
+
+function Test-PathInsideTextRoot([string]$Path, [string]$Root) {
+    $p = $Path.TrimEnd('\','/'); $r = $Root.TrimEnd('\','/')
+    return $p.Equals($r, [StringComparison]::OrdinalIgnoreCase) -or $p.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-FullAccessRoots {
-    @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root } | ForEach-Object { $_.Root })
+    $roots = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root } | ForEach-Object { $_.Root })
+    if ($env:OS -eq 'Windows_NT') {
+        $mappings = @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.LocalPath -and $_.RemotePath })
+        foreach ($mapping in $mappings) {
+            $roots += [string]$mapping.RemotePath
+            $localRoot = ([string]$mapping.LocalPath).TrimEnd('\') + '\'
+            $canonicalRoot = Resolve-NodeRealPath $localRoot
+            if ($canonicalRoot) { $roots += $canonicalRoot }
+            if (-not $canonicalRoot -or -not $canonicalRoot.StartsWith('\\')) { continue }
+            foreach ($child in @(Get-ChildItem -LiteralPath $localRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+                $target = Resolve-NodeRealPath $child.FullName
+                if ($target -and $target.StartsWith('\\') -and -not (Test-PathInsideTextRoot $target $canonicalRoot)) { $roots += $target }
+            }
+        }
+    }
+    @($roots | Where-Object { $_ } | Select-Object -Unique)
 }
 
 function ConvertTo-Slug([string]$value) {
@@ -666,6 +695,10 @@ if ($installDevSpace) {
     }
     $authConfig = ConvertTo-InstallMap $existingAuth
     $authConfig['ownerToken'] = $ownerToken
+}
+
+if ($installHermes -and $hermesCapabilities.filesystemScope -eq "full") {
+    $hermesCapabilities.allowedRoots = @(Get-FullAccessRoots)
 }
 
 $hermesCommandPath = ""
