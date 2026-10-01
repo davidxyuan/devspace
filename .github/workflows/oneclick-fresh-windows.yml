@@ -27,8 +27,12 @@ jobs:
       - name: Install build dependencies
         run: npm ci
 
-      - name: Build DevSpace
-        run: npm run build
+      - name: Verify committed package runtime
+        shell: powershell
+        run: |
+          if (git status --porcelain) { throw "Checkout is dirty before packaging." }
+          node dist/cli.js help | Out-Null
+          npm run typecheck
 
       - name: Build One-Click ZIP
         shell: powershell
