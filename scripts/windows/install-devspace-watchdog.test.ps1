@@ -19,6 +19,7 @@ try {
     $good = Join-Path $tempRoot 'python-good.cmd'
     $old = Join-Path $tempRoot 'python-old.cmd'
     $bad = Join-Path $tempRoot 'python-bad.cmd'
+    $nativeGood = Join-Path $tempRoot 'python-native-good.exe'
 
     [IO.File]::WriteAllText($good, @'
 @echo off
@@ -34,8 +35,18 @@ exit /b 0
 @echo off
 exit /b 1
 '@)
+    Add-Type -TypeDefinition @'
+using System;
+public static class NativePythonProbeFixture {
+    public static int Main(string[] args) {
+        Console.WriteLine("3.12.10");
+        return 0;
+    }
+}
+'@ -OutputAssembly $nativeGood -OutputType ConsoleApplication
 
     if (-not (Test-PythonForHermesGpt $good)) { throw 'Python 3.12 fixture was rejected.' }
+    if (-not (Test-PythonForHermesGpt $nativeGood)) { throw 'Native Python-like executable was rejected due to LASTEXITCODE/pipeline handling.' }
     if (Test-PythonForHermesGpt $old) { throw 'Python 3.9 fixture was accepted.' }
     if (Test-PythonForHermesGpt $bad) { throw 'Failed Python fixture was accepted.' }
     if (Test-PythonForHermesGpt 'C:\Users\fixture\AppData\Local\Microsoft\WindowsApps\python.exe') {

@@ -413,8 +413,10 @@ function Test-PythonForHermesGpt([string]$candidate) {
     }
 
     try {
-        $versionText = (& $normalized -c 'import platform; print(platform.python_version())' 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -ne 0 -or -not $versionText) {
+        $versionOutput = @(& $normalized -c 'import platform; print(platform.python_version())' 2>$null)
+        $pythonExitCode = $LASTEXITCODE
+        $versionText = @($versionOutput | Where-Object { $_ }) | Select-Object -First 1
+        if ($pythonExitCode -ne 0 -or -not $versionText) {
             return $false
         }
         return ([version]([string]$versionText).Trim()) -ge [version]'3.10'
