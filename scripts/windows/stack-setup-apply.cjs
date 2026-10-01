@@ -22,6 +22,15 @@ function installerParameters(setup, { installDir, packageRoot }) {
   if (change("allowedRoots") && setup.allowedRoots) result.HermesAllowedRoots = setup.allowedRoots.split(/[;,]/).map(x => x.trim()).filter(Boolean);
   if (setup.fullAccess) {
     result.FullAccess = true;
+    if (setup.components.includes("DevSpace")) {
+      result.CapabilitySelection = [
+        "DevSpaceToolMode=full",
+        "DevSpaceWidgets=off",
+        "DevSpaceSkills=On",
+        "DevSpaceSubagents=On",
+        "DevSpaceMcpTransport=stateless-json",
+      ].join(";");
+    }
     if (setup.components.includes("Hermes")) {
       result.CapabilitySelection = [
         "HermesBridge=On",
@@ -42,7 +51,7 @@ function installerParameters(setup, { installDir, packageRoot }) {
         "HermesSkillWrite=On",
         "HermesPrivateNetwork=On",
         "HermesFilesystemScope=full",
-      ].join(";");
+      ].concat(result.CapabilitySelection ? [result.CapabilitySelection] : []).join(";");
     }
   }
   if (setup.installTools) result.InstallTools = true;

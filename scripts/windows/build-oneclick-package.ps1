@@ -14,7 +14,9 @@ try {
     $packed = (& npm.cmd pack --ignore-scripts --json --pack-destination $stage | Out-String) | ConvertFrom-Json
     if($LASTEXITCODE -ne 0){throw 'npm pack failed.'}
     $archive=Join-Path $stage ([string]$packed[0].filename)
-    & tar.exe -xf $archive -C $stage
+    $tarPath = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (-not [IO.File]::Exists($tarPath)) { throw "Windows tar.exe was not found: $tarPath" }
+    & $tarPath -xf $archive -C $stage
     if($LASTEXITCODE -ne 0){throw 'Package extraction failed.'}
     $payload=Join-Path $stage 'package'
     Copy-Item -LiteralPath (Join-Path $packageRoot 'package-lock.json') -Destination $payload
