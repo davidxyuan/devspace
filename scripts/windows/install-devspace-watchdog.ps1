@@ -803,7 +803,7 @@ if ($installHermes) {
 
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
     $hermesWorkingDirectory = $HermesDir
-    $hermesFullAccessEnabled = $false
+    $hermesFullAccessEnabled = ([string]$hermesCapabilities.filesystemScope -eq "full")
     $hermesCapabilityEnv = @()
     $cmdGates = [ordered]@{
         HERMES_GPT_ENABLE_CODEX=$hermesCapabilities.bridge; HERMES_GPT_ENABLE_MCP=$hermesCapabilities.bridge

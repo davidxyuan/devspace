@@ -136,6 +136,7 @@ function detectInstallState() {
       installTools: true,
       userMode: true,
       noLegacyPoller: true,
+      fullAccess: Boolean(watchdog.fullAccess),
       devspaceOwnerTokenConfigured: Boolean(auth.ownerToken),
     },
   };

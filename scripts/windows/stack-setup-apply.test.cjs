@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { applySetup } = require("./stack-setup-apply.cjs");
+const { installerParameters, applySetup } = require("./stack-setup-apply.cjs");
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "devspace-stack-apply-"));
@@ -47,6 +47,20 @@ const { applySetup } = require("./stack-setup-apply.cjs");
   };
 
   try {
+    const ownerSetup = { ...setup, components: ["DevSpace", "Hermes"], fullAccess: true };
+    const ownerParams = installerParameters(ownerSetup, { installDir, packageRoot });
+    assert.equal(ownerParams.FullAccess, true);
+    assert.match(ownerParams.CapabilitySelection, /HermesOperator=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesOperatorDirect=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesOwnerMode=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesWorkspaceWrite=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesTerminal=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesRunner=On/);
+    assert.match(ownerParams.CapabilitySelection, /HermesFilesystemScope=full/);
+
+    const readOnlyParams = installerParameters({ ...setup, components: ["DevSpace", "Hermes"], fullAccess: false }, { installDir, packageRoot });
+    assert.equal(readOnlyParams.CapabilitySelection, undefined, "Hermes owner/direct capabilities must remain opt-in via Full Access");
+
     await applySetup(setup, { installDir, packageRoot, scriptDir, id: "fixture-job" }, run);
     const npmCall = calls.find(call => call.file === process.execPath && String(call.args[0]).endsWith(path.join("npm", "bin", "npm-cli.js")));
     assert.ok(npmCall, "npm dependency recovery call was not made");

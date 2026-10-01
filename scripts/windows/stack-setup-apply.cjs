@@ -20,7 +20,31 @@ function installerParameters(setup, { installDir, packageRoot }) {
   if (watchdog.cliPath && fs.existsSync(watchdog.cliPath)) result.SkipNpmInstall = true;
   if (watchdog.hermesServer && fs.existsSync(watchdog.hermesServer) && watchdog.hermesPython && fs.existsSync(watchdog.hermesPython)) result.SkipHermesInstall = true;
   if (change("allowedRoots") && setup.allowedRoots) result.HermesAllowedRoots = setup.allowedRoots.split(/[;,]/).map(x => x.trim()).filter(Boolean);
-  if (setup.fullAccess) result.FullAccess = true;
+  if (setup.fullAccess) {
+    result.FullAccess = true;
+    if (setup.components.includes("Hermes")) {
+      result.CapabilitySelection = [
+        "HermesBridge=On",
+        "HermesReadOnlyTools=On",
+        "HermesVision=On",
+        "HermesWeb=On",
+        "HermesDiagnostics=On",
+        "HermesRunner=On",
+        "HermesRunnerWrite=On",
+        "HermesWorkspaceWrite=On",
+        "HermesMemoryWrite=On",
+        "HermesTerminal=On",
+        "HermesOperator=On",
+        "HermesOperatorDirect=On",
+        "HermesOwnerMode=On",
+        "HermesCron=On",
+        "HermesCronWrite=On",
+        "HermesSkillWrite=On",
+        "HermesPrivateNetwork=On",
+        "HermesFilesystemScope=full",
+      ].join(";");
+    }
+  }
   if (setup.installTools) result.InstallTools = true;
   if (setup.endpointMode === "CloudEndpoint" && change("internalAgentEndpoint")) result.NgrokAgentBaseUrl = setup.internalAgentEndpoint;
   if (setup.userMode) { result.UserMode = true; result.NoElevate = true; }
