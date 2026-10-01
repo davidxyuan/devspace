@@ -426,22 +426,56 @@ function Test-PythonForHermesGpt([string]$candidate) {
 function Find-UsablePythonForHermesGpt {
     Refresh-Path
     $candidates = New-Object System.Collections.Generic.List[string]
+    function Add-PythonCandidate([string]$candidate) {
+        if ($candidate) { [void]$candidates.Add([string]$candidate) }
+    }
 
     foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"),
         (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\.venv\Scripts\python.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
         (Join-Path $env:ProgramFiles "Python312\python.exe")
+    )) { Add-PythonCandidate $candidate }
+
+    foreach ($registryRoot in @(
+        'HKCU:\Software\Python\PythonCore',
+        'HKLM:\Software\Python\PythonCore',
+        'HKLM:\Software\WOW6432Node\Python\PythonCore'
     )) {
-        if ($candidate) {
-            [void]$candidates.Add([string]$candidate)
+        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
+        foreach ($versionKey in @(Get-ChildItem -LiteralPath $registryRoot -ErrorAction SilentlyContinue)) {
+            $installKey = Join-Path $versionKey.PSPath 'InstallPath'
+            if (-not (Test-Path -LiteralPath $installKey)) { continue }
+            $install = Get-ItemProperty -LiteralPath $installKey -ErrorAction SilentlyContinue
+            Add-PythonCandidate ([string]$install.ExecutablePath)
+            $defaultInstall = [string](Get-ItemPropertyValue -LiteralPath $installKey -Name '(default)' -ErrorAction SilentlyContinue)
+            if ($defaultInstall) { Add-PythonCandidate (Join-Path $defaultInstall 'python.exe') }
+        }
+    }
+
+    foreach ($parent in @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python'),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        (Join-Path $env:LOCALAPPDATA 'hermes\tools')
+    )) {
+        if (-not $parent -or -not (Test-Path -LiteralPath $parent)) { continue }
+        foreach ($directory in @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^(?:Python|python-)'
+        })) {
+            Add-PythonCandidate (Join-Path $directory.FullName 'python.exe')
+        }
+    }
+
+    $pyLauncher = Find-CommandPath 'py.exe'
+    if ($pyLauncher) {
+        foreach ($line in @(& $pyLauncher -0p 2>$null)) {
+            if ([string]$line -match '([A-Za-z]:\\.*python(?:\.exe)?)\s*$') { Add-PythonCandidate $Matches[1].Trim() }
         }
     }
 
     foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
-        if ($command.Source) {
-            [void]$candidates.Add([string]$command.Source)
-        }
+        if ($command.Source) { Add-PythonCandidate ([string]$command.Source) }
     }
 
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
