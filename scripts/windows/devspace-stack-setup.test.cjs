@@ -76,6 +76,7 @@ async function main() {
     assert.equal(status.ok, true);
     assert.ok(["Fresh", "Existing", "Partial"].includes(status.state));
     assert.equal(typeof status.packageVersion, "string");
+    assert.equal(status.defaults.ngrokAuthTokenConfigured, false, "fresh/no-credential setup must report ngrok token as not stored");
 
     const htmlResponse = await request(baseUrl);
     assert.equal(htmlResponse.status, 200);
@@ -100,6 +101,16 @@ async function main() {
 
     const token = htmlResponse.body.match(/const setupToken="([^"]+)"/)[1];
     const mutationOptions = { method: "POST", headers: { "content-type": "application/json", origin: baseUrl.replace(/\/$/, ""), "x-devspace-setup-token": token } };
+    const blankCredentialApply = await request(baseUrl + "api/apply", mutationOptions, JSON.stringify({
+      ...status.defaults,
+      configurationFingerprint: status.configurationFingerprint,
+      publicDomain: "https://fixture.example.test",
+      endpointMode: "AgentEndpoint",
+      ngrokAuthToken: "",
+      devspaceOwnerToken: "",
+    }));
+    assert.equal(blankCredentialApply.status, 400);
+    assert.match(blankCredentialApply.body, /ngrok Auth Token is required/);
     const currentInstaller = await request(`${baseUrl}api/components/action`, mutationOptions, "{}");
     assert.equal(currentInstaller.status, 400);
     assert.doesNotMatch(currentInstaller.body, /management package changed/, "A newly opened installer may replace the previous management package");

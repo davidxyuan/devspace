@@ -59,6 +59,7 @@ function installerParameters(setup, { installDir, packageRoot }) {
   if (setup.userMode) { result.UserMode = true; result.NoElevate = true; }
   if (setup.installTray) result.InstallWatchdogTray = true;
   if (setup.noLegacyPoller) result.NoLegacyPoller = true;
+  if (process.env.DEVSPACE_ONECLICK_TEST_SKIP_START === "1") result.SkipStart = true;
   return result;
 }
 
@@ -70,9 +71,9 @@ async function applySetup(setup, context, run) {
     catch {
       const npmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
       if (!fs.existsSync(npmCli)) throw new Error("npm is missing beside the selected Node runtime. Repair Node.js LTS and reopen Setup.");
-      const npmOptions = { cwd: context.packageRoot };
+      const npmOptions = { cwd: context.packageRoot, env: { ...process.env, NODE_USE_SYSTEM_CA: "1" } };
       if (setup.npmInsecureTls) {
-        npmOptions.env = { ...process.env, npm_config_strict_ssl: "false", NODE_TLS_REJECT_UNAUTHORIZED: "0" };
+        npmOptions.env = { ...npmOptions.env, npm_config_strict_ssl: "false", NODE_TLS_REJECT_UNAUTHORIZED: "0" };
       }
       await run(process.execPath, [npmCli, fs.existsSync(path.join(context.packageRoot, "package-lock.json")) ? "ci" : "install", "--omit=dev", "--no-audit", "--no-fund"], npmOptions);
       await run(process.execPath, [parameters.CliPath, "help"], { cwd: context.packageRoot });

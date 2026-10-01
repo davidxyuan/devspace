@@ -317,12 +317,32 @@ function Find-HermesAgentExe {
         return $command
     }
 
-    $localExe = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\hermes.exe"
-    if (Test-Path -LiteralPath $localExe) {
-        return $localExe
+    foreach ($localExe in @(
+        (Join-Path $env:LOCALAPPDATA "hermes\bin\hermes.exe"),
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\hermes.exe"),
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\.venv\Scripts\hermes.exe")
+    )) {
+        if (Test-Path -LiteralPath $localExe) {
+            return $localExe
+        }
     }
 
     return $null
+}
+
+function Ensure-UvSystemCertificates {
+    $uvDir = Join-Path $env:APPDATA "uv"
+    $uvConfig = Join-Path $uvDir "uv.toml"
+    [void][IO.Directory]::CreateDirectory($uvDir)
+    if (-not [IO.File]::Exists($uvConfig)) {
+        [IO.File]::WriteAllText($uvConfig, "system-certs = true" + [Environment]::NewLine, [Text.Encoding]::UTF8)
+        return
+    }
+    $content = [IO.File]::ReadAllText($uvConfig)
+    if ($content -notmatch '(?m)^\s*system-certs\s*=') {
+        $separator = if ($content.Length -and -not $content.EndsWith([Environment]::NewLine)) { [Environment]::NewLine } else { "" }
+        [IO.File]::AppendAllText($uvConfig, $separator + "system-certs = true" + [Environment]::NewLine, [Text.Encoding]::UTF8)
+    }
 }
 
 function Install-HermesAgentIfNeeded {
@@ -339,6 +359,9 @@ function Install-HermesAgentIfNeeded {
     }
 
     Write-Host "Installing Hermes Agent..."
+    Ensure-UvSystemCertificates
+    $previousUvSystemCerts = $env:UV_SYSTEM_CERTS
+    $env:UV_SYSTEM_CERTS = "true"
     $installScriptPath = Join-Path $env:TEMP ("hermes-agent-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
     try {
         Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath
@@ -347,6 +370,8 @@ function Install-HermesAgentIfNeeded {
             Fail "Hermes Agent installer exited with code $LASTEXITCODE." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
         }
     } finally {
+        if ($null -eq $previousUvSystemCerts) { Remove-Item Env:UV_SYSTEM_CERTS -ErrorAction SilentlyContinue }
+        else { $env:UV_SYSTEM_CERTS = $previousUvSystemCerts }
         Remove-Item -LiteralPath $installScriptPath -Force -ErrorAction SilentlyContinue
     }
     $exe = Find-HermesAgentExe
@@ -997,6 +1022,11 @@ if ($useRouter -and -not [IO.File]::Exists($routerPath)) { Copy-Item -LiteralPat
 if ($effectiveNgrokAuthtoken) {
     . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
     [void](Set-WatchdogNgrokCredential $watchdogConfig $effectiveNgrokAuthtoken)
+    $credentialRoundTrip = Get-WatchdogNgrokCredential $watchdogConfig
+    if (-not $credentialRoundTrip -or $credentialRoundTrip -cne $effectiveNgrokAuthtoken) {
+        Fail "ngrok Auth Token could not be persisted for the current Windows user." "Return to Setup, enter the ngrok Auth Token again, and retry."
+    }
+    $credentialRoundTrip = $null
     $effectiveNgrokAuthtoken = $null
 }
 

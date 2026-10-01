@@ -52,11 +52,22 @@ exit /b 1
     if ($source -match '\[scriptblock\]::Create\(\$installScript\)') {
         throw 'Hermes Agent installer still executes downloaded PowerShell dynamically.'
     }
+    if ($source -notmatch 'hermes\\bin\\hermes\.exe') {
+        throw 'Hermes Agent discovery does not include the official %LOCALAPPDATA%\hermes\bin\hermes.exe path.'
+    }
+    if ($source -notmatch 'system-certs = true' -or $source -notmatch 'UV_SYSTEM_CERTS') {
+        throw 'Hermes/uv installer does not opt into Windows system certificates.'
+    }
     if ($source -notmatch 'Invoke-WebRequest.+hermes-agent\.nousresearch\.com/install\.ps1.+-OutFile') {
         throw 'Hermes Agent installer is not staged as a file before execution.'
     }
+    if ($source -notmatch 'Set-WatchdogNgrokCredential.+\$effectiveNgrokAuthtoken' -or
+        $source -notmatch 'Get-WatchdogNgrokCredential.+\$watchdogConfig' -or
+        $source -notmatch 'ngrok Auth Token could not be persisted') {
+        throw 'Installer does not verify ngrok DPAPI credential persistence after receiving a token.'
+    }
 
-    Write-Output 'install-devspace-watchdog Python/runtime bootstrap tests passed.'
+    Write-Output 'install-devspace-watchdog Python/runtime/token bootstrap tests passed.'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

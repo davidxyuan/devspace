@@ -150,5 +150,24 @@ async function exercise(name) {
   h.sandbox.running={...h.sandbox.next,defaults:{...h.sandbox.next.defaults,allowedRoots:"D:\\server-default"}};
   h.run("fill(running)");
   assert.equal(form.elements.allowedRoots.value,"D:\\submitted-root","running install preserves submitted non-secret fields instead of resetting to server defaults");
-  console.log("watchdog UI tests passed (mock DOM, offline inventory, delayed job requests, edited forms).");
+
+  const retry=harness("devspace-stack-setup.html");
+  retry.sandbox.initial={state:"Fresh",configurationFingerprint:"fresh-fingerprint",defaults:{machineName:"fresh",mcpNameSuffix:"fresh",allowedRoots:"D:\\",hermesDir:"D:\\hermes",endpointMode:"AgentEndpoint",publicDomain:"https://fresh.example.test",installDevspace:true,installHermes:true,installTray:true,installTools:true,userMode:true,noLegacyPoller:true,fullAccess:true,ngrokAuthTokenConfigured:false},packageVersion:"1",tray:{}};
+  retry.run("fill(initial)");
+  const retryForm=retry.query("#setup-form");
+  retryForm.elements.ngrokAuthToken.value="retry-secret";
+  retry.sandbox.response=()=>({ok:true,jobId:"retry-failed"});
+  await retry.run("apply({preventDefault(){}})");
+  assert.equal(retryForm.elements.ngrokAuthToken.value,"retry-secret","submitted token remains while install is running");
+  retry.run("refreshComponents=async()=>{};refresh=async()=>{}");
+  retry.sandbox.response=url=>url.startsWith("/api/job")?{id:"retry-failed",phase:"failed",error:"fixture prerequisite failure",lines:[]}:{};
+  await retry.run("pollManagementJob()");
+  assert.equal(retryForm.elements.ngrokAuthToken.value,"retry-secret","failed install keeps token for retry");
+  retry.sandbox.response=()=>({ok:true,jobId:"retry-success"});
+  await retry.run("apply({preventDefault(){}})");
+  assert.equal(retryForm.elements.ngrokAuthToken.value,"retry-secret","retry keeps the same token until success");
+  retry.sandbox.response=url=>url.startsWith("/api/job")?{id:"retry-success",phase:"completed",lines:[]}:{};
+  await retry.run("pollManagementJob()");
+  assert.equal(retryForm.elements.ngrokAuthToken.value,"","successful install clears the submitted token");
+  console.log("watchdog UI tests passed (mock DOM, offline inventory, delayed job requests, edited forms, retry secrets).");
 })().catch(error=>{console.error(error);process.exitCode=1;});

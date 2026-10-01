@@ -52,7 +52,7 @@
       <label>Endpoint Mode<select name="endpointMode"><option value="AgentEndpoint">Agent Endpoint</option><option value="CloudEndpoint">Cloud Endpoint</option></select></label>
       <label>ngrok / Public Domain<input name="publicDomain" type="url" placeholder="https://machine.ngrok-free.dev" required></label>
       <label id="internal-label">Internal Agent Endpoint<input name="internalAgentEndpoint" type="url" placeholder="https://machine-devspace.internal"></label>
-      <label>ngrok Authtoken<input name="ngrokAuthToken" type="password" autocomplete="new-password" placeholder="Blank = keep current token"></label>
+      <label>ngrok Authtoken<input name="ngrokAuthToken" type="password" autocomplete="new-password" placeholder="Required until this PC has a stored token"></label>
       <label>DevSpace Owner Token<input name="devspaceOwnerToken" type="password" autocomplete="new-password" placeholder="Blank = keep/generate automatically"></label>
     </div>
     <p class="secret-note muted">Secrets are sent only to this localhost setup process and passed to the installer through child-process environment variables. They are not stored in this Dashboard configuration or shown in the command line.</p>
@@ -77,9 +77,11 @@ function fill(status){
   for(const key of ["machineName","mcpNameSuffix","publicDomain","internalAgentEndpoint","allowedRoots","hermesDir"])if(f[key]&&!editedFields.has(key))f[key].value=d[key]||"";
   for(const key of ["installDevspace","installHermes","installTray","installTools","npmInsecureTls","userMode","noLegacyPoller","fullAccess"])if(f[key]&&!editedFields.has(key))f[key].checked=Boolean(d[key]);
   if(!editedFields.has("endpointMode"))f.endpointMode.value=d.endpointMode||"AgentEndpoint";
+  f.ngrokAuthToken.required=!Boolean(d.ngrokAuthTokenConfigured);
+  f.ngrokAuthToken.placeholder=d.ngrokAuthTokenConfigured?"Blank = keep current stored token":"Required until this PC has a stored token";
   toggleCloud();const state=status.state;$("#state-label").textContent=state;$("#state-dot").className=`dot ${state==="Existing"?"green":state==="Fresh"?"yellow":"red"}`;
   $("#version").textContent=`Package ${status.packageVersion}`;$("#tray-state").textContent=`Tray ${status.tray?.running?"Running":status.tray?.installed?"Installed":"Not installed"}`;
-  const root=$("#summary");root.replaceChildren();addDl(root,"Install directory",status.installDir);addDl(root,"Package runtime",status.packageCliReady?"Ready":"dist/cli.js missing");addDl(root,"Legacy poller",status.legacyPollerQuiesced?"Quiesced":"Not quiesced / not detected");if(status.tray?.dashboard)addDl(root,"Operational Dashboard",status.tray.dashboard);
+  const root=$("#summary");root.replaceChildren();addDl(root,"Install directory",status.installDir);addDl(root,"Package runtime",status.packageCliReady?"Ready":"dist/cli.js missing");addDl(root,"ngrok credential",d.ngrokAuthTokenConfigured?"Stored for this Windows user":"Not stored — token required");addDl(root,"Legacy poller",status.legacyPollerQuiesced?"Quiesced":"Not quiesced / not detected");if(status.tray?.dashboard)addDl(root,"Operational Dashboard",status.tray.dashboard);
   attachManagementStatus(status);
 }
 async function refresh(){
@@ -100,9 +102,8 @@ async function apply(event){
   management.submitting=true;setManagementBusy();
   const submitted=readForm();
   try{
-    const r=await api("/api/apply",{method:"POST",body:JSON.stringify(submitted)}), current=readForm();
+    const r=await api("/api/apply",{method:"POST",body:JSON.stringify(submitted)});
     activeSubmission=submitted;
-    for(const key of ["ngrokAuthToken","devspaceOwnerToken"])if(current[key]===submitted[key]){$("[name="+key+"]").value="";editedFields.delete(key)}
     trackManagementJob(r.jobId);
   }
   catch(e){managementError(e.message)}finally{management.submitting=false;setManagementBusy()}
@@ -177,6 +178,7 @@ const refreshManagementStatus=()=>refresh();
           try { sessionStorage.removeItem("devspace-management-job"); } catch {}
           if(job.phase==="completed"&&activeSubmission){
             const current=readForm();
+            for(const key of ["ngrokAuthToken","devspaceOwnerToken"])if(current[key]===activeSubmission[key]){$("[name="+key+"]").value="";editedFields.delete(key)}
             for(const key of ["installDevspace","installHermes","installTray","userMode","noLegacyPoller","installTools","npmInsecureTls","fullAccess","machineName","mcpNameSuffix","allowedRoots","hermesDir","endpointMode","publicDomain","internalAgentEndpoint"])if(current[key]===activeSubmission[key])editedFields.delete(key);
             if(editedFields.size===0)formFingerprint=null;
           }

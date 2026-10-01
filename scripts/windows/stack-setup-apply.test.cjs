@@ -16,6 +16,7 @@ const { installerParameters, applySetup } = require("./stack-setup-apply.cjs");
   fs.writeFileSync(path.join(packageRoot, "dist", "cli.js"), "// fixture\n");
   fs.writeFileSync(path.join(packageRoot, "package-lock.json"), "{}\n");
 
+  const fakeNgrokToken = "fixture-ngrok-token-do-not-log";
   const setup = {
     components: ["DevSpace"],
     existing: false,
@@ -32,7 +33,7 @@ const { installerParameters, applySetup } = require("./stack-setup-apply.cjs");
     userMode: true,
     noLegacyPoller: false,
     fullAccess: false,
-    ngrokAuthToken: "",
+    ngrokAuthToken: fakeNgrokToken,
     devspaceOwnerToken: "",
   };
 
@@ -68,13 +69,17 @@ const { installerParameters, applySetup } = require("./stack-setup-apply.cjs");
     await applySetup(setup, { installDir, packageRoot, scriptDir, id: "fixture-job" }, run);
     const npmCall = calls.find(call => call.file === process.execPath && String(call.args[0]).endsWith(path.join("npm", "bin", "npm-cli.js")));
     assert.ok(npmCall, "npm dependency recovery call was not made");
+    assert.equal(npmCall.options.env.NODE_USE_SYSTEM_CA, "1");
     assert.equal(npmCall.options.env.npm_config_strict_ssl, "false");
     assert.equal(npmCall.options.env.NODE_TLS_REJECT_UNAUTHORIZED, "0");
 
     const installerCall = calls.at(-1);
     assert.equal(installerCall.options.env.NODE_TLS_REJECT_UNAUTHORIZED, undefined, "emergency npm TLS bypass leaked into the PowerShell installer");
     assert.equal(installerCall.options.env.npm_config_strict_ssl, undefined, "emergency npm TLS bypass leaked into the PowerShell installer");
-    console.log("stack setup apply emergency npm TLS test passed.");
+    assert.equal(installerCall.options.env.NGROK_AUTHTOKEN, fakeNgrokToken, "ngrok token did not reach the installer child-process environment");
+    const parameterFile = path.join(installDir, "stack-management", "jobs", "fixture-job.parameters.json");
+    assert.equal(fs.readFileSync(parameterFile, "utf8").includes(fakeNgrokToken), false, "ngrok token leaked into installer parameter JSON");
+    console.log("stack setup apply emergency npm TLS/token transport test passed.");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -137,6 +137,7 @@ function detectInstallState() {
       userMode: true,
       noLegacyPoller: true,
       fullAccess: Boolean(watchdog.fullAccess),
+      ngrokAuthTokenConfigured: fs.existsSync(path.join(installDir, "ngrok-auth.dpapi.json")),
       devspaceOwnerTokenConfigured: Boolean(auth.ownerToken),
     },
   };
@@ -165,6 +166,10 @@ function validateSetup(input) {
   const allowedRoots = String(input.allowedRoots || "").trim();
   if (input.installDevspace && !allowedRoots && !input.fullAccess) throw new Error("DevSpace needs at least one allowed root, or Full Access must be explicitly selected.");
   if (input.noLegacyPoller && !input.installTray) throw new Error("Tray-only mode requires Install Tray.");
+  const storedNgrokCredential = fs.existsSync(path.join(installDir, "ngrok-auth.dpapi.json"));
+  if (!storedNgrokCredential && !String(input.ngrokAuthToken || "").trim()) {
+    throw new Error("ngrok Auth Token is required until this PC has a stored credential. If a previous install attempt failed before credentials were saved, enter the token again before retrying.");
+  }
   return {
     components,
     configurationFingerprint: detected.configurationFingerprint,

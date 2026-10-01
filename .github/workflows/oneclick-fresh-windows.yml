@@ -1,0 +1,69 @@
+name: One-Click Fresh Windows
+
+on:
+  push:
+    branches:
+      - codex/windows-watchdog-tray-control-center
+  workflow_dispatch:
+
+concurrency:
+  group: oneclick-fresh-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-oneclick:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install build dependencies
+        run: npm ci
+
+      - name: Build DevSpace
+        run: npm run build
+
+      - name: Build One-Click ZIP
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\oneclick" | Out-Null
+          $result = & .\scripts\windows\build-oneclick-package.ps1 -OutputDirectory "$env:RUNNER_TEMP\oneclick" | ConvertFrom-Json
+          "ZIP_PATH=$($result.path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIP_SHA256=$($result.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIP_FINGERPRINT=$($result.fingerprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $result | ConvertTo-Json -Depth 6 | Set-Content "$env:RUNNER_TEMP\oneclick\build-result.json"
+
+      - name: Fresh-machine ZIP E2E
+        shell: powershell
+        run: |
+          & .\scripts\windows\oneclick-fresh-vm.test.ps1 -ZipPath "$env:ZIP_PATH" -WorkRoot "$env:RUNNER_TEMP\fresh-vm" -KeepArtifacts
+          Get-Content "$env:RUNNER_TEMP\fresh-vm\fresh-vm-result.json"
+
+      - name: Verify source commit and clean package
+        shell: powershell
+        run: |
+          Expand-Archive -LiteralPath "$env:ZIP_PATH" -DestinationPath "$env:RUNNER_TEMP\verify-zip" -Force
+          $manifest = Get-Content "$env:RUNNER_TEMP\verify-zip\package\oneclick-payload.json" -Raw | ConvertFrom-Json
+          if ($manifest.head -ne "$env:GITHUB_SHA") { throw "ZIP HEAD $($manifest.head) does not match workflow SHA $env:GITHUB_SHA" }
+          if ([bool]$manifest.dirty) { throw "ZIP manifest reports a dirty source tree." }
+          if ($manifest.fingerprint -ne "$env:ZIP_FINGERPRINT") { throw "ZIP fingerprint changed after build." }
+
+      - name: Upload tested ZIP and fresh-machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneclick-fresh-windows-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}\oneclick\*.zip
+            ${{ runner.temp }}\oneclick\build-result.json
+            ${{ runner.temp }}\fresh-vm\fresh-vm-result.json
+            ${{ runner.temp }}\fresh-vm\setup.stdout.log
+            ${{ runner.temp }}\fresh-vm\setup.stderr.log
