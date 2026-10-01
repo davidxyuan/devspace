@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$ZipPath,
     [string]$WorkRoot = (Join-Path $env:TEMP ('devspace-oneclick-fresh-vm-' + [guid]::NewGuid().ToString('N'))),
+    [int]$MaxElapsedSeconds = 720,
     [switch]$KeepArtifacts
 )
 $ErrorActionPreference = 'Stop'
@@ -253,6 +254,9 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     if (@($devspaceConfig.allowedRoots).Count -eq 0) { throw 'DevSpace allowedRoots is empty.' }
 
     $stopwatch.Stop()
+    if ($MaxElapsedSeconds -gt 0 -and $stopwatch.Elapsed.TotalSeconds -gt $MaxElapsedSeconds) {
+        throw ("Fresh One-Click install exceeded the performance budget: {0}s > {1}s." -f [math]::Round($stopwatch.Elapsed.TotalSeconds,1), $MaxElapsedSeconds)
+    }
     $result = [ordered]@{
         success = $true
         elapsedSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
