@@ -142,6 +142,23 @@ async function testRedaction(root) {
   assert.equal(jobs.readJob(installDir,id).lines.length,4);
   console.log("PASS: stdout/stderr credential chunks and final partial lines are redacted in durable JSON.");
 }
+async function testInheritedPipeRelease(root) {
+  const installDir=path.join(root,"inherited-pipes"), id="e".repeat(24);
+  const job={id,type:"fixture",phase:"running",lines:[]};
+  jobs.saveJob(installDir,job);
+  const writer=path.join(root,"inherited-pipe-parent.cjs");
+  fs.writeFileSync(writer,`const {spawn}=require("node:child_process");
+const child=spawn(process.execPath,["-e","setTimeout(()=>{},5000)"],{windowsHide:true,detached:true,stdio:["ignore","inherit","inherit"]});
+child.unref();
+process.stdout.write("installer parent exiting\\n");
+`);
+  const started=Date.now();
+  await jobs.runLogged(job,installDir,process.execPath,[writer],{env:cleanEnv(),timeout:3000});
+  const elapsed=Date.now()-started;
+  assert(elapsed<3000,`runLogged waited for inherited descendant pipes: ${elapsed}ms`);
+  assert.match(jobs.readJob(installDir,id).lines.map(x=>x.text).join("\n"),/installer parent exiting/);
+  console.log(`PASS: exited installer releases inherited stdout/stderr descendants in ${elapsed}ms without timing out.`);
+}
 async function testSetupHttp(root) {
   const packageRoot=path.join(root,"package"), scriptDir=path.join(packageRoot,"scripts","windows"), installDir=path.join(root,"install");
   fs.mkdirSync(scriptDir,{recursive:true});fs.mkdirSync(installDir,{recursive:true});
@@ -267,9 +284,10 @@ const env=cleanEnv({NODE_OPTIONS:'--require "'+preload.replaceAll("\\","/")+'"',
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"devspace-stack-jobs-test-"));
   try {
     const part=process.argv[2]||"all";
-    assert(["all","leases","redaction","http"].includes(part),"unknown test part");
+    assert(["all","leases","redaction","pipes","http"].includes(part),"unknown test part");
     if(["all","leases"].includes(part))await testLeases(root,path.join(__dirname,"stack-operation.ps1"));
     if(["all","redaction"].includes(part))await testRedaction(root);
+    if(["all","pipes"].includes(part))await testInheritedPipeRelease(root);
     if(["all","http"].includes(part))await testSetupHttp(root);
     console.log("stack jobs integration tests passed; only temporary servers, workers and read-only local discovery ran.");
   } finally {

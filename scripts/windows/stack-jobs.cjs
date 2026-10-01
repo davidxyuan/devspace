@@ -51,7 +51,7 @@ function runLogged(job, installDir, command, args, options = {}, secrets = []) {
   return new Promise((resolve, reject) => {
     const { timeout = 30 * 60 * 1000, ...spawnOptions } = options;
     const child = spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...spawnOptions });
-    let stdout = "", stderr = "", timedOut = false;
+    let stdout = "", stderr = "", timedOut = false, settled = false, drainTimer = null, exitCode = null;
     const partial = { stdout: "", stderr: "" };
     function output(source, chunk, final = false) {
       partial[source] += chunk;
@@ -60,18 +60,42 @@ function runLogged(job, installDir, command, args, options = {}, secrets = []) {
     }
     child.stdout.on("data", chunk => { const text = chunk.toString("utf8"); stdout = (stdout + text).slice(-1024 * 1024); output("stdout", text); });
     child.stderr.on("data", chunk => { const text = chunk.toString("utf8"); stderr = (stderr + text).slice(-1024 * 1024); output("stderr", text); });
+    function finish(code) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (drainTimer) clearTimeout(drainTimer);
+      output("stdout", "", true); output("stderr", "", true);
+      if (code === 0 && !timedOut) resolve({ stdout, stderr });
+      else reject(new Error(`${path.basename(command)} ${timedOut ? "timed out" : `exited with code ${code}`}.`));
+    }
     // ponytail: one operation per installation; a timeout reports failure, never retries a mutation.
     const timer = setTimeout(() => {
       timedOut = true;
       appendOutput(job, "warning", "Command exceeded its expected duration. Keeping operation ownership until it exits; no concurrent changes are allowed.");
       saveJob(installDir, job);
     }, timeout);
-    child.once("error", error => { clearTimeout(timer); reject(error); });
-    child.once("close", code => {
-      clearTimeout(timer); output("stdout", "", true); output("stderr", "", true);
-      if (code === 0 && !timedOut) resolve({ stdout, stderr });
-      else reject(new Error(`${path.basename(command)} ${timedOut ? "timed out" : `exited with code ${code}`}.`));
+    child.once("error", error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (drainTimer) clearTimeout(drainTimer);
+      reject(error);
     });
+    child.once("exit", code => {
+      exitCode = code;
+      // On Windows, a persistent Tray/supervisor descendant can inherit the
+      // installer's stdout/stderr pipe. The installer itself is finished, so
+      // do not hold operation ownership indefinitely waiting for descendant
+      // handles to close. Give buffered output a short grace period, then
+      // detach this job's pipe readers without terminating the descendants.
+      drainTimer = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(exitCode);
+      }, 1500);
+    });
+    child.once("close", code => finish(code ?? exitCode));
   });
 }
 
