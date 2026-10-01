@@ -59,7 +59,6 @@ function installerParameters(setup, { installDir, packageRoot }) {
   if (setup.userMode) { result.UserMode = true; result.NoElevate = true; }
   if (setup.installTray) result.InstallWatchdogTray = true;
   if (setup.noLegacyPoller) result.NoLegacyPoller = true;
-  if (process.env.DEVSPACE_ONECLICK_TEST_SKIP_START === "1") result.SkipStart = true;
   return result;
 }
 

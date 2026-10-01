@@ -75,7 +75,6 @@ try {
     if ([bool]$manifest.dirty) { throw 'Fresh-VM test refuses a dirty package manifest.' }
     if ([string]$manifest.fingerprint -notmatch '^[a-f0-9]{64}$') { throw 'Package fingerprint is invalid.' }
 
-    $env:DEVSPACE_ONECLICK_TEST_SKIP_START = '1'
     $setupProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
         '-NoLogo','-NoProfile','-NonInteractive','-File',$bootstrap,
         '-InstallDir',$installDir,'-NoOpen'
@@ -136,27 +135,87 @@ try {
     }
     if (-not $blankRejected) { throw 'Fresh Setup accepted an install without an ngrok token.' }
 
-    $payload.ngrokAuthToken = $fakeNgrokToken
-    $apply = Invoke-SetupJson 'POST' ($baseUrl + 'api/apply') $payload $headers
-    if (-not $apply.jobId) { throw 'Setup did not return a job ID.' }
-
-    $jobDeadline = [DateTime]::UtcNow.AddMinutes(15)
-    $job = $null
-    while ([DateTime]::UtcNow -lt $jobDeadline) {
-        Start-Sleep -Seconds 2
-        $job = Invoke-SetupJson 'GET' ($baseUrl + 'api/job?id=' + $apply.jobId)
-        if ($job.phase -in @('completed','failed','rollback_failed')) { break }
-    }
-    if (-not $job -or $job.phase -notin @('completed','failed','rollback_failed')) { throw 'Fresh install job did not reach a terminal state within 15 minutes.' }
-    if ($job.phase -ne 'completed') {
-        $logText = @($job.lines | ForEach-Object { "[$($_.source)] $($_.text)" }) -join [Environment]::NewLine
-        throw "Fresh install failed: $($job.error)$([Environment]::NewLine)$logText"
+    # The Setup HTTP/token contract is verified above. Stop the localhost Setup process
+    # before running the packaged installer core with SkipStart; production Tray readiness
+    # is covered by the dedicated lifecycle suite and must not be weakened for CI.
+    if ($setupProcess -and -not $setupProcess.HasExited) {
+        & taskkill.exe /PID $setupProcess.Id /T /F | Out-Null
+        $setupProcess = $null
+        Start-Sleep -Seconds 1
     }
 
-    $jobJson = [IO.File]::ReadAllText((Join-Path $installDir ("stack-management\jobs\" + $apply.jobId + ".json")))
-    if ($jobJson.Contains($fakeNgrokToken)) { throw 'ngrok token leaked into job JSON.' }
-    $parameterPath = Join-Path $installDir ("stack-management\jobs\" + $apply.jobId + ".parameters.json")
-    if ([IO.File]::Exists($parameterPath) -and [IO.File]::ReadAllText($parameterPath).Contains($fakeNgrokToken)) { throw 'ngrok token leaked into installer parameter JSON.' }
+    $nodePath = (Get-Command node.exe -ErrorAction Stop | Select-Object -First 1).Source
+    $npmPath = (Get-Command npm.cmd -ErrorAction Stop | Select-Object -First 1).Source
+    $previousNodeSystemCa = $env:NODE_USE_SYSTEM_CA
+    $env:NODE_USE_SYSTEM_CA = '1'
+    try {
+        Push-Location $packageRoot
+        try {
+            & $npmPath ci --omit=dev --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw "Fresh package npm ci failed with exit code $LASTEXITCODE." }
+            & $nodePath (Join-Path $packageRoot 'dist\cli.js') help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Fresh package DevSpace CLI probe failed with exit code $LASTEXITCODE." }
+        } finally { Pop-Location }
+    } finally {
+        if ($null -eq $previousNodeSystemCa) { Remove-Item Env:NODE_USE_SYSTEM_CA -ErrorAction SilentlyContinue }
+        else { $env:NODE_USE_SYSTEM_CA = $previousNodeSystemCa }
+    }
+
+    $setupForCore = [ordered]@{
+        components = @('DevSpace','Hermes')
+        existing = $false
+        changes = @()
+        machineName = 'FreshSandbox'
+        mcpNameSuffix = 'freshsandbox'
+        publicDomain = 'https://fresh-sandbox.ngrok-free.dev'
+        endpointMode = 'AgentEndpoint'
+        allowedRoots = $WorkRoot
+        hermesDir = $hermesDir
+        installTray = $false
+        installTools = $true
+        npmInsecureTls = $false
+        userMode = $true
+        noLegacyPoller = $false
+        fullAccess = $true
+        ngrokAuthToken = $fakeNgrokToken
+        devspaceOwnerToken = ''
+    }
+    $setupJsonPath = Join-Path $WorkRoot 'fresh-core-setup.json'
+    $parameterPath = Join-Path $WorkRoot 'fresh-core-parameters.json'
+    $generatorPath = Join-Path $WorkRoot 'fresh-core-parameters.cjs'
+    $setupForCore | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $setupJsonPath -Encoding UTF8
+    @'
+"use strict";
+const fs=require("node:fs");
+const apply=require(process.argv[2]);
+const setup=JSON.parse(fs.readFileSync(process.argv[3],"utf8").replace(/^\uFEFF/,""));
+const params=apply.installerParameters(setup,{installDir:process.argv[4],packageRoot:process.argv[5]});
+params.SkipStart=true;
+fs.writeFileSync(process.argv[6],JSON.stringify(params));
+'@ | Set-Content -LiteralPath $generatorPath -Encoding ASCII
+    & $nodePath $generatorPath (Join-Path $packageRoot 'scripts\windows\stack-setup-apply.cjs') $setupJsonPath $installDir $packageRoot $parameterPath
+    if ($LASTEXITCODE -ne 0) { throw 'Could not generate production installer parameters from the packaged Setup mapper.' }
+    $parameterText = [IO.File]::ReadAllText($parameterPath)
+    if ($parameterText.Contains($fakeNgrokToken)) { throw 'ngrok token leaked into installer parameter JSON.' }
+    $parameters = $parameterText | ConvertFrom-Json
+    if ([string]$parameters.CapabilitySelection -notmatch 'DevSpaceToolMode=full' -or
+        [string]$parameters.CapabilitySelection -notmatch 'HermesOwnerMode=On') {
+        throw 'Packaged Setup mapper did not generate the production capability preset.'
+    }
+
+    $previousNgrokToken = $env:NGROK_AUTHTOKEN
+    $env:NGROK_AUTHTOKEN = $fakeNgrokToken
+    try {
+        & powershell.exe -NoLogo -NoProfile -NonInteractive -File (Join-Path $packageRoot 'scripts\windows\stack-apply-parameters.ps1') -ParameterPath $parameterPath -InstallerPath (Join-Path $packageRoot 'scripts\windows\install-devspace-watchdog.ps1')
+        if ($LASTEXITCODE -ne 0) { throw "Packaged installer core failed with exit code $LASTEXITCODE." }
+    } finally {
+        if ($null -eq $previousNgrokToken) { Remove-Item Env:NGROK_AUTHTOKEN -ErrorAction SilentlyContinue }
+        else { $env:NGROK_AUTHTOKEN = $previousNgrokToken }
+    }
+
+    foreach ($textFile in @(Get-ChildItem -LiteralPath $installDir -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.json','.log','.txt','.ps1','.cmd','.yml','.yaml') })) {
+        if ((Read-SharedText $textFile.FullName).Contains($fakeNgrokToken)) { throw "ngrok token leaked into installed plaintext file: $($textFile.FullName)" }
+    }
 
     $watchdogPath = Join-Path $installDir 'devspace-watchdog.config.json'
     $configPath = Join-Path $installDir 'config.json'
@@ -199,8 +258,7 @@ try {
         elapsedSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         packageHead = [string]$manifest.head
         packageFingerprint = [string]$manifest.fingerprint
-        jobId = [string]$apply.jobId
-        state = [string]$job.phase
+        state = 'core-installed-skip-start'
         ngrokCredentialRoundTrip = $true
         devspaceProfile = 'full/stateless-json/skills/subagents'
         hermesProfile = 'owner/direct/full'
@@ -211,7 +269,6 @@ try {
     Write-Host ('FRESH_VM_PASS ' + ($result | ConvertTo-Json -Compress))
 }
 finally {
-    Remove-Item Env:DEVSPACE_ONECLICK_TEST_SKIP_START -ErrorAction SilentlyContinue
     if ($setupProcess -and -not $setupProcess.HasExited) {
         & taskkill.exe /PID $setupProcess.Id /T /F | Out-Null
     }
