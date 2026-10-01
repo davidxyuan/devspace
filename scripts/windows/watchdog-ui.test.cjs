@@ -133,6 +133,8 @@ async function exercise(name) {
   assert.equal(h.run("readForm().fullAccess"),true,"refresh preserves existing full access setting");
   assert.equal(h.run('"updatePackageFromGithub" in readForm()'),false);
   assert.equal(h.run('"updateHermesSource" in readForm()'),false);
+  form.elements.allowedRoots.value="D:\\submitted-root";
+  form.listeners.input[0]({target:{name:"allowedRoots"}});
   let acceptApply;
   h.sandbox.response=()=>new Promise(resolve=>{acceptApply=resolve;});
   const applying=h.run("apply({preventDefault(){}})");
@@ -145,5 +147,8 @@ async function exercise(name) {
   await applying;
   assert.equal(form.elements.ngrokAuthToken.value,"new secret typed during submit","accepting prior submit preserves a newer secret edit");
   assert.equal(h.run('editedFields.has("machineName")'),true,"accepting prior submit preserves newer field edit tracking");
+  h.sandbox.running={...h.sandbox.next,defaults:{...h.sandbox.next.defaults,allowedRoots:"D:\\server-default"}};
+  h.run("fill(running)");
+  assert.equal(form.elements.allowedRoots.value,"D:\\submitted-root","running install preserves submitted non-secret fields instead of resetting to server defaults");
   console.log("watchdog UI tests passed (mock DOM, offline inventory, delayed job requests, edited forms).");
 })().catch(error=>{console.error(error);process.exitCode=1;});

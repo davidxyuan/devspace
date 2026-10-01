@@ -33,8 +33,10 @@
       <label class="check"><input name="userMode" type="checkbox"> User Mode (no Administrator)</label>
       <label class="check"><input name="noLegacyPoller" type="checkbox"> Tray-only (no 1-minute legacy poller)</label>
       <label class="check"><input name="installTools" type="checkbox"> Auto-install missing tools when possible</label>
+      <label class="check"><input name="npmInsecureTls" type="checkbox"> Emergency npm TLS bypass for this install only</label>
     </div>
     <p class="muted">Company PCs: recommended = User Mode + Tray + Tray-only. It uses HKCU login autostart and does not create the old per-minute poller.</p>
+    <p class="warning">Emergency npm TLS bypass disables npm/Node certificate verification only for the dependency-install child process. Use it only when corporate TLS inspection blocks npm, then leave it off after installation.</p>
 
     <h2>2. Machine & access</h2>
     <div class="grid">
@@ -63,7 +65,7 @@
 <script>
 "use strict";
 const setupToken="{{SETUP_TOKEN}}";
-let detected=null, statusLoading=false, formFingerprint=null;
+let detected=null, statusLoading=false, formFingerprint=null, activeSubmission=null;
 const editedFields=new Set();
 const $=(s)=>document.querySelector(s);
 function addDl(root,key,value){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=key;dd.textContent=String(value??"—");root.append(dt,dd)}
@@ -73,7 +75,7 @@ function fill(status){
   detected=status;const d=status.defaults||{}, f=$("#setup-form").elements;
   if(formFingerprint===null||editedFields.size===0)formFingerprint=status.configurationFingerprint;
   for(const key of ["machineName","mcpNameSuffix","publicDomain","internalAgentEndpoint","allowedRoots","hermesDir"])if(f[key]&&!editedFields.has(key))f[key].value=d[key]||"";
-  for(const key of ["installDevspace","installHermes","installTray","installTools","userMode","noLegacyPoller","fullAccess"])if(f[key]&&!editedFields.has(key))f[key].checked=Boolean(d[key]);
+  for(const key of ["installDevspace","installHermes","installTray","installTools","npmInsecureTls","userMode","noLegacyPoller","fullAccess"])if(f[key]&&!editedFields.has(key))f[key].checked=Boolean(d[key]);
   if(!editedFields.has("endpointMode"))f.endpointMode.value=d.endpointMode||"AgentEndpoint";
   toggleCloud();const state=status.state;$("#state-label").textContent=state;$("#state-dot").className=`dot ${state==="Existing"?"green":state==="Fresh"?"yellow":"red"}`;
   $("#version").textContent=`Package ${status.packageVersion}`;$("#tray-state").textContent=`Tray ${status.tray?.running?"Running":status.tray?.installed?"Installed":"Not installed"}`;
@@ -86,7 +88,7 @@ async function refresh(){
 }
 function readForm(){
   const f=$("#setup-form").elements, result={configurationFingerprint:formFingerprint};
-  for(const key of ["installDevspace","installHermes","installTray","userMode","noLegacyPoller","installTools","fullAccess"])result[key]=f[key].checked;
+  for(const key of ["installDevspace","installHermes","installTray","userMode","noLegacyPoller","installTools","npmInsecureTls","fullAccess"])result[key]=f[key].checked;
   for(const key of ["machineName","mcpNameSuffix","allowedRoots","hermesDir","endpointMode","publicDomain","internalAgentEndpoint"])result[key]=f[key].value.trim();
   for(const key of ["ngrokAuthToken","devspaceOwnerToken"])result[key]=f[key].value;
   return result;
@@ -99,8 +101,8 @@ async function apply(event){
   const submitted=readForm();
   try{
     const r=await api("/api/apply",{method:"POST",body:JSON.stringify(submitted)}), current=readForm();
-    for(const key of [...editedFields])if(current[key]===submitted[key])editedFields.delete(key);
-    for(const key of ["ngrokAuthToken","devspaceOwnerToken"])if(current[key]===submitted[key])$("[name="+key+"]").value="";
+    activeSubmission=submitted;
+    for(const key of ["ngrokAuthToken","devspaceOwnerToken"])if(current[key]===submitted[key]){$("[name="+key+"]").value="";editedFields.delete(key)}
     trackManagementJob(r.jobId);
   }
   catch(e){managementError(e.message)}finally{management.submitting=false;setManagementBusy()}
@@ -173,6 +175,12 @@ const refreshManagementStatus=()=>refresh();
         if(["completed","failed","rollback_failed"].includes(job.phase)) {
           management.terminalJobId=id;management.jobId=null;
           try { sessionStorage.removeItem("devspace-management-job"); } catch {}
+          if(job.phase==="completed"&&activeSubmission){
+            const current=readForm();
+            for(const key of ["installDevspace","installHermes","installTray","userMode","noLegacyPoller","installTools","npmInsecureTls","fullAccess","machineName","mcpNameSuffix","allowedRoots","hermesDir","endpointMode","publicDomain","internalAgentEndpoint"])if(current[key]===activeSubmission[key])editedFields.delete(key);
+            if(editedFields.size===0)formFingerprint=null;
+          }
+          activeSubmission=null;
           setManagementBusy();
           await refreshComponents();
           await refreshManagementStatus();

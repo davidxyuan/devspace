@@ -178,6 +178,7 @@ function validateSetup(input) {
     hermesDir: path.resolve(String(input.hermesDir || hermesDefaultDir)),
     installTray: Boolean(input.installTray),
     installTools: Boolean(input.installTools),
+    npmInsecureTls: Boolean(input.npmInsecureTls),
     userMode: input.userMode !== false,
     noLegacyPoller: Boolean(input.noLegacyPoller),
     fullAccess: Boolean(input.fullAccess),

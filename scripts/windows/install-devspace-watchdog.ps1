@@ -339,8 +339,16 @@ function Install-HermesAgentIfNeeded {
     }
 
     Write-Host "Installing Hermes Agent..."
-    $installScript = Invoke-RestMethod -Uri "https://hermes-agent.nousresearch.com/install.ps1"
-    & ([scriptblock]::Create($installScript)) -SkipSetup
+    $installScriptPath = Join-Path $env:TEMP ("hermes-agent-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
+    try {
+        Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath
+        & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Hermes Agent installer exited with code $LASTEXITCODE." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
+        }
+    } finally {
+        Remove-Item -LiteralPath $installScriptPath -Force -ErrorAction SilentlyContinue
+    }
     $exe = Find-HermesAgentExe
     if (-not $exe) {
         Fail "Hermes Agent install finished, but hermes.exe was not found." "Open a new PowerShell window and rerun, or pass -HermesAgentExe with the full hermes.exe path."
@@ -366,26 +374,82 @@ function Find-GitForClone {
     Fail "Git is missing." "Rerun with -InstallTools, install Git for Windows manually, or install Hermes Agent before selecting -Components Hermes."
 }
 
+function Test-PythonForHermesGpt([string]$candidate) {
+    if (-not $candidate) {
+        return $false
+    }
+
+    $normalized = [string]$candidate
+    if ($normalized -match '(?i)\\Microsoft\\WindowsApps\\python(?:3)?\.exe$') {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $normalized)) {
+        return $false
+    }
+
+    try {
+        $versionText = (& $normalized -c 'import platform; print(platform.python_version())' 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or -not $versionText) {
+            return $false
+        }
+        return ([version]([string]$versionText).Trim()) -ge [version]'3.10'
+    } catch {
+        return $false
+    }
+}
+
+function Find-UsablePythonForHermesGpt {
+    Refresh-Path
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\.venv\Scripts\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe")
+    )) {
+        if ($candidate) {
+            [void]$candidates.Add([string]$candidate)
+        }
+    }
+
+    foreach ($command in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+        if ($command.Source) {
+            [void]$candidates.Add([string]$command.Source)
+        }
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (Test-PythonForHermesGpt $candidate) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
 function Find-PythonForHermesGpt {
-    if ($PythonPath -and (Test-Path -LiteralPath $PythonPath)) {
-        return [System.IO.Path]::GetFullPath($PythonPath)
+    if ($PythonPath) {
+        $explicit = [System.IO.Path]::GetFullPath($PythonPath)
+        if (Test-PythonForHermesGpt $explicit) {
+            return $explicit
+        }
+        Fail "The configured Python runtime is missing or incompatible: $explicit" "Use Python 3.10 or newer, or omit -PythonPath so the installer can discover/install Python automatically."
     }
 
-    $hermesPython = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"
-    if (Test-Path -LiteralPath $hermesPython) {
-        return $hermesPython
-    }
-
-    $command = Find-CommandPath "python.exe"
-    if ($command) {
-        return $command
+    $python = Find-UsablePythonForHermesGpt
+    if ($python) {
+        return $python
     }
 
     if ($InstallTools) {
         Install-WingetPackage "Python.Python.3.12" "Python 3"
-        return Ensure-Command "python.exe" "Python.Python.3.12" "Python 3"
+        $python = Find-UsablePythonForHermesGpt
+        if ($python) {
+            return $python
+        }
+        Fail "Python 3.12 was installed, but no usable Python runtime was found." "Close/reopen PowerShell and rerun, or pass -PythonPath with the full path to a Python 3.10+ python.exe."
     }
-    Fail "Python is missing." "Rerun with -InstallTools, install Python 3 manually, or install Hermes Agent before selecting -Components Hermes."
+    Fail "Python is missing." "Rerun with -InstallTools, install Python 3 manually, or pass -PythonPath with a Python 3.10+ runtime."
 }
 
 function Get-UrlOrigin([string]$Url) {
