@@ -28,9 +28,18 @@ $fakeNgrokToken = 'fresh-vm-fake-ngrok-token-not-valid-for-network'
 $setupProcess = $null
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 
+function Read-SharedText([string]$Path) {
+    if (-not [IO.File]::Exists($Path)) { return "" }
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        $reader = New-Object IO.StreamReader($stream)
+        try { return $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 function Read-SetupUrl {
-    if (-not [IO.File]::Exists($stdoutPath)) { return $null }
-    $text = [IO.File]::ReadAllText($stdoutPath)
+    $text = Read-SharedText $stdoutPath
     $match = [regex]::Match($text, 'DevSpace Stack Setup:\s+(http://127\.0\.0\.1:\d+/)')
     if ($match.Success) { return $match.Groups[1].Value }
     return $null
@@ -76,7 +85,7 @@ try {
     $baseUrl = $null
     while ([DateTime]::UtcNow -lt $deadline -and -not $baseUrl) {
         if ($setupProcess.HasExited) {
-            $stderr = if ([IO.File]::Exists($stderrPath)) { [IO.File]::ReadAllText($stderrPath) } else { '' }
+            $stderr = Read-SharedText $stderrPath
             throw "One-Click bootstrap exited before Setup became ready. Exit=$($setupProcess.ExitCode). $stderr"
         }
         Start-Sleep -Milliseconds 500
