@@ -301,8 +301,18 @@ function Test-Component([string]$name) {
 }
 
 function Invoke-Checked([scriptblock]$command, [string]$message) {
-    & $command
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 can surface native stderr as ErrorRecord objects.
+        # Git, winget and other healthy tools routinely write progress/status to stderr,
+        # so native command success must be decided by exit code, not stderr presence.
+        $ErrorActionPreference = 'Continue'
+        & $command
+        $nativeExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($nativeExitCode -ne 0) {
         Fail $message "Review the command output above, fix that tool-specific error, then rerun the same installer command."
     }
 }
@@ -447,9 +457,16 @@ function Install-HermesAgentIfNeeded {
     $installScriptPath = Join-Path $env:TEMP ("hermes-agent-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
     try {
         [void](Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath)
-        & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            Fail "Hermes Agent installer exited with code $LASTEXITCODE." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
+        $previousErrorActionPreferenceForHermes = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup 2>&1 | Out-Host
+            $hermesInstallerExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreferenceForHermes
+        }
+        if ($hermesInstallerExitCode -ne 0) {
+            Fail "Hermes Agent installer exited with code $hermesInstallerExitCode." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
         }
     } finally {
         if ($null -eq $previousUvSystemCerts) { Remove-Item Env:UV_SYSTEM_CERTS -ErrorAction SilentlyContinue }

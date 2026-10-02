@@ -20,6 +20,14 @@ $agentPythonFunction = $ast.Find({
 if (-not $agentPythonFunction) { throw 'Test-PythonForHermesAgent function not found.' }
 . ([scriptblock]::Create($agentPythonFunction.Extent.Text))
 
+$invokeCheckedFunction = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Checked'
+}, $true)
+if (-not $invokeCheckedFunction) { throw 'Invoke-Checked function not found.' }
+. ([scriptblock]::Create($invokeCheckedFunction.Extent.Text))
+function Fail([string]$message, [string]$fix) { throw $message }
+
 $tempRoot = Join-Path $env:TEMP ('devspace-python-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
@@ -67,6 +75,21 @@ public static class NativePythonProbeFixture {
     }
     if (-not (Test-PythonForHermesAgent $good)) { throw 'Hermes Agent rejected Python 3.12.' }
     if (Test-PythonForHermesAgent $future) { throw 'Hermes Agent accepted unsupported Python 3.14.' }
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Stop'
+        Invoke-Checked { & cmd.exe /d /c 'echo benign-native-stderr 1>&2 & exit /b 0' 2>&1 | Out-Null } 'stderr-only native command was treated as failure'
+        $nonzeroRejected = $false
+        try {
+            Invoke-Checked { & cmd.exe /d /c 'exit /b 7' } 'nonzero-native-command'
+        } catch {
+            if ($_.Exception.Message -match 'nonzero-native-command') { $nonzeroRejected = $true } else { throw }
+        }
+        if (-not $nonzeroRejected) { throw 'Invoke-Checked accepted a nonzero native exit code.' }
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
 
     $source = Get-Content -LiteralPath $scriptPath -Raw
     if ($source -notmatch 'Install-WingetPackage\s+"Python\.Python\.3\.12"\s+"Python 3"') {
