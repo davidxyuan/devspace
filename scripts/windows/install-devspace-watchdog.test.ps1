@@ -112,6 +112,7 @@ public static class NativePythonProbeFixture {
         throw 'Hermes Agent full fallback is not staged/output-isolated correctly.'
     }
     if ($source -notmatch '601d98c2709f766290cc3627b035ab73cfd54232' -or
+        $source -notmatch 'oneclick-runtime-601d98c' -or
         $source -notmatch 'Installing lightweight Hermes Agent MCP runtime' -or
         $source -notmatch 'https://github\.com/davidxyuan/hermes-agent\.git' -or
         $source -notmatch 'pip install --disable-pip-version-check -e' -or

@@ -397,6 +397,7 @@ function Find-PythonForHermesAgent {
 
 function Install-HermesAgentRuntimeFast {
     $commit = '601d98c2709f766290cc3627b035ab73cfd54232'
+    $ref = 'oneclick-runtime-601d98c'
     $hermesHome = Join-Path $env:LOCALAPPDATA 'hermes'
     $target = Join-Path $hermesHome 'hermes-agent'
     if ([IO.Directory]::Exists($target)) { return $null }
@@ -408,10 +409,8 @@ function Install-HermesAgentRuntimeFast {
     $created = $false
     try {
         Write-Host "Installing lightweight Hermes Agent MCP runtime (pinned $($commit.Substring(0,8)))..."
-        Invoke-Checked { & $git clone --no-checkout --filter=blob:none -- https://github.com/davidxyuan/hermes-agent.git $target 2>&1 | Out-Host } "Hermes Agent fast clone failed."
+        Invoke-Checked { & $git clone --depth=1 --branch $ref --single-branch -- https://github.com/davidxyuan/hermes-agent.git $target 2>&1 | Out-Host } "Hermes Agent fast clone failed."
         $created = $true
-        Invoke-Checked { & $git -C $target fetch --depth=1 origin $commit 2>&1 | Out-Host } "Hermes Agent pinned fetch failed."
-        Invoke-Checked { & $git -C $target checkout --detach $commit 2>&1 | Out-Host } "Hermes Agent pinned checkout failed."
         $head = (& $git -C $target rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0 -or $head -cne $commit) { throw "Hermes Agent pinned commit verification failed." }
 
