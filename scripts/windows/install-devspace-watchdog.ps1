@@ -330,6 +330,25 @@ function Find-HermesAgentExe {
     return $null
 }
 
+function Find-HermesAgentSourceRoot([string]$exe) {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'))
+    if ($exe) {
+        try {
+            $scripts = Split-Path ([IO.Path]::GetFullPath($exe)) -Parent
+            $venv = Split-Path $scripts -Parent
+            [void]$candidates.Add((Split-Path $venv -Parent))
+        } catch { }
+    }
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if ($candidate -and [IO.File]::Exists((Join-Path $candidate 'pyproject.toml')) -and
+            [IO.Directory]::Exists((Join-Path $candidate 'hermes_cli'))) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return ''
+}
+
 function Ensure-UvSystemCertificates {
     $uvDir = Join-Path $env:APPDATA "uv"
     $uvConfig = Join-Path $uvDir "uv.toml"
@@ -342,6 +361,66 @@ function Ensure-UvSystemCertificates {
     if ($content -notmatch '(?m)^\s*system-certs\s*=') {
         $separator = if ($content.Length -and -not $content.EndsWith([Environment]::NewLine)) { [Environment]::NewLine } else { "" }
         [IO.File]::AppendAllText($uvConfig, $separator + "system-certs = true" + [Environment]::NewLine, [Text.Encoding]::UTF8)
+    }
+}
+
+function Test-PythonForHermesAgent([string]$candidate) {
+    if (-not (Test-PythonForHermesGpt $candidate)) { return $false }
+    try {
+        $versionText = @(& $candidate -c 'import platform; print(platform.python_version())' 2>$null | Where-Object { $_ }) | Select-Object -First 1
+        if (-not $versionText) { return $false }
+        $version = [version]([string]$versionText).Trim()
+        return $version -ge [version]'3.11' -and $version -lt [version]'3.14'
+    } catch { return $false }
+}
+
+function Find-PythonForHermesAgent {
+    $python = Find-UsablePythonForHermesGpt
+    if (Test-PythonForHermesAgent $python) { return $python }
+    if ($InstallTools) {
+        Install-WingetPackage "Python.Python.3.12" "Python 3.12"
+        $python = Find-UsablePythonForHermesGpt
+        if (Test-PythonForHermesAgent $python) { return $python }
+    }
+    return $null
+}
+
+function Install-HermesAgentRuntimeFast {
+    $commit = '601d98c2709f766290cc3627b035ab73cfd54232'
+    $home = Join-Path $env:LOCALAPPDATA 'hermes'
+    $target = Join-Path $home 'hermes-agent'
+    if ([IO.Directory]::Exists($target)) { return $null }
+    $git = Find-GitForClone
+    $python = Find-PythonForHermesAgent
+    if (-not $git -or -not $python) { return $null }
+
+    [void][IO.Directory]::CreateDirectory($home)
+    $created = $false
+    try {
+        Write-Host "Installing lightweight Hermes Agent MCP runtime (pinned $($commit.Substring(0,8)))..."
+        Invoke-Checked { & $git clone --no-checkout --filter=blob:none -- https://github.com/NousResearch/hermes-agent.git $target } "Hermes Agent fast clone failed."
+        $created = $true
+        Invoke-Checked { & $git -C $target fetch --depth=1 origin $commit } "Hermes Agent pinned fetch failed."
+        Invoke-Checked { & $git -C $target checkout --detach $commit } "Hermes Agent pinned checkout failed."
+        $head = (& $git -C $target rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $head -cne $commit) { throw "Hermes Agent pinned commit verification failed." }
+
+        $venv = Join-Path $target 'venv'
+        Invoke-Checked { & $python -m venv $venv } "Hermes Agent fast venv creation failed."
+        $venvPython = Join-Path $venv 'Scripts\python.exe'
+        $exe = Join-Path $venv 'Scripts\hermes.exe'
+        Invoke-Checked { & $venvPython -m pip install --disable-pip-version-check -e $target } "Hermes Agent fast runtime dependency install failed."
+        Invoke-Checked { & $venvPython -c 'import hermes_cli.main' } "Hermes Agent fast runtime import smoke failed."
+        if (-not [IO.File]::Exists($exe)) { throw "Hermes Agent fast runtime did not create hermes.exe." }
+        Invoke-Checked { & $exe --help | Out-Null } "Hermes Agent fast runtime CLI smoke failed."
+        Write-Host "Lightweight Hermes Agent MCP runtime ready."
+        return [IO.Path]::GetFullPath($exe)
+    } catch {
+        Write-Warning ("Lightweight Hermes Agent runtime failed; falling back to the official installer. " + $_.Exception.Message)
+        if ($created -and [IO.Directory]::Exists($target)) {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return $null
     }
 }
 
@@ -358,7 +437,10 @@ function Install-HermesAgentIfNeeded {
         Fail "Hermes Agent is missing." "Remove -SkipHermesAgentInstall so the installer can install it, install Hermes Agent manually, or use -Components DevSpace."
     }
 
-    Write-Host "Installing Hermes Agent..."
+    $exe = Install-HermesAgentRuntimeFast
+    if ($exe) { return $exe }
+
+    Write-Host "Installing full Hermes Agent fallback..."
     Ensure-UvSystemCertificates
     $previousUvSystemCerts = $env:UV_SYSTEM_CERTS
     $env:UV_SYSTEM_CERTS = "true"
@@ -673,6 +755,7 @@ if ($installDevSpace -and -not $CliPath) {
 if ($installHermes -and [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
     ([IO.File]::Exists((Join-Path $HermesDir '.venv\Scripts\python.exe')) -or ($PythonPath -and [IO.File]::Exists($PythonPath)))) { $SkipHermesInstall = $true }
 $hermesAgentPath = if ($SkipHermesInstall) { Find-HermesAgentExe } else { Install-HermesAgentIfNeeded }
+$hermesAgentWorkingDirectory = if ($hermesAgentPath) { Find-HermesAgentSourceRoot $hermesAgentPath } else { '' }
 
 $ngrokWebAddrSupported = $false
 if (-not $SkipNgrok) {
@@ -950,6 +1033,8 @@ $watchdogConfig = [ordered]@{
     nodePath = if ($NodePath) { [System.IO.Path]::GetFullPath($NodePath) } else { "" }
     cliPath = if ($CliPath) { [System.IO.Path]::GetFullPath($CliPath) } else { "" }
     hermesCommand = $hermesCommandPath
+    hermesAgentExe = if ($hermesAgentPath) { [System.IO.Path]::GetFullPath($hermesAgentPath) } else { "" }
+    hermesAgentWorkingDirectory = $hermesAgentWorkingDirectory
     hermesPython = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesPython) } else { "" }
     hermesServer = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesServer) } else { "" }
     hermesWorkingDirectory = if ($installHermes) { [System.IO.Path]::GetFullPath($hermesWorkingDirectory) } else { "" }
@@ -1001,7 +1086,7 @@ if ($existingWatchdogConfig) {
     foreach ($entry in $fieldParameters.GetEnumerator()) {
         if ($PSBoundParameters.ContainsKey($entry.Value)) { $watchdogConfig[$entry.Key] = $candidate[$entry.Key] }
     }
-    foreach ($field in @('cliPath','nodePath','ngrokPath','routerPath','routerPort','hermesCommand','hermesPython','hermesServer','hermesWorkingDirectory','hermesPort')) {
+    foreach ($field in @('cliPath','nodePath','ngrokPath','routerPath','routerPort','hermesCommand','hermesAgentExe','hermesAgentWorkingDirectory','hermesPython','hermesServer','hermesWorkingDirectory','hermesPort')) {
         if (-not $watchdogConfig[$field]) { $watchdogConfig[$field] = $candidate[$field] }
     }
     if ($PSBoundParameters.ContainsKey('HermesDir') -or $PSBoundParameters.ContainsKey('PythonPath')) {

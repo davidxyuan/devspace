@@ -249,6 +249,11 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     if (-not [IO.File]::Exists([string]$watchdog.hermesPython) -or -not [IO.File]::Exists([string]$watchdog.hermesServer)) {
         throw 'Hermes-GPT runtime was not installed.'
     }
+    if (-not [IO.File]::Exists([string]$watchdog.hermesAgentExe)) { throw 'Hermes Agent executable identity was not installed.' }
+    if (-not [IO.Directory]::Exists([string]$watchdog.hermesAgentWorkingDirectory) -or
+        -not [IO.File]::Exists((Join-Path ([string]$watchdog.hermesAgentWorkingDirectory) 'pyproject.toml'))) {
+        throw 'Hermes Agent source root identity was not installed.'
+    }
     if (-not [IO.File]::Exists([string]$watchdog.ngrokPath)) { throw 'ngrok agent was not installed.' }
     if (-not [IO.File]::Exists([string]$watchdog.cliPath)) { throw 'DevSpace CLI was not installed.' }
     if (@($devspaceConfig.allowedRoots).Count -eq 0) { throw 'DevSpace allowedRoots is empty.' }
@@ -267,6 +272,8 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         devspaceProfile = 'full/stateless-json/skills/subagents'
         hermesProfile = 'owner/direct/full'
         hermesPython = [string]$watchdog.hermesPython
+        hermesAgentExe = [string]$watchdog.hermesAgentExe
+        hermesAgentRoot = [string]$watchdog.hermesAgentWorkingDirectory
         ngrokPath = [string]$watchdog.ngrokPath
     }
     $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding UTF8

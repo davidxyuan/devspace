@@ -13,12 +13,20 @@ $testFunction = $ast.Find({
 if (-not $testFunction) { throw 'Test-PythonForHermesGpt function not found.' }
 . ([scriptblock]::Create($testFunction.Extent.Text))
 
+$agentPythonFunction = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-PythonForHermesAgent'
+}, $true)
+if (-not $agentPythonFunction) { throw 'Test-PythonForHermesAgent function not found.' }
+. ([scriptblock]::Create($agentPythonFunction.Extent.Text))
+
 $tempRoot = Join-Path $env:TEMP ('devspace-python-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
     $good = Join-Path $tempRoot 'python-good.cmd'
     $old = Join-Path $tempRoot 'python-old.cmd'
     $bad = Join-Path $tempRoot 'python-bad.cmd'
+    $future = Join-Path $tempRoot 'python-future.cmd'
     $nativeGood = Join-Path $tempRoot 'python-native-good.exe'
 
     [IO.File]::WriteAllText($good, @'
@@ -34,6 +42,11 @@ exit /b 0
     [IO.File]::WriteAllText($bad, @'
 @echo off
 exit /b 1
+'@)
+    [IO.File]::WriteAllText($future, @'
+@echo off
+echo 3.14.1
+exit /b 0
 '@)
     Add-Type -TypeDefinition @'
 using System;
@@ -52,6 +65,8 @@ public static class NativePythonProbeFixture {
     if (Test-PythonForHermesGpt 'C:\Users\fixture\AppData\Local\Microsoft\WindowsApps\python.exe') {
         throw 'Windows App Execution Alias was accepted as a real Python runtime.'
     }
+    if (-not (Test-PythonForHermesAgent $good)) { throw 'Hermes Agent rejected Python 3.12.' }
+    if (Test-PythonForHermesAgent $future) { throw 'Hermes Agent accepted unsupported Python 3.14.' }
 
     $source = Get-Content -LiteralPath $scriptPath -Raw
     if ($source -notmatch 'Install-WingetPackage\s+"Python\.Python\.3\.12"\s+"Python 3"') {
@@ -71,6 +86,13 @@ public static class NativePythonProbeFixture {
     }
     if ($source -notmatch 'Invoke-WebRequest.+hermes-agent\.nousresearch\.com/install\.ps1.+-OutFile') {
         throw 'Hermes Agent installer is not staged as a file before execution.'
+    }
+    if ($source -notmatch '601d98c2709f766290cc3627b035ab73cfd54232' -or
+        $source -notmatch 'Installing lightweight Hermes Agent MCP runtime' -or
+        $source -notmatch 'pip install --disable-pip-version-check -e' -or
+        $source -notmatch 'hermesAgentExe = if \(\$hermesAgentPath\)' -or
+        $source -notmatch 'hermesAgentWorkingDirectory = \$hermesAgentWorkingDirectory') {
+        throw 'Hermes Agent fast runtime or explicit runtime identity fields are missing.'
     }
     if ($source -notmatch 'Set-WatchdogNgrokCredential.+\$effectiveNgrokAuthtoken' -or
         $source -notmatch 'Get-WatchdogNgrokCredential.+\$watchdogConfig' -or
