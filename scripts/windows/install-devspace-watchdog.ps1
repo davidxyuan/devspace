@@ -387,14 +387,14 @@ function Find-PythonForHermesAgent {
 
 function Install-HermesAgentRuntimeFast {
     $commit = '601d98c2709f766290cc3627b035ab73cfd54232'
-    $home = Join-Path $env:LOCALAPPDATA 'hermes'
-    $target = Join-Path $home 'hermes-agent'
+    $hermesHome = Join-Path $env:LOCALAPPDATA 'hermes'
+    $target = Join-Path $hermesHome 'hermes-agent'
     if ([IO.Directory]::Exists($target)) { return $null }
     $git = Find-GitForClone
     $python = Find-PythonForHermesAgent
     if (-not $git -or -not $python) { return $null }
 
-    [void][IO.Directory]::CreateDirectory($home)
+    [void][IO.Directory]::CreateDirectory($hermesHome)
     $created = $false
     try {
         Write-Host "Installing lightweight Hermes Agent MCP runtime (pinned $($commit.Substring(0,8)))..."
