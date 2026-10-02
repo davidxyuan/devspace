@@ -398,19 +398,19 @@ function Install-HermesAgentRuntimeFast {
     $created = $false
     try {
         Write-Host "Installing lightweight Hermes Agent MCP runtime (pinned $($commit.Substring(0,8)))..."
-        Invoke-Checked { & $git clone --no-checkout --filter=blob:none -- https://github.com/NousResearch/hermes-agent.git $target } "Hermes Agent fast clone failed."
+        Invoke-Checked { & $git clone --no-checkout --filter=blob:none -- https://github.com/davidxyuan/hermes-agent.git $target 2>&1 | Out-Host } "Hermes Agent fast clone failed."
         $created = $true
-        Invoke-Checked { & $git -C $target fetch --depth=1 origin $commit } "Hermes Agent pinned fetch failed."
-        Invoke-Checked { & $git -C $target checkout --detach $commit } "Hermes Agent pinned checkout failed."
+        Invoke-Checked { & $git -C $target fetch --depth=1 origin $commit 2>&1 | Out-Host } "Hermes Agent pinned fetch failed."
+        Invoke-Checked { & $git -C $target checkout --detach $commit 2>&1 | Out-Host } "Hermes Agent pinned checkout failed."
         $head = (& $git -C $target rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0 -or $head -cne $commit) { throw "Hermes Agent pinned commit verification failed." }
 
         $venv = Join-Path $target 'venv'
-        Invoke-Checked { & $python -m venv $venv } "Hermes Agent fast venv creation failed."
+        Invoke-Checked { & $python -m venv $venv 2>&1 | Out-Host } "Hermes Agent fast venv creation failed."
         $venvPython = Join-Path $venv 'Scripts\python.exe'
         $exe = Join-Path $venv 'Scripts\hermes.exe'
-        Invoke-Checked { & $venvPython -m pip install --disable-pip-version-check -e $target } "Hermes Agent fast runtime dependency install failed."
-        Invoke-Checked { & $venvPython -c 'import hermes_cli.main' } "Hermes Agent fast runtime import smoke failed."
+        Invoke-Checked { & $venvPython -m pip install --disable-pip-version-check -e $target 2>&1 | Out-Host } "Hermes Agent fast runtime dependency install failed."
+        Invoke-Checked { & $venvPython -c 'import hermes_cli.main' 2>&1 | Out-Host } "Hermes Agent fast runtime import smoke failed."
         if (-not [IO.File]::Exists($exe)) { throw "Hermes Agent fast runtime did not create hermes.exe." }
         Invoke-Checked { & $exe --help | Out-Null } "Hermes Agent fast runtime CLI smoke failed."
         Write-Host "Lightweight Hermes Agent MCP runtime ready."
@@ -446,8 +446,8 @@ function Install-HermesAgentIfNeeded {
     $env:UV_SYSTEM_CERTS = "true"
     $installScriptPath = Join-Path $env:TEMP ("hermes-agent-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
     try {
-        Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath
-        & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup
+        [void](Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath)
+        & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) {
             Fail "Hermes Agent installer exited with code $LASTEXITCODE." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
         }

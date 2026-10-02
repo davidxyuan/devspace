@@ -84,11 +84,13 @@ public static class NativePythonProbeFixture {
     if ($source -notmatch 'system-certs = true' -or $source -notmatch 'UV_SYSTEM_CERTS') {
         throw 'Hermes/uv installer does not opt into Windows system certificates.'
     }
-    if ($source -notmatch 'Invoke-WebRequest.+hermes-agent\.nousresearch\.com/install\.ps1.+-OutFile') {
-        throw 'Hermes Agent installer is not staged as a file before execution.'
+    if ($source -notmatch 'Invoke-WebRequest.+hermes-agent\.nousresearch\.com/install\.ps1.+-OutFile' -or
+        $source -notmatch 'powershell\.exe.+\$installScriptPath.+-SkipSetup.+Out-Host') {
+        throw 'Hermes Agent full fallback is not staged/output-isolated correctly.'
     }
     if ($source -notmatch '601d98c2709f766290cc3627b035ab73cfd54232' -or
         $source -notmatch 'Installing lightweight Hermes Agent MCP runtime' -or
+        $source -notmatch 'https://github\.com/davidxyuan/hermes-agent\.git' -or
         $source -notmatch 'pip install --disable-pip-version-check -e' -or
         $source -notmatch 'hermesAgentExe = if \(\$hermesAgentPath\)' -or
         $source -notmatch 'hermesAgentWorkingDirectory = \$hermesAgentWorkingDirectory') {
