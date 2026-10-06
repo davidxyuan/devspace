@@ -198,6 +198,7 @@ try {
     $script:shutdownRequested = $false
     $script:responses = @()
     $script:healthStopped = 0
+    $script:healthAsync = $null
     $script:adoptedWhileBusy = $false
     $script:drainSleepCount = 0
     $isHostMode = $true

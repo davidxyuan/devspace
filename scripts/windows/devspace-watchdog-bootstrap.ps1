@@ -200,12 +200,26 @@ function Read-RoleHeartbeat([string]$Path) {
 }
 
 function Test-RoleHeartbeatFresh([string]$Path, [int]$ExpectedSessionId = -1) {
+    return (Get-RoleHeartbeatStatus $Path $ExpectedSessionId).state -eq "healthy"
+}
+
+function Get-RoleHeartbeatStatus([string]$Path, [int]$ExpectedSessionId = -1) {
+    $status = [pscustomobject]@{ state="unknown"; reason="heartbeat_unreadable"; identity=""; ageSeconds=$null; sessionId=-1 }
     $heartbeat = Read-RoleHeartbeat $Path
-    if (-not $heartbeat) { return $false }
-    $age = ([DateTimeOffset]::UtcNow - $heartbeat.timestamp.ToUniversalTime()).TotalSeconds
-    if ($age -lt -5 -or $age -gt $freshHeartbeatSeconds) { return $false }
+    if (-not $heartbeat) { return $status }
     $matches = @(Get-RoleProcesses $Path | Where-Object { [int]$_.ProcessId -eq [int]$heartbeat.pid })
-    return $matches.Count -eq 1 -and ($ExpectedSessionId -lt 0 -or [int]$matches[0].SessionId -eq $ExpectedSessionId)
+    if ($matches.Count -ne 1) { $status.reason="process_identity_unavailable"; return $status }
+    $status.identity = "$($heartbeat.pid):$(([datetime]$matches[0].CreationDate).ToUniversalTime().Ticks)"
+    $status.sessionId = [int]$matches[0].SessionId
+    # Process discovery can be slow. Judge the latest heartbeat, not the one read before CIM.
+    $latest = Read-RoleHeartbeat $Path
+    if (-not $latest -or $latest.pid -ne $heartbeat.pid) { $status.reason="heartbeat_changed_or_unreadable"; return $status }
+    $status.ageSeconds = ([DateTimeOffset]::UtcNow - $latest.timestamp.ToUniversalTime()).TotalSeconds
+    if ($status.ageSeconds -lt -5) { $status.reason="heartbeat_clock_ahead"; return $status }
+    if ($status.ageSeconds -gt $freshHeartbeatSeconds) { $status.state="stale"; $status.reason="heartbeat_expired"; return $status }
+    if ($ExpectedSessionId -ge 0 -and $status.sessionId -ne $ExpectedSessionId) { $status.state="stale"; $status.reason="session_mismatch"; return $status }
+    $status.state="healthy"; $status.reason="fresh"
+    return $status
 }
 
 function Get-RoleProcesses([string]$HeartbeatPath) {
@@ -274,9 +288,21 @@ function Remove-StaleHeartbeat([string]$Path) {
 }
 
 function Recover-StaleRole([string]$HeartbeatPath, [int]$ExpectedSessionId = -1) {
-    if (Test-RoleHeartbeatFresh $HeartbeatPath $ExpectedSessionId) { return $true }
+    $first = Get-RoleHeartbeatStatus $HeartbeatPath $ExpectedSessionId
+    if ($first.state -eq "healthy") { return $true }
     if (Test-RoleRunning $HeartbeatPath) {
-        if (-not (Read-RoleHeartbeat $HeartbeatPath)) { throw "Watchdog role is live without a valid heartbeat; refusing recovery: $HeartbeatPath" }
+        $confirmed = Get-RoleHeartbeatStatus $HeartbeatPath $ExpectedSessionId
+        $role = if ($HeartbeatPath -eq $hostHeartbeatPath) { "host" } else { "tray" }
+        if ($confirmed.state -eq "healthy") {
+            Write-WatchdogEvent $stateDir $config "supervisor" "recovery_suppressed" "$role $($first.reason)" "recheck before stop" "fresh heartbeat; role retained"
+            return $true
+        }
+        if ($first.state -ne "stale" -or $confirmed.state -ne "stale" -or $first.identity -ne $confirmed.identity -or
+            $first.reason -ne $confirmed.reason -or $first.sessionId -ne $confirmed.sessionId) {
+            Write-WatchdogEvent $stateDir $config "supervisor" "recovery_deferred" "$role $($first.reason) -> $($confirmed.reason)" "require consistent identity and failure evidence" "role retained"
+            return $true
+        }
+        Write-WatchdogEvent $stateDir $config "supervisor" "recovery_started" "$role $($confirmed.reason); identity=$($confirmed.identity); ageSeconds=$([Math]::Round($confirmed.ageSeconds,3)); session=$($confirmed.sessionId); expectedSession=$ExpectedSessionId" "stop confirmed stale role" "restart after exit proof"
         if ($HeartbeatPath -eq $hostHeartbeatPath) { Stop-RoleReliably $HeartbeatPath $hostScript "StopHost" }
         else {
             $stopScript = if ([System.IO.File]::Exists($trayScript)) { $trayScript } else { $hostScript }

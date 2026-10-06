@@ -29,7 +29,7 @@ try {
     Assert-True "persistent role and interactive launcher environment excludes manager token" (-not $psi.EnvironmentVariables.ContainsKey("DEVSPACE_STACK_OPERATION_TOKEN"))
     Assert-True "bootstrap keeps its own token until lease release" ($env:DEVSPACE_STACK_OPERATION_TOKEN -eq "fixture-supervisor-token")
 } finally { $env:DEVSPACE_STACK_OPERATION_TOKEN = $savedOperationToken }
-foreach ($name in @("Convert-NativeArgument", "Read-RoleHeartbeat", "Get-RoleProcesses", "Test-RoleHeartbeatFresh", "Test-RoleMutexExists", "Test-RoleRunning", "Assert-RoleStopped", "Remove-StaleHeartbeat", "Recover-StaleRole", "Stop-RoleFromHeartbeat", "Stop-RoleReliably", "Invoke-HostRepair", "Invoke-BootstrapRun")) {
+foreach ($name in @("Convert-NativeArgument", "Read-RoleHeartbeat", "Get-RoleProcesses", "Get-RoleHeartbeatStatus", "Test-RoleHeartbeatFresh", "Test-RoleMutexExists", "Test-RoleRunning", "Assert-RoleStopped", "Remove-StaleHeartbeat", "Recover-StaleRole", "Stop-RoleFromHeartbeat", "Stop-RoleReliably", "Invoke-HostRepair", "Invoke-BootstrapRun")) {
     $definition = $bootstrapAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing function $name" }
     Invoke-Expression $definition.Extent.Text
@@ -66,13 +66,14 @@ try {
     function Write-TestHeartbeat([bool]$Busy = $false) {
         Write-WatchdogAtomicJson $hostHeartbeatPath ([pscustomobject]@{pid=42;timestamp=[DateTimeOffset]::UtcNow.ToString("o");sessionId=0;mutationInProgress=$Busy}) 5
     }
+    function Write-WatchdogEvent { }
 
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($ConfigPath.ToLowerInvariant()))).Replace("-", "").Substring(0,20) }
     finally { $sha.Dispose() }
     $heldMutex = New-Object Threading.Mutex($true, "Local\DevSpaceWatchdogHost-$hash")
     Assert-True "role mutex proves liveness without heartbeat" (Test-RoleRunning $hostHeartbeatPath)
-    Assert-Throws "live mutex blocks recovery without heartbeat" { Recover-StaleRole $hostHeartbeatPath } 'live without a valid heartbeat'
+    Assert-True "live mutex defers recovery without heartbeat" (Recover-StaleRole $hostHeartbeatPath)
     Assert-True "missing heartbeat recovery never signals or launches" ($script:signals -eq 0)
     $heldMutex.ReleaseMutex(); $heldMutex.Dispose(); $heldMutex = $null
 

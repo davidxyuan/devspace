@@ -489,7 +489,7 @@ try {
     Assert-Contains "persisted public status is used only before the next scheduled probe" $traySource '[DateTimeOffset]::UtcNow -lt $script:nextPublicProbeAt'
     Assert-Contains "public probe schedule is persisted" $traySource '$record.nextProbeUtc = ConvertTo-WatchdogIso $script:nextPublicProbeAt'
     Assert-Contains "public probe timeout enters backoff" $traySource 'if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }'
-    Assert-Contains "automatic recovery requests public verification" $traySource 'Request-ImmediatePublicProbe "recovery:$service"'
+    # Automatic recovery/public-probe handoff is exercised by watchdog-health-responsive.test.ps1.
     Assert-Contains "automatic public verification is coalesced" $traySource 'verify_suppressed'
     Assert-Contains "automatic public verification has incident cooldown" $traySource '$cooldownSeconds = 900'
     Assert-Contains "local recovery requires process evidence" $traySource '$pidChanged -or $processRestored -or $listenerRestored'

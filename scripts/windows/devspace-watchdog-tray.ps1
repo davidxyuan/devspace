@@ -109,6 +109,9 @@ $script:lastServiceSignature = @{}
 $script:lastPublicSignature = ""
 $script:healthPowerShell = $null
 $script:healthAsync = $null
+$script:healthStopAsync = $null
+$script:healthStopping = $false
+$script:healthProbeTimedOut = $false
 $script:healthIncludedPublic = $false
 $script:lastHealthStarted = [DateTimeOffset]::MinValue
 $script:lastPublicStarted = [DateTimeOffset]::MinValue
@@ -185,6 +188,7 @@ function Test-RecentCompletedRouterRequest([string]$Service, [int]$MaxAgeSeconds
 }
 
 function Get-OverallTrayState {
+    if ($script:healthProbeTimedOut) { return [pscustomobject]@{ color="YELLOW"; label="Health check delayed" } }
     if (-not $script:lastHealth) { return [pscustomobject]@{ color="YELLOW"; label="Checking" } }
     $enabled = @($script:WatchdogServiceNames | Where-Object { Test-WatchdogServiceEnabled $_ $script:config })
     $desiredRunning = @($enabled | Where-Object { [string](Get-WatchdogProperty $script:state.desired $_ "running") -eq "running" })
@@ -314,13 +318,29 @@ $snapshot | ConvertTo-Json -Depth 30 -Compress
     if ($IncludePublic) { $script:lastPublicStarted = $script:lastHealthStarted }
 }
 
-function Stop-HealthRunspace {
+function Stop-HealthRunspace([switch]$ForMutation) {
     if (-not $script:healthPowerShell) { return }
-    try { if ($script:healthAsync -and -not $script:healthAsync.IsCompleted) { $script:healthPowerShell.Stop() } } catch { }
-    try { $script:healthPowerShell.Dispose() } catch { }
-    $script:healthPowerShell = $null
-    $script:healthAsync = $null
-    $script:healthIncludedPublic = $false
+    if (-not $script:healthStopping) {
+        # Stop() waits for native calls; never make the control loop wait for cancellation.
+        # Retain the only worker until EndStop/EndInvoke can finish, rather than orphaning it.
+        $script:healthStopping = $true
+        $script:healthStopAsync = $script:healthPowerShell.BeginStop($null, $null)
+    }
+    Complete-HealthRunspace
+    if ($ForMutation -and $script:healthPowerShell) { throw "Health check is stopping. Retry the operation after it finishes." }
+}
+
+function Update-HealthRunspace {
+    if ($script:healthAsync -and -not $script:healthAsync.IsCompleted -and -not $script:healthStopping -and
+        ([DateTimeOffset]::UtcNow - $script:lastHealthStarted).TotalSeconds -ge 45) {
+        $timedOutPublic = [bool]$script:healthIncludedPublic
+        $script:healthProbeTimedOut = $true
+        Stop-HealthRunspace
+        if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }
+        $role = if ($isHostMode) { "host" } else { "tray" }
+        Write-WatchdogEvent $script:stateDir $script:config $role "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe asynchronously" "control loop retained; one probe until cleanup completes"
+    }
+    Complete-HealthRunspace
 }
 
 function Test-PublicProbeHealthy($PublicSnapshot) {
@@ -464,34 +484,83 @@ function Apply-HealthSnapshot($Snapshot) {
             }
             $decision = Update-WatchdogRecoveryDecision $script:state $service $health $script:settings
             if ($decision.action -eq "Recover") {
-                $result = Invoke-WatchdogServiceRecovery $service $ConfigPath $script:config $health
-                Complete-WatchdogRecoveryAttempt $script:state $service $result
-                Write-WatchdogEvent $script:stateDir $script:config $service "recovery" $decision.reason "attempt $($decision.record.attemptCount)" $(if ($result.success) { "dispatched" } else { $result.error })
-                if ($result.success -and $service -in @("devspace", "hermes", "router", "ngrok")) { Request-ImmediatePublicProbe "recovery:$service" }
+                Start-AutomaticRecovery $service $health $decision
+                break
             }
         }
         Save-WatchdogState $script:statePath $script:state
     }
 }
 
+function Start-AutomaticRecovery([string]$Service, $Health, $Decision) {
+    Assert-ControlMutationAvailable
+    $script:pendingRecovery = [pscustomobject]@{ service=$Service; reason=$Decision.reason; attempt=$Decision.record.attemptCount }
+    $scriptText = @'
+param($CorePath, $ConfigurationPath, $Service, $HealthJson)
+$ErrorActionPreference = "Stop"
+. $CorePath
+try {
+    Invoke-WatchdogServiceRecovery $Service $ConfigurationPath (Read-WatchdogJson $ConfigurationPath) ($HealthJson | ConvertFrom-Json) | ConvertTo-Json -Depth 10 -Compress
+} catch {
+    [pscustomobject]@{success=$false;error=(Protect-WatchdogText $_.Exception.Message)} | ConvertTo-Json -Compress
+}
+'@
+    try {
+        $script:stackMutationLease = Enter-StackOperation -InstallDir $script:stateDir
+        $script:mutationInProgress = $true
+        $script:mutationKind = "service_recovery"
+        Write-ControlHeartbeat -Force
+        $script:mutationPowerShell = [PowerShell]::Create()
+        [void]$script:mutationPowerShell.AddScript($scriptText).AddArgument($corePath).AddArgument($ConfigPath).AddArgument($Service).AddArgument(($Health | ConvertTo-Json -Depth 20 -Compress))
+        $script:mutationAsync = $script:mutationPowerShell.BeginInvoke()
+    } catch {
+        try { Complete-AutomaticRecovery ([pscustomobject]@{success=$false;error=(Protect-WatchdogText $_.Exception.Message)}) }
+        finally {
+            if ($script:mutationPowerShell) { $script:mutationPowerShell.Dispose() }
+            $script:mutationPowerShell = $null
+            $script:mutationAsync = $null
+            $script:mutationInProgress = $false
+            $script:mutationKind = ""
+            Exit-StackOperation $script:stackMutationLease; $script:stackMutationLease = $null
+        }
+    }
+}
+
+function Complete-AutomaticRecovery($Result) {
+    $pending = $script:pendingRecovery
+    if (-not $pending) { return }
+    $script:pendingRecovery = $null
+    Complete-WatchdogRecoveryAttempt $script:state $pending.service $Result
+    Save-WatchdogState $script:statePath $script:state
+    Write-WatchdogEvent $script:stateDir $script:config $pending.service "recovery" $pending.reason "attempt $($pending.attempt)" $(if ($Result.success) { "dispatched" } else { $Result.error })
+    if ($Result.success) { Request-ImmediatePublicProbe "recovery:$($pending.service)" }
+}
+
 function Complete-HealthRunspace {
     if (-not $script:healthAsync -or -not $script:healthAsync.IsCompleted) { return }
+    if ($script:healthStopAsync -and -not $script:healthStopAsync.IsCompleted) { return }
     $includedPublic = [bool]$script:healthIncludedPublic
     try {
+        if ($script:healthStopAsync) { $script:healthPowerShell.EndStop($script:healthStopAsync) }
         $output = $script:healthPowerShell.EndInvoke($script:healthAsync)
+        if ($script:healthStopping) { return }
         $json = ($output | ForEach-Object { [string]$_ }) -join ""
         if (-not $json) {
             $errors = ($script:healthPowerShell.Streams.Error | ForEach-Object { $_.ToString() }) -join "; "
             throw $(if ($errors) { $errors } else { "Health runspace returned no data." })
         }
         Apply-HealthSnapshot ($json | ConvertFrom-Json)
+        $script:healthProbeTimedOut = $false
     } catch {
+        if ($script:healthStopping) { return }
         if ($includedPublic) { Update-PublicProbeSchedule $null $false }
         Write-WatchdogEvent $script:stateDir $script:config "tray" "health_cycle_failed" $_.Exception.Message "probe" "failed"
     } finally {
         $script:healthPowerShell.Dispose()
         $script:healthPowerShell = $null
         $script:healthAsync = $null
+        $script:healthStopAsync = $null
+        $script:healthStopping = $false
         $script:healthIncludedPublic = $false
     }
 }
@@ -568,8 +637,8 @@ function Invoke-ManualServiceAction([string]$Action, [string]$Service) {
 
 function Invoke-ConfigApply($InputObject) {
     Assert-ControlMutationAvailable
+    Stop-HealthRunspace -ForMutation
     $script:mutationInProgress = $true
-    Stop-HealthRunspace
     $oldConfig = $script:config
     $result = $null
     $stoppedServices = @()
@@ -627,8 +696,8 @@ function Invoke-ConfigApply($InputObject) {
 
 function Invoke-ConfigRollback([string]$BackupId) {
     Assert-ControlMutationAvailable
+    Stop-HealthRunspace -ForMutation
     $script:mutationInProgress = $true
-    Stop-HealthRunspace
     $oldConfig = $script:config
     $restored = $null
     $rollbackImpact = $null
@@ -694,7 +763,7 @@ function Assert-ControlMutationAvailable {
 
 function Start-ControlNgrokSwitch($Client, $Payload, [switch]$SavedProfile) {
     Assert-ControlMutationAvailable
-    Stop-HealthRunspace
+    Stop-HealthRunspace -ForMutation
     $script:mutationInProgress = $true
     $script:mutationKind = "ngrok_switch"
     $scriptText = @'
@@ -734,7 +803,7 @@ try {
 
 function Start-ControlNgrokProfileTest($Client, $Payload) {
     Assert-ControlMutationAvailable
-    Stop-HealthRunspace
+    Stop-HealthRunspace -ForMutation
     $script:mutationInProgress = $true
     $script:mutationKind = "ngrok_profile_test"
     $scriptText = @'
@@ -774,7 +843,9 @@ function Complete-ControlNgrokSwitch {
         $json = ($output | ForEach-Object { [string]$_ }) -join ""
         if (-not $json) { throw "Account switch worker returned no result; inspect configuration before retrying." }
         $completed = $json | ConvertFrom-Json
-        if ($script:mutationKind -eq "ngrok_profile_test") {
+        if ($script:mutationKind -eq "service_recovery") {
+            Complete-AutomaticRecovery $completed
+        } elseif ($script:mutationKind -eq "ngrok_profile_test") {
             if ($completed.success) { $response = $completed.result; $status = 200 }
             else { $response = @{ error=[string]$completed.error } }
         } elseif ($completed.success) {
@@ -803,7 +874,9 @@ function Complete-ControlNgrokSwitch {
             $response = @{ error=[string]$completed.error }
         }
     } catch {
-        if ($script:mutationKind -ne "ngrok_profile_test") {
+        if ($script:mutationKind -eq "service_recovery") {
+            Complete-AutomaticRecovery ([pscustomobject]@{success=$false;error=(Protect-WatchdogText $_.Exception.Message)})
+        } elseif ($script:mutationKind -ne "ngrok_profile_test") {
             $script:state.maintenanceMode = $true
             Save-WatchdogState $script:statePath $script:state
         }
@@ -838,10 +911,12 @@ function Write-ControlHeartbeat([switch]$Force) {
 
 function Wait-ControlMutationDrain {
     $script:shutdownRequested = $true
-    while ($script:mutationAsync) {
+    Stop-HealthRunspace
+    while ($script:mutationAsync -or $script:healthAsync) {
         # An account transaction must finish its rollback; cancelling its pipeline is unsafe.
         Start-Sleep -Milliseconds 100
         Complete-ControlNgrokSwitch
+        if ($script:healthAsync) { Complete-HealthRunspace }
         Complete-StackManagementProxies
         try { Write-ControlHeartbeat } catch { }
     }
@@ -1113,13 +1188,7 @@ if ($Mode -eq "Host") {
                     Invoke-PendingDashboardRequest
                     $handled++
                 }
-                if ($script:healthAsync -and -not $script:healthAsync.IsCompleted -and ([DateTimeOffset]::UtcNow - $script:lastHealthStarted).TotalSeconds -ge 45) {
-                    $timedOutPublic = [bool]$script:healthIncludedPublic
-                    Stop-HealthRunspace
-                    if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }
-                    Write-WatchdogEvent $script:stateDir $script:config "host" "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe" $(if ($timedOutPublic) { "public backoff scheduled" } else { "monitoring retained" })
-                }
-                Complete-HealthRunspace
+                Update-HealthRunspace
                 $now = [DateTimeOffset]::UtcNow
                 if (-not $script:healthAsync -and ($now - $script:lastHealthStarted).TotalSeconds -ge $script:settings.localProbeSeconds) {
                     $includePublic = Test-PublicProbeDue $now
@@ -1289,13 +1358,7 @@ $timer.add_Tick({
         Complete-StackManagementProxies
         if ($script:shutdownRequested -and -not $script:mutationInProgress) { [System.Windows.Forms.Application]::Exit(); return }
         if ($script:listener.Pending()) { Invoke-PendingDashboardRequest }
-        if ($script:healthAsync -and -not $script:healthAsync.IsCompleted -and ([DateTimeOffset]::UtcNow - $script:lastHealthStarted).TotalSeconds -ge 45) {
-            $timedOutPublic = [bool]$script:healthIncludedPublic
-            Stop-HealthRunspace
-            if ($timedOutPublic) { Update-PublicProbeSchedule $null $false }
-            Write-WatchdogEvent $script:stateDir $script:config "tray" "health_cycle_timeout" "Health evidence did not complete within 45 seconds." "cancel stale probe" $(if ($timedOutPublic) { "public backoff scheduled" } else { "monitoring retained" })
-        }
-        Complete-HealthRunspace
+        Update-HealthRunspace
         $now = [DateTimeOffset]::UtcNow
         if (-not $script:healthAsync -and ($now - $script:lastHealthStarted).TotalSeconds -ge $script:settings.localProbeSeconds) {
             $includePublic = Test-PublicProbeDue $now
