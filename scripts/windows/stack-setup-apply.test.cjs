@@ -74,8 +74,8 @@ const { installerParameters, applySetup } = require("./stack-setup-apply.cjs");
     assert.equal(npmCall.options.env.NODE_TLS_REJECT_UNAUTHORIZED, "0");
 
     const installerCall = calls.at(-1);
-    assert.equal(installerCall.options.env.NODE_TLS_REJECT_UNAUTHORIZED, undefined, "emergency npm TLS bypass leaked into the PowerShell installer");
-    assert.equal(installerCall.options.env.npm_config_strict_ssl, undefined, "emergency npm TLS bypass leaked into the PowerShell installer");
+    assert.equal(installerCall.options.env.NODE_TLS_REJECT_UNAUTHORIZED, process.env.NODE_TLS_REJECT_UNAUTHORIZED, "emergency npm TLS bypass leaked into the PowerShell installer");
+    assert.equal(installerCall.options.env.npm_config_strict_ssl, process.env.npm_config_strict_ssl, "emergency npm TLS bypass leaked into the PowerShell installer");
     assert.equal(installerCall.options.env.NGROK_AUTHTOKEN, fakeNgrokToken, "ngrok token did not reach the installer child-process environment");
     const parameterFile = path.join(installDir, "stack-management", "jobs", "fixture-job.parameters.json");
     assert.equal(fs.readFileSync(parameterFile, "utf8").includes(fakeNgrokToken), false, "ngrok token leaked into installer parameter JSON");

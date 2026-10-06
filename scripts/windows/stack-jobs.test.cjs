@@ -190,7 +190,7 @@ const env=cleanEnv({NODE_OPTIONS:'--require "'+preload.replaceAll("\\","/")+'"',
     await until(async()=>{const r=await request(server.base,"/api/components");return r.data?.components?.length===12},"real read-only local inventory");
     const initialStatus=await request(server.base,"/api/status");
     fs.rmSync(applyContacted,{force:true}); fs.rmSync(applyGate,{force:true});
-    const applyResponse=await request(server.base,"/api/apply",{method:"POST",token:server.token,body:{requestId:"setup-apply-fixture",configurationFingerprint:initialStatus.data.configurationFingerprint,installDevspace:true,installHermes:false,machineName:"fixture-machine",endpointMode:"AgentEndpoint",publicDomain:"https://fixture.example.invalid",allowedRoots:root,fullAccess:false,installTools:false,installTray:true,noLegacyPoller:false,userMode:true}});
+    const applyResponse=await request(server.base,"/api/apply",{method:"POST",token:server.token,body:{requestId:"setup-apply-fixture",ngrokAuthToken:"fixture-only-not-a-real-token",configurationFingerprint:initialStatus.data.configurationFingerprint,installDevspace:true,installHermes:false,machineName:"fixture-machine",endpointMode:"AgentEndpoint",publicDomain:"https://fixture.example.invalid",allowedRoots:root,fullAccess:false,installTools:false,installTray:true,noLegacyPoller:false,userMode:true}});
     assert.equal(applyResponse.status,202,applyResponse.text); const applyJobId=applyResponse.data.jobId;
     await until(()=>{
       if(fs.existsSync(applyContacted))return true;
