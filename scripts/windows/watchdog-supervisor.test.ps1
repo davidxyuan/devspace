@@ -8,6 +8,7 @@ $Mode = 'Watch'
 $script:ticks = 0; $script:runs = 0; $script:busy = $false
 function Test-StackOperationBusy { param($InstallDir) return $script:busy }
 function Invoke-BootstrapRun { param($RequestedMode) $script:runs++ }
+function Write-WatchdogCaptureEvent {}
 function Write-WatchdogAtomicJson { param($Path,$Value) if ($Value.role -ne 'supervisor') { throw 'Invalid supervisor heartbeat.' } }
 function Start-Sleep {
     param($Seconds)

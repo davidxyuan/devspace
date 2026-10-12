@@ -81,6 +81,7 @@ function Start-HiddenNativeProcess([string]$FilePath, [string[]]$Arguments, [int
     $process = [System.Diagnostics.Process]::Start($psi)
     if (-not $process) { throw "Failed to start $FilePath" }
     try {
+        Write-WatchdogCaptureEvent $ConfigPath 'child_started' @{parentMode=$Mode; childPid=$process.Id; executable=[IO.Path]::GetFileName($FilePath); arguments=@($Arguments | Where-Object {$_ -in @('Host','StopHost','Run','Stop','RepairHost','Watch')})}
         if ($WaitMilliseconds -gt 0) {
             if (-not $process.WaitForExit($WaitMilliseconds)) { throw "$FilePath did not finish within $WaitMilliseconds ms." }
             return [int]$process.ExitCode
@@ -196,7 +197,10 @@ function Read-RoleHeartbeat([string]$Path) {
         $sessionId = -1
         [void][int]::TryParse([string](Get-WatchdogProperty $value "sessionId" "-1"), [ref]$sessionId)
         return [pscustomobject]@{ pid=$rolePid; timestamp=$timestamp; sessionId=$sessionId; mutationInProgress=((Get-WatchdogProperty $value "mutationInProgress" $false) -eq $true) }
-    } catch { return $null }
+    } catch {
+        Write-WatchdogCaptureEvent $ConfigPath 'heartbeat_read_failed' @{path=$Path; hresult=$_.Exception.GetBaseException().HResult; error=(Protect-WatchdogText $_.Exception.Message)}
+        return $null
+    }
 }
 
 function Test-RoleHeartbeatFresh([string]$Path, [int]$ExpectedSessionId = -1) {
@@ -303,6 +307,7 @@ function Recover-StaleRole([string]$HeartbeatPath, [int]$ExpectedSessionId = -1)
             return $true
         }
         Write-WatchdogEvent $stateDir $config "supervisor" "recovery_started" "$role $($confirmed.reason); identity=$($confirmed.identity); ageSeconds=$([Math]::Round($confirmed.ageSeconds,3)); session=$($confirmed.sessionId); expectedSession=$ExpectedSessionId" "stop confirmed stale role" "restart after exit proof"
+        Write-WatchdogCaptureEvent $ConfigPath 'recovery_decision' @{mode=$Mode; role=$role; first=$first; confirmed=$confirmed} $HeartbeatPath
         if ($HeartbeatPath -eq $hostHeartbeatPath) { Stop-RoleReliably $HeartbeatPath $hostScript "StopHost" }
         else {
             $stopScript = if ([System.IO.File]::Exists($trayScript)) { $trayScript } else { $hostScript }
@@ -336,14 +341,20 @@ function Stop-RoleFromHeartbeat([string]$HeartbeatPath) {
     $process = Get-Process -Id ([int]$heartbeat.pid) -ErrorAction Stop
     try {
         if ([Math]::Abs(($process.StartTime.ToUniversalTime() - ([datetime]$matches[0].CreationDate).ToUniversalTime()).Ticks) -ge 10) { throw "Watchdog PID was reused; refusing to stop it." }
+        Write-WatchdogCaptureEvent $ConfigPath 'force_stop_sending' @{mode=$Mode; targetPid=$process.Id; targetStartUtc=$process.StartTime.ToUniversalTime().ToString('o')} $HeartbeatPath
         $process.Kill()
-        if (-not $process.WaitForExit(3000)) { throw "Watchdog process did not exit after termination." }
+        if (-not $process.WaitForExit(3000)) {
+            Write-WatchdogCaptureEvent $ConfigPath 'force_stop_timeout' @{targetPid=$process.Id}
+            throw "Watchdog process did not exit after termination."
+        }
+        Write-WatchdogCaptureEvent $ConfigPath 'force_stop_exited' @{targetPid=$process.Id}
     } finally { $process.Dispose() }
     Assert-RoleStopped $HeartbeatPath
 }
 
 function Stop-RoleReliably([string]$HeartbeatPath, [string]$ScriptPath, [string]$ChildMode) {
     if (-not (Test-RoleRunning $HeartbeatPath)) { Remove-StaleHeartbeat $HeartbeatPath; return }
+    Write-WatchdogCaptureEvent $ConfigPath 'role_stop_requested' @{mode=$Mode; childMode=$ChildMode} $HeartbeatPath
     Start-HiddenWatchdogProcess $ScriptPath $ChildMode
     # Give the role enough time to drain HTTP/runspace work after the stop event.
     # Two seconds was too aggressive on production PCs and forced an unnecessary
@@ -354,6 +365,7 @@ function Stop-RoleReliably([string]$HeartbeatPath, [string]$ScriptPath, [string]
     }
     if (Test-RoleRunning $HeartbeatPath) { Stop-RoleFromHeartbeat $HeartbeatPath }
     Assert-RoleStopped $HeartbeatPath
+    Write-WatchdogCaptureEvent $ConfigPath 'role_stop_complete' @{mode=$Mode; childMode=$ChildMode}
     Remove-StaleHeartbeat $HeartbeatPath
 }
 

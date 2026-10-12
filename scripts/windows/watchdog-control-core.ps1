@@ -43,6 +43,47 @@ function Protect-WatchdogText([string]$Value, [int]$MaximumLength = 500) {
     return $clean
 }
 
+function Read-WatchdogCaptureText([string]$Path) {
+    # Observation must not prevent the producer from replacing a heartbeat file.
+    $stream = [IO.File]::Open($Path, 'Open', 'Read', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
+function Write-WatchdogCaptureEvent([string]$ConfigPath, [string]$Event, $Details = $null, [string]$TargetHeartbeat = '') {
+    try {
+        if (-not $ConfigPath) { return }
+        $root = Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent
+        $windowPath = Join-Path $root 'watchdog-diagnostics-window.json'
+        if (-not [IO.File]::Exists($windowPath)) { return }
+        $window = (Read-WatchdogCaptureText $windowPath) | ConvertFrom-Json
+        if ([string]$window.id -notmatch '^[a-z0-9-]{1,64}$' -or [DateTimeOffset]::UtcNow -ge [DateTimeOffset]::Parse([string]$window.endUtc)) { return }
+        $directory = Join-Path (Join-Path $root 'watchdog-diagnostics') $window.id
+        [void][IO.Directory]::CreateDirectory($directory)
+        $self = [Diagnostics.Process]::GetCurrentProcess()
+        try { $start = $self.StartTime.ToUniversalTime(); $session = $self.SessionId } finally { $self.Dispose() }
+        $thread = [Threading.Thread]::CurrentThread.ManagedThreadId
+        $path = Join-Path $directory ("lifecycle-$PID-$($start.Ticks)-$thread.jsonl")
+        # Per-process files avoid a contended logging lock; each session is bounded to 48 MiB.
+        if (-not [IO.File]::Exists($path) -and [IO.Directory]::GetFiles($directory, 'lifecycle-*.jsonl').Length -ge 512) { return }
+        $target = $null
+        if ($TargetHeartbeat) {
+            try {
+                $heartbeat = (Read-WatchdogCaptureText $TargetHeartbeat) | ConvertFrom-Json
+                $target = @{pid=$heartbeat.pid; processStartUtc=$heartbeat.processStartUtc; timestamp=$heartbeat.timestamp}
+            } catch { $target = @{readError=(Protect-WatchdogText $_.Exception.Message)} }
+        }
+        $entry = @{timestamp=[DateTimeOffset]::UtcNow.ToString('o'); pid=$PID; processStartUtc=$start.ToString('o'); sessionId=$session; managedThreadId=$thread
+            event=$Event; details=$Details; target=$target; callers=@(Get-PSCallStack | Select-Object -Skip 1 -First 5 | ForEach-Object { "$($_.FunctionName):$($_.ScriptLineNumber)" })}
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($entry | ConvertTo-Json -Depth 7 -Compress) + [Environment]::NewLine)
+        $stream = [IO.File]::Open($path, 'Append', 'Write', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        try { if ($stream.Length + $bytes.Length -le 98304) { $stream.Write($bytes, 0, $bytes.Length) } }
+        finally { $stream.Dispose() }
+    } catch { Write-Warning ('Watchdog diagnostic event unavailable: ' + (Protect-WatchdogText $_.Exception.Message)) }
+}
+
 function Write-WatchdogAtomicText([string]$Path, [string]$Text) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $directory = Split-Path -Parent $fullPath
@@ -60,6 +101,9 @@ function Write-WatchdogAtomicText([string]$Path, [string]$Text) {
         } else {
             [System.IO.File]::Move($temporary, $fullPath)
         }
+    } catch {
+        Write-WatchdogCaptureEvent $fullPath 'atomic_write_failed' @{path=$fullPath; hresult=$_.Exception.GetBaseException().HResult; error=(Protect-WatchdogText $_.Exception.Message)}
+        throw
     } finally {
         if ([System.IO.File]::Exists($temporary)) { [System.IO.File]::Delete($temporary) }
         if ([System.IO.File]::Exists($replacementBackup)) { [System.IO.File]::Delete($replacementBackup) }

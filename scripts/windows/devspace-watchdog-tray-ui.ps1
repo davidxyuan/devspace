@@ -51,7 +51,9 @@ $stopCreated = $false
 $stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::ManualReset, "Global\DevSpaceWatchdogTrayUiStop-$stableHash", [ref]$stopCreated)
 if ($Mode -eq "Stop") {
     Write-TrayStartupTrace "stop-signal"
+    Write-WatchdogCaptureEvent $ConfigPath 'stop_signal_sending' @{mode=$Mode; role='tray'} $heartbeatPath
     [void]$stopEvent.Set()
+    Write-WatchdogCaptureEvent $ConfigPath 'stop_signal_sent' @{mode=$Mode; role='tray'}
     $stopEvent.Dispose()
     exit 0
 }
@@ -122,7 +124,9 @@ $trayWorkerBody = {
         $psi.CreateNoWindow = $true
         $psi.WindowStyle = "Hidden"
         $psi.WorkingDirectory = $RuntimeDirectory
-        return [Diagnostics.Process]::Start($psi)
+        $started = [Diagnostics.Process]::Start($psi)
+        if ($started) { Write-WatchdogCaptureEvent $ConfigPath 'tray_child_started' @{childPid=$started.Id; executable=[IO.Path]::GetFileName($FilePath)} }
+        return $started
     }
     function Test-HostHeartbeatFresh {
         try {
@@ -171,6 +175,7 @@ $trayWorkerBody = {
                         if ($repair -or -not (Test-HostHeartbeatFresh)) {
                             $lastHostStart = $now
                             $childMode = if ($repair) { "RepairHost" } else { "Run" }
+                            Write-WatchdogCaptureEvent $ConfigPath 'tray_host_action_requested' @{mode=$childMode; reason=$(if ($repair) {'repair_menu'} else {'dashboard_failure_and_stale_heartbeat'})} $HostHeartbeatPath
                             $child = Start-TrayWorkerProcess (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe") @("-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-File", $BootstrapPath, "-Mode", $childMode, "-ConfigPath", $ConfigPath)
                             $Shared.ChildRunning = $true
                             $Shared.WorkerMessage = if ($repair) { "Repairing Watchdog Host..." } else { "Starting Watchdog Host..." }
@@ -328,7 +333,8 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500
 $timer.add_Tick({
     try {
-        if ($stopEvent.WaitOne(0) -or $script:trayShared.ExitRequested) { [System.Windows.Forms.Application]::Exit(); return }
+        if ($stopEvent.WaitOne(0)) { $script:trayShared.StopSignalReceived = $true }
+        if ($script:trayShared.StopSignalReceived -or $script:trayShared.ExitRequested) { [System.Windows.Forms.Application]::Exit(); return }
         Complete-StatusProbe
         Start-StatusProbe
         if ($script:statusFailures -ge 2) { $script:trayShared.EnsureRequested = $true }
@@ -353,6 +359,7 @@ try {
     Write-TrayStartupTrace "message-loop"
     [System.Windows.Forms.Application]::Run()
 } finally {
+    Write-WatchdogCaptureEvent $ConfigPath 'tray_exit_begin' @{menuExit=$script:trayShared.ExitRequested; stopSignalReceived=$script:trayShared.StopSignalReceived}
     Write-TrayStartupTrace "exit"
     $timer.Stop(); $timer.Dispose()
     try { $http.Dispose() } catch { }

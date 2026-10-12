@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $corePath = Join-Path $PSScriptRoot "watchdog-control-core.ps1"
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot "devspace-watchdog.config.json" }
 $ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
+. $corePath
 
 function Get-TrayStableHash([string]$Value) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -24,13 +25,14 @@ $instanceRole = if ($isHostMode) { "Host" } else { "Tray" }
 $stopEventCreated = $false
 $stopEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, "Local\DevSpaceWatchdog${instanceRole}Stop-$stableHash", [ref]$stopEventCreated)
 if ($Mode -in @("Stop", "StopHost")) {
+    Write-WatchdogCaptureEvent $ConfigPath 'stop_signal_sending' @{mode=$Mode; eventName="Local\DevSpaceWatchdog${instanceRole}Stop-$stableHash"} (Join-Path (Split-Path $ConfigPath -Parent) $(if ($isHostMode) {'watchdog-host-heartbeat.json'} else {'watchdog-tray-heartbeat.json'}))
     [void]$stopEvent.Set()
+    Write-WatchdogCaptureEvent $ConfigPath 'stop_signal_sent' @{mode=$Mode}
     $stopEvent.Dispose()
     exit 0
 }
 
 $env:DEVSPACE_STACK_OPERATION_TOKEN = $null
-. $corePath
 . (Join-Path $PSScriptRoot "stack-operation.ps1")
 . (Join-Path $PSScriptRoot "stack-host-management.ps1")
 $script:config = Read-WatchdogJson $ConfigPath
@@ -1174,11 +1176,15 @@ if (-not [DevSpaceTrayNative]::SetHandleInformation($script:listener.Server.Hand
 }
 
 if ($Mode -eq "Host") {
+    Write-WatchdogCaptureEvent $ConfigPath 'host_started' @{mode=$Mode; stopEventCreated=$stopEventCreated}
     Write-WatchdogEvent $script:stateDir $script:config "host" "start" "Windows login or launcher" "monitor" "dashboard 127.0.0.1:$($script:settings.dashboardPort)"
     try {
         Start-HealthRunspace -IncludePublic:(Test-PublicProbeDue ([DateTimeOffset]::UtcNow))
         while ($true) {
-            if ($stopEvent.WaitOne(100)) { $script:shutdownRequested = $true }
+            if ($stopEvent.WaitOne(100)) {
+                Write-WatchdogCaptureEvent $ConfigPath 'stop_signal_received' @{mode=$Mode; mutationInProgress=$script:mutationInProgress}
+                $script:shutdownRequested = $true
+            }
             try {
                 Complete-ControlNgrokSwitch
                 Complete-StackManagementProxies
@@ -1204,15 +1210,21 @@ if ($Mode -eq "Host") {
                 }
             }
         }
+    } catch {
+        Write-WatchdogCaptureEvent $ConfigPath 'host_unhandled_error' @{error=(Protect-WatchdogText $_.Exception.Message); hresult=$_.Exception.GetBaseException().HResult}
+        throw
     } finally {
+        Write-WatchdogCaptureEvent $ConfigPath 'host_exit_begin' @{shutdownRequested=$script:shutdownRequested; mutationInProgress=$script:mutationInProgress}
         Wait-ControlMutationDrain
-        Write-WatchdogEvent $script:stateDir $script:config "host" "exit" "stop event" "stop monitoring host" "managed services left unchanged"
+        $exitCause = if ($script:shutdownRequested) { 'stop event' } else { 'unexpected host exit' }
+        Write-WatchdogEvent $script:stateDir $script:config "host" "exit" $exitCause "stop monitoring host" "managed services left unchanged"
         Stop-HealthRunspace
         try { $script:listener.Stop() } catch { }
         if ([System.IO.File]::Exists($script:heartbeatPath)) { [System.IO.File]::Delete($script:heartbeatPath) }
         try { $mutex.ReleaseMutex() } catch { }
         $mutex.Dispose()
         $stopEvent.Dispose()
+        Write-WatchdogCaptureEvent $ConfigPath 'host_exit_complete'
     }
     exit 0
 }
