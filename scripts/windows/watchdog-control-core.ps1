@@ -43,8 +43,8 @@ function Protect-WatchdogText([string]$Value, [int]$MaximumLength = 500) {
     return $clean
 }
 
-function Read-WatchdogCaptureText([string]$Path) {
-    # Observation must not prevent the producer from replacing a heartbeat file.
+function Read-WatchdogText([string]$Path) {
+    # Readers must allow atomic replacement while retaining their original file snapshot.
     $stream = [IO.File]::Open($Path, 'Open', 'Read', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
     try {
         $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
@@ -58,7 +58,7 @@ function Write-WatchdogCaptureEvent([string]$ConfigPath, [string]$Event, $Detail
         $root = Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent
         $windowPath = Join-Path $root 'watchdog-diagnostics-window.json'
         if (-not [IO.File]::Exists($windowPath)) { return }
-        $window = (Read-WatchdogCaptureText $windowPath) | ConvertFrom-Json
+        $window = (Read-WatchdogText $windowPath) | ConvertFrom-Json
         if ([string]$window.id -notmatch '^[a-z0-9-]{1,64}$' -or [DateTimeOffset]::UtcNow -ge [DateTimeOffset]::Parse([string]$window.endUtc)) { return }
         $directory = Join-Path (Join-Path $root 'watchdog-diagnostics') $window.id
         [void][IO.Directory]::CreateDirectory($directory)
@@ -71,7 +71,7 @@ function Write-WatchdogCaptureEvent([string]$ConfigPath, [string]$Event, $Detail
         $target = $null
         if ($TargetHeartbeat) {
             try {
-                $heartbeat = (Read-WatchdogCaptureText $TargetHeartbeat) | ConvertFrom-Json
+                $heartbeat = (Read-WatchdogText $TargetHeartbeat) | ConvertFrom-Json
                 $target = @{pid=$heartbeat.pid; processStartUtc=$heartbeat.processStartUtc; timestamp=$heartbeat.timestamp}
             } catch { $target = @{readError=(Protect-WatchdogText $_.Exception.Message)} }
         }
@@ -116,7 +116,7 @@ function Write-WatchdogAtomicJson([string]$Path, $Value, [int]$Depth = 20) {
 
 function Read-WatchdogJson([string]$Path) {
     if (-not [System.IO.File]::Exists($Path)) { throw "Missing JSON file: $Path" }
-    return ([System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($Path), [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    return ((Read-WatchdogText ([System.IO.Path]::GetFullPath($Path))) | ConvertFrom-Json)
 }
 
 function Get-WatchdogOrigin([string]$Value, [string]$FieldName, [switch]$RequireInternal, [switch]$AllowPath) {

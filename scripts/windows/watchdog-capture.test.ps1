@@ -18,10 +18,18 @@ try {
     try { Write-WatchdogAtomicJson $heartbeat @{pid=456} } catch { $blocked = $true }
     finally { $reader.Dispose() }
     Assert-Capture $blocked 'Expected replacement conflict while a normal .NET text reader is open.'
-    $stream = [IO.File]::Open($heartbeat,'Open','Read',[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-    try { Write-WatchdogAtomicJson $heartbeat @{pid=123;processStartUtc='fixture';timestamp=[DateTimeOffset]::UtcNow.ToString('o')} }
-    finally { $stream.Dispose() }
-    Assert-Capture (((Read-WatchdogCaptureText $heartbeat)|ConvertFrom-Json).pid -eq 123) 'Sharing-safe observation failed.'
+    # Hold the exact production reader open across an atomic heartbeat replacement.
+    $Path = $heartbeat
+    $openStatement = (Get-Command Read-WatchdogText).ScriptBlock.Ast.Body.EndBlock.Statements[0]
+    Invoke-Expression $openStatement.Extent.Text
+    try {
+        Write-WatchdogAtomicJson $heartbeat @{pid=456;processStartUtc='fixture';timestamp=[DateTimeOffset]::UtcNow.ToString('o')}
+        $snapshotReader = New-Object IO.StreamReader($stream)
+        try { Assert-Capture (($snapshotReader.ReadToEnd() | ConvertFrom-Json).pid -eq 123) 'Open reader lost its original snapshot.' }
+        finally { $snapshotReader.Dispose() }
+    } finally { $stream.Dispose() }
+    Assert-Capture ((Read-WatchdogJson $heartbeat).pid -eq 456) 'Next production JSON read did not see the replacement.'
+    Write-WatchdogAtomicJson $heartbeat @{pid=123;processStartUtc='fixture';timestamp=[DateTimeOffset]::UtcNow.ToString('o')}
     $sha=[Security.Cryptography.SHA256]::Create()
     try { $hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($ConfigPath.ToLowerInvariant()))).Replace('-','').Substring(0,20) }
     finally { $sha.Dispose() }
@@ -42,6 +50,33 @@ try {
     [IO.File]::WriteAllText($window, (@{id='test';endUtc=[DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')}|ConvertTo-Json))
     Write-WatchdogCaptureEvent $ConfigPath 'expired'
     Assert-Capture (-not (Get-ChildItem (Join-Path $root 'watchdog-diagnostics\test') -Filter '*.jsonl' | Select-String '"event":"expired"')) 'Expired trace window still logged.'
+    $bootstrap = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'), [ref]$null, [ref]$null)
+    foreach ($name in @('Convert-NativeArgument','Start-HiddenNativeProcess','Start-HiddenWatchdogProcess')) {
+        Invoke-Expression ($bootstrap.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}, $true).Extent.Text)
+    }
+    $RuntimeDirectory = $root; $powershell = $psi.FileName; $Mode = 'fixture'
+    $helper = Join-Path $root 'delayed-stop.ps1'
+    [IO.File]::WriteAllText($helper, @'
+param($Mode, $ConfigPath)
+Start-Sleep -Milliseconds 750
+if ($Mode -eq 'Stop') { exit 7 }
+[IO.File]::WriteAllText(($ConfigPath + '.sent'), 'stop sent')
+'@)
+    Start-HiddenWatchdogProcess $helper 'StopHost'
+    Assert-Capture ([IO.File]::Exists($ConfigPath + '.sent')) 'Recovery resumed before the delayed stop helper exited.'
+    $failed = $false
+    try { Start-HiddenWatchdogProcess $helper 'Stop' } catch { $failed = $_.Exception.Message -match 'exit code 7' }
+    Assert-Capture $failed 'Failed stop helper did not block recovery.'
+    # A helper that cannot finish must be gone before a caller can start another generation.
+    [IO.File]::WriteAllText($helper, 'param($Mode,$ConfigPath); Start-Sleep -Seconds 30; [IO.File]::WriteAllText(($ConfigPath + ''.late''), ''late stop'')')
+    $before = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {$_.CommandLine -like ('*' + $helper + '*')}).Count
+    Assert-Capture ($before -eq 0) 'Fixture already has a live stop helper.'
+    $timedOut = $false
+    try { [void](Start-HiddenNativeProcess $powershell @('-NoProfile','-File',$helper,'-ConfigPath',$ConfigPath) 1000 -StopHelper) }
+    catch { $timedOut = $_.Exception.Message -match 'did not finish within' }
+    Assert-Capture $timedOut 'Hung stop helper did not block recovery.'
+    Assert-Capture (@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {$_.CommandLine -like ('*' + $helper + '*')}).Count -eq 0) 'Timed-out stop helper survived.'
+    Assert-Capture (-not [IO.File]::Exists($ConfigPath + '.late')) 'Timed-out helper sent a late stop.'
     Write-Host 'Capture: isolated real stop sender/target, shared-delete reader, sharing-failure evidence, disabled/expired windows passed.'
 } finally {
     if ($event) { $event.Dispose() }

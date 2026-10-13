@@ -20,7 +20,7 @@ $freshHeartbeatSeconds = 15
 . (Join-Path $PSScriptRoot "stack-operation.ps1")
 
 if (-not [System.IO.File]::Exists($ConfigPath)) { throw "Missing watchdog configuration: $ConfigPath" }
-$config = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+$config = Read-WatchdogJson $ConfigPath
 $stateDirValue = [string]$config.stateDir
 if ([string]::IsNullOrWhiteSpace($stateDirValue)) { throw "Watchdog configuration has no stateDir." }
 $stateDir = [System.IO.Path]::GetFullPath($stateDirValue)
@@ -30,7 +30,7 @@ $trayHeartbeatPath = Join-Path $stateDir "watchdog-tray-heartbeat.json"
 if ($Mode -eq 'Watch' -and -not $ScheduledSupervisor) {
     $installRecord = Join-Path $stateDir 'watchdog-tray-install.json'
     if ([IO.File]::Exists($installRecord)) {
-        $record = [IO.File]::ReadAllText($installRecord) | ConvertFrom-Json
+        $record = Read-WatchdogJson $installRecord
         if (Get-WatchdogProperty $record 'supervisorTask' '') {
             . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
             $spec = Get-InstallSupervisorTaskSpec $stateDir
@@ -68,7 +68,7 @@ function Convert-NativeArgument([string]$Value) {
     return $builder.ToString()
 }
 
-function Start-HiddenNativeProcess([string]$FilePath, [string[]]$Arguments, [int]$WaitMilliseconds = 0) {
+function Start-HiddenNativeProcess([string]$FilePath, [string[]]$Arguments, [int]$WaitMilliseconds = 0, [switch]$StopHelper) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
     $psi.Arguments = (@($Arguments) | ForEach-Object { Convert-NativeArgument ([string]$_) }) -join " "
@@ -83,7 +83,14 @@ function Start-HiddenNativeProcess([string]$FilePath, [string[]]$Arguments, [int
     try {
         Write-WatchdogCaptureEvent $ConfigPath 'child_started' @{parentMode=$Mode; childPid=$process.Id; executable=[IO.Path]::GetFileName($FilePath); arguments=@($Arguments | Where-Object {$_ -in @('Host','StopHost','Run','Stop','RepairHost','Watch')})}
         if ($WaitMilliseconds -gt 0) {
-            if (-not $process.WaitForExit($WaitMilliseconds)) { throw "$FilePath did not finish within $WaitMilliseconds ms." }
+            if (-not $process.WaitForExit($WaitMilliseconds)) {
+                # A late stop sender must not survive into the next Host/Tray generation.
+                if ($StopHelper) {
+                    if (-not $process.HasExited) { $process.Kill() }
+                    if (-not $process.WaitForExit(5000)) { throw "Stop helper $($process.Id) did not exit; refusing role recovery." }
+                }
+                throw "$FilePath did not finish within $WaitMilliseconds ms."
+            }
             return [int]$process.ExitCode
         }
         return 0
@@ -93,11 +100,14 @@ function Start-HiddenNativeProcess([string]$FilePath, [string[]]$Arguments, [int
 function Start-HiddenWatchdogProcess([string]$ScriptPath, [string]$ChildMode) {
     if (-not [System.IO.File]::Exists($ScriptPath)) { throw "Missing watchdog script: $ScriptPath" }
     if (-not [System.IO.File]::Exists($powershell)) { throw "Windows PowerShell is missing: $powershell" }
-    [void](Start-HiddenNativeProcess $powershell @(
+    $stopHelper = $ChildMode -in @('Stop', 'StopHost')
+    $waitMilliseconds = if ($stopHelper) { 10000 } else { 0 }
+    $exitCode = Start-HiddenNativeProcess $powershell @(
         "-NoLogo", "-NoProfile", "-NonInteractive", "-STA",
         "-WindowStyle", "Hidden",
         "-File", $ScriptPath, "-Mode", $ChildMode, "-ConfigPath", $ConfigPath
-    ))
+    ) $waitMilliseconds -StopHelper:$stopHelper
+    if ($stopHelper -and $exitCode -ne 0) { throw "Watchdog stop helper failed with exit code $exitCode; refusing role recovery." }
 }
 
 if (-not ("DevSpaceWatchdogSessionNative" -as [type])) {
@@ -189,7 +199,7 @@ function Start-InteractiveOpenCodexTray([int]$ExpectedSessionId) {
 function Read-RoleHeartbeat([string]$Path) {
     if (-not [System.IO.File]::Exists($Path)) { return $null }
     try {
-        $value = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $value = Read-WatchdogJson $Path
         $rolePid = 0
         if (-not [int]::TryParse([string]$value.pid, [ref]$rolePid) -or $rolePid -le 0) { return $null }
         $timestamp = [DateTimeOffset]::MinValue

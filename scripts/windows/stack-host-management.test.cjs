@@ -42,7 +42,7 @@ function Import-Functions($File,$Names) {
   }
 }
 $windows=Join-Path $PackageRoot 'scripts\\windows'
-Import-Functions (Join-Path $windows 'watchdog-control-core.ps1') @('Read-WatchdogJson','Get-WatchdogProperty')
+Import-Functions (Join-Path $windows 'watchdog-control-core.ps1') @('Read-WatchdogText','Read-WatchdogJson','Get-WatchdogProperty')
 Import-Functions (Join-Path $windows 'devspace-watchdog-tray.ps1') @('Read-LoopbackHttpRequest','Write-LoopbackHttpResponse','Write-ControlJson')
 $ConfigPath=Join-Path $Root 'devspace-watchdog.config.json'
 $script:config=[pscustomobject]@{nodePath=$NodePath;managementPackageRoot=$PackageRoot;cliPath=(Join-Path $PackageRoot 'dist\\cli.js')}

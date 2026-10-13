@@ -131,7 +131,7 @@ $trayWorkerBody = {
     function Test-HostHeartbeatFresh {
         try {
             if (-not [IO.File]::Exists($HostHeartbeatPath)) { return $false }
-            $value = [IO.File]::ReadAllText($HostHeartbeatPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $value = Read-WatchdogJson $HostHeartbeatPath
             $age = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse([string]$value.timestamp).ToUniversalTime()).TotalSeconds
             return $age -ge -5 -and $age -le 15
         } catch { return $false }

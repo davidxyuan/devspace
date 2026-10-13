@@ -9,3 +9,5 @@ Supervisor 現在在程序查詢後重讀心跳，並在停止前確認兩次相
 驗證包含 watchdog-health-responsive.test.ps1：在原生等待中觸發取消，透過正式 Host 主迴圈持續發送真實 HTTP 請求並讀取心跳，另驗證背景修復、單一檢查槽及退出收尾。watchdog-supervisor.test.ps1 涵蓋短暫讀取失敗、慢程序查詢、停止前恢復、身分變化與工作階段判斷。兩項測試均可用 -SourceDirectory 指向舊版來源作反向驗證，並已納入 npm run test:windows-watchdog。
 
 部署先備份 runtime 與安裝記錄，經 Bootstrap Stop、排程退出及 CheckStopped 證明後替換已驗證檔案，再由既有排程啟動並驗證真實 MCP 呼叫。有限時間的測試不能保證日後所有網路、記憶體或服務故障均不會發生。
+
+心跳與 JSON 讀取共用允許替換的檔案分享模式，避免讀者阻擋 `File.Replace`。Bootstrap 等待停止助手退出；助手逾時時只終止該次建立的助手並確認退出，失敗則拒絕重建，避免舊停止請求延後影響新 Host/Tray。`watchdog-capture.test.ps1` 驗證實際檔案替換、讀取快照、延遲助手、助手失敗與逾時清理。這修正兩個已重現的競態；並未確認歷次故障中的檔案持有者，也不代表已排除記憶體洩漏或系統停頓。
