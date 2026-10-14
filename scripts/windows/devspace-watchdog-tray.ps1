@@ -929,10 +929,15 @@ function Read-LoopbackHttpRequest($Client) {
     $Client.ReceiveTimeout = 750
     $Client.SendTimeout = 750
     $stream = $Client.GetStream()
+    # Per-read socket timeouts alone let a trickling client starve the Host heartbeat.
+    $requestClock = [Diagnostics.Stopwatch]::StartNew()
     $headerBytes = New-Object System.Collections.Generic.List[byte]
     $matched = 0
     $terminator = @(13,10,13,10)
     while ($headerBytes.Count -lt 16384 -and $matched -lt 4) {
+        $remaining = 750 - $requestClock.ElapsedMilliseconds
+        if ($remaining -le 0) { throw 'Dashboard request exceeded its total read deadline.' }
+        $stream.ReadTimeout = [int]$remaining
         $value = $stream.ReadByte()
         if ($value -lt 0) { throw "Connection closed before HTTP headers completed." }
         $headerBytes.Add([byte]$value)
@@ -960,6 +965,9 @@ function Read-LoopbackHttpRequest($Client) {
     $bodyBytes = New-Object byte[] $contentLength
     $offset = 0
     while ($offset -lt $contentLength) {
+        $remaining = 750 - $requestClock.ElapsedMilliseconds
+        if ($remaining -le 0) { throw 'Dashboard request exceeded its total read deadline.' }
+        $stream.ReadTimeout = [int]$remaining
         $read = $stream.Read($bodyBytes, $offset, $contentLength - $offset)
         if ($read -le 0) { throw "Connection closed before HTTP body completed." }
         $offset += $read
@@ -1190,7 +1198,8 @@ if ($Mode -eq "Host") {
                 Complete-StackManagementProxies
                 if ($script:shutdownRequested -and -not $script:mutationInProgress) { break }
                 $handled = 0
-                while ($handled -lt 8 -and $script:listener.Pending()) {
+                $requestBatch = [Diagnostics.Stopwatch]::StartNew()
+                while ($handled -lt 8 -and $requestBatch.ElapsedMilliseconds -lt 100 -and $script:listener.Pending()) {
                     Invoke-PendingDashboardRequest
                     $handled++
                 }
