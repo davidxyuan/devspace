@@ -518,11 +518,11 @@ try {
     Assert-Contains "bootstrap recovers stale role" $bootstrapSource 'Recover-StaleRole'
     Assert-Contains "bootstrap detects active console session" $bootstrapSource 'WTSGetActiveConsoleSessionId'
     Assert-Contains "bootstrap launches Tray through interactive task bridge" $bootstrapSource 'Start-InteractiveWatchdogTray'
-    Assert-Contains "bootstrap interactive bridge uses InteractiveToken task" $bootstrapSource '"/IT"'
-    Assert-Contains "bootstrap interactive task directly launches PowerShell" $bootstrapSource 'powershell.exe -NoP -Sta -W Hidden -F'
+    Assert-Contains "bootstrap role task uses current interactive user" $bootstrapSource '-UserId $spec.user -LogonType Interactive -RunLevel Limited'
+    Assert-Contains "bootstrap role task uses hidden conhost launcher" $bootstrapSource "$('$spec.arguments') = '--headless '"
     Assert-True "bootstrap runtime avoids ExecutionPolicy Bypass" (-not $bootstrapSource.Contains('Bypass'))
-    Assert-Contains "bootstrap interactive task directly targets thin Tray" $bootstrapSource '(Convert-NativeArgument $trayScript)'
-    Assert-Contains "bootstrap verifies interactive Tray heartbeat session" $bootstrapSource 'Test-RoleHeartbeatFresh $trayHeartbeatPath $ExpectedSessionId'
+    Assert-Contains "bootstrap interactive task targets thin Tray" $bootstrapSource "Start-ScheduledWatchdogRole $('$trayScript') 'Run' $('$trayHeartbeatPath') $('$ExpectedSessionId')"
+    Assert-Contains "bootstrap verifies scheduled role heartbeat session" $bootstrapSource 'Test-RoleHeartbeatFresh $HeartbeatPath $ExpectedSessionId'
     Assert-Contains "bootstrap launches child processes without a console" $bootstrapSource '$psi.CreateNoWindow = $true'
     Assert-Contains "Host has separate run mode" $traySource '"Host", "StopHost"'
     Assert-Contains "Host listener handle is non inheritable" $traySource 'SetHandleInformation($script:listener.Server.Handle, 1, 0)'

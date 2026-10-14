@@ -98,3 +98,63 @@ try {
     [IO.Directory]::Delete($stateDir,$false)
 }
 Write-Host 'Watch dispatch, manual resume and recursion guard passed.'
+
+# Run/RepairHost launches must not inherit an interactive caller's kill-on-close job.
+& {
+    $bootstrapAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1'),[ref]$null,[ref]$null)
+    $fn=$bootstrapAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-HiddenWatchdogProcess'},$true)
+    Invoke-Expression $fn.Extent.Text
+    $powershell=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $hostScript=Join-Path $PSScriptRoot 'devspace-watchdog-tray.ps1'
+    $trayScript=Join-Path $PSScriptRoot 'devspace-watchdog-tray-ui.ps1'
+    $hostHeartbeatPath='host-heartbeat'; $trayHeartbeatPath='tray-heartbeat'
+    $ScheduledSupervisor=$false; $script:launches=@(); $script:nativeStarts=0
+    function Start-ScheduledWatchdogRole { param($ScriptPath,$ChildMode,$HeartbeatPath,$ExpectedSessionId=-1) $script:launches+=@{path=$ScriptPath;mode=$ChildMode;heartbeat=$HeartbeatPath} }
+    function Start-HiddenNativeProcess { $script:nativeStarts++; return 0 }
+    Start-HiddenWatchdogProcess $hostScript 'Host'
+    Start-HiddenWatchdogProcess $trayScript 'Run'
+    if ($script:launches.Count -ne 2 -or $script:nativeStarts -ne 0 -or $script:launches[0].heartbeat -ne $hostHeartbeatPath -or $script:launches[1].heartbeat -ne $trayHeartbeatPath) { throw 'Long-lived roles still inherit the caller job.' }
+    Start-HiddenWatchdogProcess $hostScript 'StopHost'
+    $ScheduledSupervisor=$true
+    Start-HiddenWatchdogProcess $hostScript 'Host'
+    if ($script:launches.Count -ne 2 -or $script:nativeStarts -ne 2) { throw 'Stop helper or independent supervisor launch regressed.' }
+}
+
+& {
+    foreach ($name in @('Convert-NativeArgument','Start-ScheduledWatchdogRole')) {
+        $fn=$dispatchAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+        Invoke-Expression ($fn.Extent.Text.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'")))
+    }
+    $RuntimeDirectory=Join-Path $env:TEMP 'role launch fixture'
+    $ConfigPath=Join-Path $RuntimeDirectory 'config.json'
+    $powershell=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $script:roleTask=$null; $script:deletes=0; $script:failure=''; $script:probeSession=-2
+    function New-ScheduledTaskAction { param($Execute,$Argument) return [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
+    function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) return [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
+    function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) return [pscustomobject]@{Enabled=$true;ExecutionTimeLimit='PT0S';MultipleInstances=$MultipleInstances;RestartCount=0;RestartInterval=''} }
+    function Register-ScheduledTask {
+        param($TaskName,$TaskPath,$Action,$Principal,$Settings,[switch]$Force)
+        if ($Force) { throw 'A launch must never overwrite an existing task.' }
+        if ($script:failure -eq 'register') { throw 'fixture registration failed' }
+        $script:roleTask=[pscustomobject]@{TaskName=$TaskName;TaskPath=$TaskPath;Actions=@($Action);Principal=$Principal;Settings=$Settings;Triggers=@()}
+    }
+    function Get-ScheduledTask { return $script:roleTask }
+    function Start-ScheduledTask {
+        if ($script:failure -eq 'start') { throw 'fixture start failed' }
+        if ($script:failure -eq 'changed') { $script:roleTask.Actions[0].Arguments+=' foreign' }
+    }
+    function Unregister-ScheduledTask { param($TaskName,$TaskPath,$Confirm) if ($TaskName -ne $script:roleTask.TaskName -or $TaskPath -ne '\') { throw 'Wrong task cleanup' }; $script:deletes++ }
+    function Start-Sleep {}
+    function Test-RoleHeartbeatFresh { param($Path,$ExpectedSessionId) $script:probeSession=$ExpectedSessionId; return $true }
+    function Read-RoleHeartbeat { return [pscustomobject]@{pid=123;timestamp=[DateTimeOffset]::UtcNow} }
+    function Write-WatchdogCaptureEvent {}
+    Start-ScheduledWatchdogRole (Join-Path $RuntimeDirectory 'tray.ps1') 'Run' 'heartbeat' 7
+    if ($script:deletes -ne 1 -or $script:probeSession -ne 7 -or $script:roleTask.Actions[0].Execute -notmatch 'conhost.exe$' -or $script:roleTask.Actions[0].Arguments -notmatch '^--headless ' -or $script:roleTask.Actions[0].Arguments -notmatch '"-STA"') { throw 'Independent role action, session or cleanup failed.' }
+    foreach ($failure in @('register','start','changed')) {
+        $script:failure=$failure; $before=$script:deletes; $rejected=$false
+        try { Start-ScheduledWatchdogRole 'host.ps1' 'Host' 'heartbeat' } catch { $rejected=$true }
+        $expected=if ($failure -eq 'start') {1} else {0}
+        if (-not $rejected -or $script:deletes -ne ($before+$expected)) { throw "Unsafe launch failure cleanup: $failure" }
+    }
+}
+Write-Host 'Role launch: independent caller handoff, supervisor/stop-helper bypass, exact task cleanup and failure rejection passed.'

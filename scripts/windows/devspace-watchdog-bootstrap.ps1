@@ -101,6 +101,18 @@ function Start-HiddenWatchdogProcess([string]$ScriptPath, [string]$ChildMode) {
     if (-not [System.IO.File]::Exists($ScriptPath)) { throw "Missing watchdog script: $ScriptPath" }
     if (-not [System.IO.File]::Exists($powershell)) { throw "Windows PowerShell is missing: $powershell" }
     $stopHelper = $ChildMode -in @('Stop', 'StopHost')
+    # A console/agent may own a kill-on-close job; CreateNoWindow does not detach it.
+    if (-not $stopHelper -and -not $ScheduledSupervisor) {
+        if ($ScriptPath -eq $hostScript -and $ChildMode -eq 'Host') {
+            Start-ScheduledWatchdogRole $ScriptPath $ChildMode $hostHeartbeatPath
+            return
+        }
+        if ($ScriptPath -eq $trayScript -and $ChildMode -eq 'Run') {
+            Start-ScheduledWatchdogRole $ScriptPath $ChildMode $trayHeartbeatPath
+            return
+        }
+        throw 'Refusing an unknown long-lived Watchdog role.'
+    }
     $waitMilliseconds = if ($stopHelper) { 10000 } else { 0 }
     $exitCode = Start-HiddenNativeProcess $powershell @(
         "-NoLogo", "-NoProfile", "-NonInteractive", "-STA",
@@ -132,28 +144,42 @@ function Start-InteractiveWatchdogTray([int]$ExpectedSessionId) {
         Start-HiddenWatchdogProcess $trayScript "Run"
         return
     }
-    $schtasks = Join-Path $env:WINDIR "System32\schtasks.exe"
-    if (-not [System.IO.File]::Exists($schtasks)) { throw "Task Scheduler CLI is missing: $schtasks" }
-    $taskName = "DevSpaceWatchdogTrayInteractive-" + [Guid]::NewGuid().ToString("N")
-    # The task action itself is the long-lived Tray PowerShell process. This avoids
-    # endpoint-security blocks on WScript spawning PowerShell and stays under the
-    # legacy schtasks /TR command-length limit by using short PowerShell switches.
-    $taskCommand = "powershell.exe -NoP -Sta -W Hidden -F " + (Convert-NativeArgument $trayScript) + " -ConfigPath " + (Convert-NativeArgument $ConfigPath)
-    if ($taskCommand.Length -gt 240) { throw "Interactive Tray task command is unexpectedly long ($($taskCommand.Length) characters)." }
-    $startAt = (Get-Date).AddMinutes(2).ToString("HH:mm")
+    Start-ScheduledWatchdogRole $trayScript 'Run' $trayHeartbeatPath $ExpectedSessionId
+}
+
+function Start-ScheduledWatchdogRole([string]$ScriptPath, [string]$ChildMode, [string]$HeartbeatPath, [int]$ExpectedSessionId = -1) {
+    . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+    $spec = Get-InstallSupervisorTaskSpec $RuntimeDirectory
+    $spec.name = 'DevSpaceWatchdogLaunch-' + [guid]::NewGuid().ToString('N')
+    $spec.arguments = '--headless ' + ((@($powershell, '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-WindowStyle', 'Hidden', '-File', $ScriptPath, '-Mode', $ChildMode, '-ConfigPath', $ConfigPath) | ForEach-Object { Convert-NativeArgument $_ }) -join ' ')
+    $created = $false
     try {
-        $created = Start-HiddenNativeProcess $schtasks @("/Create","/TN",$taskName,"/TR",$taskCommand,"/SC","ONCE","/ST",$startAt,"/RL","LIMITED","/IT","/F") 10000
-        if ($created -ne 0) { throw "Could not create interactive Tray launch task (exit $created)." }
-        $ran = Start-HiddenNativeProcess $schtasks @("/Run","/TN",$taskName) 10000
-        if ($ran -ne 0) { throw "Could not run interactive Tray launch task (exit $ran)." }
+        $action = New-ScheduledTaskAction -Execute $spec.executable -Argument $spec.arguments
+        $principal = New-ScheduledTaskPrincipal -UserId $spec.user -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $spec.name -TaskPath '\' -Action $action -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+        $created = $true
+        Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop) $spec
+        $startedAt = [DateTimeOffset]::UtcNow
+        Start-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop
         $deadline = [DateTimeOffset]::UtcNow.AddSeconds(45)
         do {
             Start-Sleep -Milliseconds 200
-            if (Test-RoleHeartbeatFresh $trayHeartbeatPath $ExpectedSessionId) { return }
+            if (Test-RoleHeartbeatFresh $HeartbeatPath $ExpectedSessionId) {
+                $heartbeat = Read-RoleHeartbeat $HeartbeatPath
+                if ($heartbeat -and $heartbeat.timestamp -ge $startedAt) {
+                    Write-WatchdogCaptureEvent $ConfigPath 'scheduled_role_started' @{childMode=$ChildMode; childPid=$heartbeat.pid; taskName=$spec.name}
+                    return
+                }
+            }
         } while ([DateTimeOffset]::UtcNow -lt $deadline)
-        throw "Interactive Tray did not publish a Session $ExpectedSessionId heartbeat within 45 seconds."
+        throw "Scheduled Watchdog $ChildMode did not publish a verified heartbeat within 45 seconds."
     } finally {
-        try { [void](Start-HiddenNativeProcess $schtasks @("/Delete","/TN",$taskName,"/F") 5000) } catch { }
+        if ($created) {
+            Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction Stop) $spec
+            # Unregistering removes future launches, without stopping the running role.
+            Unregister-ScheduledTask -TaskName $spec.name -TaskPath '\' -Confirm:$false -ErrorAction Stop
+        }
     }
 }
 
