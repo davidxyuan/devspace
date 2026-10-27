@@ -30,7 +30,7 @@ try {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /missing Agent dependency/);
   const done = path.join(root, 'descendant-finished');
-  const child = `import pathlib,time; time.sleep(1); pathlib.Path(${JSON.stringify(done)}).touch()`;
+  const child = `import os,pathlib,time; time.sleep(1); pathlib.Path(${JSON.stringify(done)}).write_text(str(os.getpid()))`;
   fs.writeFileSync(server, `import subprocess,sys,time\nsubprocess.Popen([sys.executable,'-c',${JSON.stringify(child)}],cwd=${JSON.stringify(agent)})\ntime.sleep(10)\n`);
   const timeoutHarness = `import importlib.util,subprocess,sys\nspec=importlib.util.spec_from_file_location('probe',sys.argv[1]); probe=importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)\noriginal=subprocess.run\ndef short(*args,**kwargs):\n    assert kwargs['timeout']==30 and kwargs['stdout']!=subprocess.PIPE and kwargs['stderr']!=subprocess.PIPE\n    kwargs['timeout']=0.5\n    return original(*args,**kwargs)\nsubprocess.run=short\nsys.argv=sys.argv[1:]\nprobe.main()\n`;
   const started = Date.now();
@@ -41,6 +41,13 @@ try {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /TimeoutExpired/);
   assert(fs.existsSync(done) && Date.now() - started < 4500, 'bounded probe or natural fixture cleanup failed');
+  const childPid = Number(fs.readFileSync(done, 'utf8'));
+  assert(Number.isSafeInteger(childPid) && childPid > 0);
+  // The completion marker precedes process exit and release of the agent working directory.
+  const waited = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference='Stop'; Get-Process -Id ${childPid} -ErrorAction SilentlyContinue | Wait-Process -Timeout 3; exit 0`],
+    { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  assert.equal(waited.status, 0, waited.stderr);
   console.log("Hermes source probe: explicit selection, imports, fail-closed discovery and isolated data passed.");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
