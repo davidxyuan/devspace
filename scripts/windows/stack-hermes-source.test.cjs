@@ -44,10 +44,18 @@ try {
   const childPid = Number(fs.readFileSync(done, 'utf8'));
   assert(Number.isSafeInteger(childPid) && childPid > 0);
   // The completion marker precedes process exit and release of the agent working directory.
-  const waited = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `$ErrorActionPreference='Stop'; Get-Process -Id ${childPid} -ErrorAction SilentlyContinue | Wait-Process -Timeout 3; exit 0`],
-    { encoding: 'utf8', timeout: 5000, windowsHide: true });
-  assert.equal(waited.status, 0, waited.stderr);
+  const exitDeadline = Date.now() + 3000;
+  let exited = false;
+  while (Date.now() < exitDeadline) {
+    try { process.kill(childPid, 0); } // Signal zero checks existence without terminating the process.
+    catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+      exited = true;
+      break;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  assert(exited, 'fixture descendant did not exit naturally before cleanup');
   console.log("Hermes source probe: explicit selection, imports, fail-closed discovery and isolated data passed.");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
