@@ -49,7 +49,11 @@ export function assertAllowedPath(path: string, allowedRoots: string[]): string 
   // when the lexical path reaches it through an alias/junction. Resolve each
   // root independently so one unavailable root cannot mask a later valid one.
   let canonicalResolved: string | undefined;
-  try { canonicalResolved = canonicalPath(resolvedPath); } catch { canonicalResolved = undefined; }
+  try { canonicalResolved = canonicalPath(resolvedPath); } catch (error) {
+    // I/O failures are not stale bindings or a changed allowlist.
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    canonicalResolved = undefined;
+  }
   if (canonicalResolved) {
     for (const root of allowedRoots) {
       try {

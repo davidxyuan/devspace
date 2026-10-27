@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { mock } from "node:test";
 import { editFileTool, readFileTool, writeFileTool } from "./pi-tools.js";
 import { AccessDeniedError, assertAllowedPath, expandHomePath, resolveAllowedPath } from "./roots.js";
 
@@ -41,6 +42,11 @@ try {
   const inside = join(allowed, "inside");
   mkdirSync(inside, { recursive: true });
   mkdirSync(outside);
+  const ioFailure = Object.assign(new Error("fixture filesystem failure"), { code: "EIO" });
+  const realpathMock = mock.method(realpathSync, "native", () => { throw ioFailure; });
+  try {
+    assert.throws(() => assertAllowedPath(inside, [allowed]), (error) => error === ioFailure);
+  } finally { realpathMock.mock.restore(); }
   writeFileSync(join(outside, "sentinel.txt"), "outside unchanged\n");
   writeFileSync(join(inside, "sample.txt"), "inside original\n");
   const linkType = process.platform === "win32" ? "junction" : "dir";

@@ -46,7 +46,10 @@ export function assertAllowedPath(path, allowedRoots) {
     try {
         canonicalResolved = canonicalPath(resolvedPath);
     }
-    catch {
+    catch (error) {
+        // I/O failures are not stale bindings or a changed allowlist.
+        if (!["ENOENT", "ENOTDIR"].includes(error.code ?? ""))
+            throw error;
         canonicalResolved = undefined;
     }
     if (canonicalResolved) {
