@@ -29,6 +29,26 @@ test("three independent MCP conversations can work concurrently in one checkout 
   await writeFile(join(agentDir, "AGENTS.md"), "global instructions\n");
   await writeFile(join(project, "AGENTS.md"), "project instructions\n");
   await writeFile(join(project, "parallel", "a", "input.txt"), "alpha\n");
+  // A rendezvous proves overlap without confusing shell startup cost with serialization.
+  await writeFile(join(project, "parallel", "barrier.cjs"), `
+const fs = require("node:fs");
+const path = require("node:path");
+const labels = ["chat-a-done", "chat-b-done", "chat-c-done"];
+const label = process.argv[2];
+if (!labels.includes(label)) process.exit(2);
+fs.writeFileSync(path.join(__dirname, label + ".ready"), "ready");
+const deadline = Date.now() + 4000;
+const timer = setInterval(() => {
+  if (labels.every(name => fs.existsSync(path.join(__dirname, name + ".ready")))) {
+    fs.writeFileSync(path.join(__dirname, label + ".done"), "overlapped");
+    clearInterval(timer);
+    console.log(label);
+  } else if (Date.now() >= deadline) {
+    clearInterval(timer);
+    process.exitCode = 1;
+  }
+}, 20);
+`);
 
   const config = loadConfig({
     DEVSPACE_CONFIG_DIR: join(root, ".config"),
@@ -76,13 +96,13 @@ test("three independent MCP conversations can work concurrently in one checkout 
     return structured?.workspaceId as string;
   }
 
-  async function runDelay(client: Client, workspaceId: string, workingDirectory: string, label: string) {
+  async function rendezvous(client: Client, workspaceId: string, workingDirectory: string, label: string) {
     const result = await client.callTool({
       name: "bash",
       arguments: {
         workspaceId,
         workingDirectory,
-        command: `node -e "setTimeout(()=>console.log('${label}'),900)"`,
+        command: `node ../barrier.cjs ${label}`,
         timeout: 5,
       },
     });
@@ -110,7 +130,7 @@ test("three independent MCP conversations can work concurrently in one checkout 
           arguments: { workspaceId: workspaceA, path: "parallel/a/input.txt" },
         });
         assert.notEqual(read.isError, true);
-        await runDelay(sessionA.client, workspaceA, "parallel/a", "chat-a-done");
+        await rendezvous(sessionA.client, workspaceA, "parallel/a", "chat-a-done");
       })(),
       (async () => {
         const write = await sessionB.client.callTool({
@@ -118,14 +138,16 @@ test("three independent MCP conversations can work concurrently in one checkout 
           arguments: { workspaceId: workspaceB, path: "parallel/b/output.txt", content: "beta\n" },
         });
         assert.notEqual(write.isError, true);
-        await runDelay(sessionB.client, workspaceB, "parallel/b", "chat-b-done");
+        await rendezvous(sessionB.client, workspaceB, "parallel/b", "chat-b-done");
       })(),
-      runDelay(sessionC.client, workspaceC, "parallel/c", "chat-c-done"),
+      rendezvous(sessionC.client, workspaceC, "parallel/c", "chat-c-done"),
     ]);
     const elapsedMs = Date.now() - startedAt;
 
     assert.equal(await readFile(join(project, "parallel", "b", "output.txt"), "utf8"), "beta\n");
-    assert.ok(elapsedMs < 2200, `three independent conversations appear serialized; elapsed=${elapsedMs}ms`);
+    for (const label of ["chat-a-done", "chat-b-done", "chat-c-done"]) {
+      assert.equal(await readFile(join(project, "parallel", label + ".done"), "utf8"), "overlapped");
+    }
     console.log(`PASS: 3 MCP conversations completed independent read/write/test work concurrently in ${elapsedMs} ms.`);
   } finally {
     for (const session of sessions) {
