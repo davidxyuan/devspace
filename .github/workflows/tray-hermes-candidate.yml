@@ -39,6 +39,9 @@ jobs:
           $source = Join-Path $env:RUNNER_TEMP 'hermes-agent-source'
           git init $source
           if ($LASTEXITCODE) { throw 'Source initialization failed' }
+          # The isolated preparer ignores global/system Git settings; keep checkout bytes consistent with that environment.
+          git -C $source config core.autocrlf false
+          if ($LASTEXITCODE) { throw 'Checkout line-ending configuration failed' }
           git -C $source remote add origin https://github.com/NousResearch/hermes-agent.git
           if ($LASTEXITCODE) { throw 'Origin setup failed' }
           git -C $source fetch --no-tags --depth=1 origin $env:AGENT_REVISION
