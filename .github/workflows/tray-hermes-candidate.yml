@@ -7,6 +7,8 @@ on:
       - .github/workflows/tray-hermes-candidate.yml
       - scripts/windows/prepare-hermes-pm-candidate*.py
       - scripts/windows/hermes-gateway-supervisor*.py
+      - scripts/windows/hermes-gateway-real.test.py
+      - scripts/windows/hermes-gateway-readiness.test.py
       - scripts/windows/patches/hermes-windows-control-pipe.patch
   workflow_dispatch:
     inputs:
@@ -31,7 +33,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Verify preparation and failure boundaries
-        run: python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
+        shell: pwsh
+        run: |
+          python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
+          if ($LASTEXITCODE) { throw 'Preparation boundary tests failed' }
+          python -I -B scripts/windows/hermes-gateway-readiness.test.py
+          if ($LASTEXITCODE) { throw 'Gateway readiness tests failed' }
       - name: Fetch the immutable official source
         shell: pwsh
         run: |
@@ -58,6 +65,16 @@ jobs:
         run: |
           & "$env:RUNNER_TEMP/hermes-pm-candidate/runtime/Scripts/python.exe" -I -B scripts/windows/hermes-gateway-supervisor.test.py -v *> "$env:RUNNER_TEMP/hermes-pm-candidate/supervisor-tests.log"
           if ($LASTEXITCODE) { throw 'Supervisor tests failed' }
+      - name: Verify real gateway crash recovery, update handoff and graceful stop
+        shell: pwsh
+        run: |
+          $prepared = Join-Path $env:RUNNER_TEMP 'hermes-pm-candidate'
+          $python = Join-Path $prepared 'runtime/Scripts/python.exe'
+          $profile = Join-Path $env:RUNNER_TEMP 'hermes-gateway-disposable-profile'
+          & $python -I -B scripts/windows/hermes-gateway-supervisor.py init --prepared $prepared --home $profile
+          if ($LASTEXITCODE) { throw 'Gateway test profile initialization failed' }
+          & $python -I -B scripts/windows/hermes-gateway-real.test.py --prepared $prepared --home $profile --report "$prepared/gateway-real.json" *> "$prepared/gateway-real.log"
+          if ($LASTEXITCODE) { throw 'Real gateway lifecycle test failed; inspect preserved evidence' }
       - name: Preserve evidence (not an installable release)
         if: always()
         uses: actions/upload-artifact@v4
