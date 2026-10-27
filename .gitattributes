@@ -1,2 +1,5 @@
 # Preserve the reviewed patch bytes; blank diff context lines contain one space.
 scripts/windows/patches/hermes-windows-control-pipe.patch text eol=lf whitespace=-blank-at-eol
+# Build output must use the same line endings as a clean checkout on Windows.
+src/** text=auto eol=lf
+dist/** text=auto eol=lf

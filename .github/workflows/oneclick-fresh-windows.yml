@@ -38,6 +38,17 @@ jobs:
       - name: Build runtime from source
         run: npm run build
 
+      - name: Verify the build leaves committed outputs unchanged
+        shell: powershell
+        run: |
+          $changes = @(git status --porcelain --untracked-files=all)
+          if ($LASTEXITCODE -ne 0) { throw "Cannot inspect the built checkout." }
+          if ($changes.Count) {
+            $changes | Write-Output
+            git diff --numstat
+            throw "Built output differs from the committed candidate; preserve and review the differences."
+          }
+
       - name: Core regression suite
         run: npm test
 
