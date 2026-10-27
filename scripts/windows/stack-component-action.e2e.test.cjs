@@ -128,8 +128,10 @@ const remoteFixture = [
     const configPath = path.join(installDir, "devspace-watchdog.config.json");
     const serviceState = path.join(root, "service-events.log"), bootstrapState = path.join(root, "bootstrap-events.log"), forceRollbackFailure = path.join(root, "force-rollback-failure");
     fs.mkdirSync(scriptDir, { recursive: true }); fs.mkdirSync(installDir, { recursive: true });
-    for (const file of ["devspace-stack-setup.cjs", "devspace-stack-setup.html", "stack-jobs.cjs", "stack-operation.ps1", "stack-management.cjs", "stack-setup-apply.cjs", "stack-apply-parameters.ps1", "stack-activate.ps1", "watchdog-install-transaction.ps1"]) fs.copyFileSync(path.join(__dirname, file), path.join(scriptDir, file));
+    for (const file of ["devspace-stack-setup.cjs", "devspace-stack-setup.html", "stack-jobs.cjs", "stack-operation.ps1", "stack-management.cjs","stack-node-build.cjs","stack-release-policy.cjs","stack-release-manifest.json", "stack-setup-apply.cjs", "stack-apply-parameters.ps1", "stack-activate.ps1", "watchdog-install-transaction.ps1"]) fs.copyFileSync(path.join(__dirname, file), path.join(scriptDir, file));
     write(path.join(scriptDir, "watchdog-control-core.ps1"), controlFixture);
+    fs.copyFileSync(path.join(__dirname, "stack-database-path.cjs"), path.join(scriptDir, "stack-database-path.cjs"));
+    fs.copyFileSync(path.join(__dirname, "stack-hermes-source.py"), path.join(scriptDir, "stack-hermes-source.py"));
     write(path.join(scriptDir, "devspace-watchdog-bootstrap.ps1"), bootstrapFixture);
     write(path.join(installDir, "devspace-watchdog-bootstrap.ps1"), bootstrapFixture);
     write(path.join(scriptDir, "install-devspace-watchdog.ps1"), "param() ");
@@ -143,9 +145,12 @@ const remoteFixture = [
     runGit(["-C", authorRoot, "init", "-b", "codex/windows-watchdog-tray-control-center"]);
     runGit(["-C", authorRoot, "config", "user.name", "fixture"]); runGit(["-C", authorRoot, "config", "user.email", "fixture@example.invalid"]);
     const sourceFiles = {
-      "package.json": { name: "@waishnav/devspace", version: "1.0.0", scripts: { build: "node -e \"process.exit(0)\"", test: "node -e \"process.exit(0)\"", "test:windows-watchdog": "node -e \"process.exit(0)\"" } },
-      "package-lock.json": { name: "@waishnav/devspace", version: "1.0.0", lockfileVersion: 3, requires: true, packages: { "": { name: "@waishnav/devspace", version: "1.0.0" } } },
+      "package.json": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.0", scripts: { build: "node -e \"process.exit(0)\"", test: "node -e \"process.exit(0)\"", "test:windows-watchdog": "node -e \"process.exit(0)\"" } },
+      "package-lock.json": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.0", lockfileVersion: 3, requires: true, packages: { "": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.0" } } },
       "dist/cli.js": "console.log('active');",
+      "dist/config.js": `exports.loadConfig = () => ({stateDir: ${JSON.stringify(path.join(root, "data"))} });`,
+      "dist/user-config.js": `exports.devspaceConfigDir = () => ${JSON.stringify(installDir)};`,
+      "dist/db/client.js": "exports.databasePath = dir => require('node:path').join(dir, 'devspace.sqlite');",
       "scripts/windows/devspace-stack-setup.cjs": "// management",
       "scripts/windows/stack-management.cjs": "// management",
       "scripts/windows/stack-host-management.ps1": "# management",
@@ -157,7 +162,7 @@ const remoteFixture = [
     const initialHead = gitRun(authorRoot, ["rev-parse", "HEAD"]);
     runGit(["-C", authorRoot, "remote", "add", "origin", remoteRoot]); runGit(["-C", authorRoot, "push", "origin", "HEAD:codex/windows-watchdog-tray-control-center"]);
     write(path.join(authorRoot, "package.json"), { ...sourceFiles["package.json"], version: "1.0.1" });
-    write(path.join(authorRoot, "package-lock.json"), { ...sourceFiles["package-lock.json"], version: "1.0.1", packages: { "": { name: "@waishnav/devspace", version: "1.0.1" } } });
+    write(path.join(authorRoot, "package-lock.json"), { ...sourceFiles["package-lock.json"], version: "1.0.1", packages: { "": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.1" } } });
     write(path.join(authorRoot, "dist/cli.js"), "console.log('candidate');");
     runGit(["-C", authorRoot, "add", "."]); runGit(["-C", authorRoot, "commit", "-m", "candidate"]);
     const latestHead = gitRun(authorRoot, ["rev-parse", "HEAD"]);
@@ -185,11 +190,28 @@ const remoteFixture = [
       "def build_editable(wheel_directory, config_settings=None, metadata_directory=None): return build_wheel(wheel_directory, config_settings, metadata_directory)",
     ].join("\n"));
     write(path.join(hermesAuthorRoot, "hermes_cli", "__init__.py"), "");
+    write(path.join(hermesAuthorRoot, "tools", "__init__.py"), "");
+    for (const name of ["file_tools", "memory_tool", "terminal_tool"]) write(path.join(hermesAuthorRoot, "tools", name + ".py"), "");
     write(path.join(hermesAuthorRoot, "hermes_cli", "main.py"), "import sys\ndef main():\n    if '--version' in sys.argv: print('hermes-agent 0.1.0')\n    elif '--help' in sys.argv: print('Usage: hermes-agent [OPTIONS]')\nif __name__ == '__main__': main()\n");
-    write(path.join(hermesAuthorRoot, "pytest.py"), "if __name__ == '__main__': print('1 passed')\n");
+    write(path.join(hermesAuthorRoot, "pytest.py"), [
+      "import os",
+      "from pathlib import Path",
+      "home = Path(os.environ['HERMES_HOME'])",
+      "assert home.resolve() == Path(__file__).resolve().parent.parent / 'validation-home'",
+      "assert all(os.environ[key] == str(home) for key in ('HOME','USERPROFILE','LOCALAPPDATA','APPDATA','TEMP','TMP'))",
+      "assert not any(key in os.environ for key in ('OPENAI_API_KEY','HERMES_GPT_OWNER_ACTIVE','PYTHONPATH'))",
+      "assert os.environ['HERMES_DISABLE_LAZY_INSTALLS'] == '1'",
+      "assert os.environ['HERMES_HTTP_TEST'] == '1'",
+      "(home / 'fixture-test-ran').write_text('isolated')",
+      "print('1 passed')",
+    ].join("\n"));
     write(path.join(hermesAuthorRoot, "tests", "test_smoke.py"), "def test_smoke():\n    assert True\n");
     runGit(["-C", hermesAuthorRoot, "add", "."]); runGit(["-C", hermesAuthorRoot, "commit", "-m", "hermes-agent fixture"]);
     const hermesLatestHead = gitRun(hermesAuthorRoot, ["rev-parse", "HEAD"]);
+    const releaseFile = path.join(scriptDir, "stack-release-manifest.json");
+    const release = JSON.parse(fs.readFileSync(releaseFile, "utf8"));
+    release.components["hermes-agent"] = { repository: "NousResearch/hermes-agent", version: "0.1.0", revision: hermesLatestHead, ref: "main", updateBranch: "main" };
+    write(releaseFile, release);
     runGit(["-C", hermesAuthorRoot, "remote", "add", "origin", hermesRemoteRoot]); runGit(["-C", hermesAuthorRoot, "push", "origin", "HEAD:main"]);
     runGit(["clone", remoteRoot, activeRoot]); runGit(["-C", activeRoot, "checkout", "-B", "codex/windows-watchdog-tray-control-center", initialHead]);
     runGit(["-C", activeRoot, "remote", "set-url", "origin", "https://github.com/davidxyuan/devspace.git"]);
@@ -200,6 +222,7 @@ const remoteFixture = [
     const pythonPath = execFileSync("where.exe", ["python.exe"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
     const oldHermesRoot = path.join(root, "old-hermes"), oldHermesServer = path.join(oldHermesRoot, "server.py");
     write(path.join(oldHermesRoot, "pyproject.toml"), "[project]\nname = \"hermes-gpt\"\nversion = \"0.5.0\"\n"); write(oldHermesServer, "# previous Hermes service fixture\n");
+    write(oldHermesServer, "import os,sys\nfrom pathlib import Path\ndef find_hermes_root():\n    value=os.environ['HERMES_AGENT_ROOT']\n    if not value: raise RuntimeError('invalid source')\n    return Path(value).resolve()\nHERMES_ROOT=find_hermes_root()\nsys.path.insert(0,str(HERMES_ROOT))\nfrom tools import file_tools,memory_tool,terminal_tool\ndef require_imports(): pass\n");
     const config = { stateDir: installDir, cliPath: path.join(activeRoot, "dist", "cli.js"), managementPackageRoot: activeRoot, nodePath: process.execPath, devspaceEnabled: true, hermesEnabled: true, hermesPython: pythonPath, hermesServer: oldHermesServer, hermesWorkingDirectory: oldHermesRoot, hermesPort: 18903, port: 18901, publicBaseUrl: "https://fixture.example.invalid", machineSlug: "component-e2e", routerPort: 18902 };
     write(configPath, config); write(path.join(installDir, "config.json"), { allowedRoots: [root] }); write(path.join(installDir, "auth.json"), { ownerToken: "fixture-owner" }); write(path.join(installDir, "watchdog-tray-state.json"), { desired: { devspace: "running", hermes: "running" } });
     fs.writeFileSync(serviceState, "start|" + oldHermesServer + "\n");
@@ -211,6 +234,7 @@ const remoteFixture = [
     const gitDir = path.dirname(git);
     const minimalPath = [gitDir, path.dirname(process.execPath), path.join(process.env.SystemRoot || "C:\\Windows", "System32"), path.join(process.env.SystemRoot || "C:\\Windows", "System32", "Wbem")].join(path.delimiter);
     const env = cleanEnv({ NODE_OPTIONS: "--require \"" + preload.replaceAll("\\", "/") + "\"", DEVSPACE_STACK_PACKAGE_ROOT: packageRoot, USERPROFILE: root, HOME: root, APPDATA: path.join(root, "roaming"), LOCALAPPDATA: path.join(root, "local"), HERMES_HOME: path.join(root, "local", "hermes"), PIP_CACHE_DIR: path.join(root, "pip-cache"), PSModuleAnalysisCachePath: path.join(root, "ps-module-cache"), PATH: minimalPath, GIT_CONFIG_GLOBAL: gitConfig, STACK_E2E_DEV_LATEST: latestHead, STACK_E2E_HERMES_LATEST: hermesLatestHead, STACK_E2E_CONFIG_PATH: configPath, STACK_E2E_SERVICE_STATE: serviceState, STACK_E2E_BOOTSTRAP_STATE: bootstrapState, STACK_E2E_FORCE_ROLLBACK_FAILURE: forceRollbackFailure });
+    Object.assign(env, { OPENAI_API_KEY: "fixture-parent-key", HERMES_GPT_OWNER_ACTIVE: "1" });
     server = await startServer(path.join(scriptDir, "devspace-stack-setup.cjs"), installDir, env);
     await until(async () => (await request(server.base, "/api/components")).data?.components?.length === 12, "initial installed inventory");
     const refresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "component-refresh-e2e" } });
@@ -225,8 +249,13 @@ const remoteFixture = [
     assert.equal(action.status, 202, action.text);
     await until(() => jobDone(installDir, action.data.jobId), "full component action worker");
     const finished = jobs.readJob(installDir, action.data.jobId);
+    assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), `activation did not reach the rollback path: ${JSON.stringify(finished)}`);
+    const stagedAgent = path.join(installDir, "managed", "hermes-agent");
+    const stagedDirs = fs.readdirSync(stagedAgent, { withFileTypes: true }).filter(entry => entry.isDirectory());
+    assert.equal(stagedDirs.length, 1);
+    assert.equal(fs.readFileSync(path.join(stagedAgent, stagedDirs[0].name, "validation-home", "fixture-test-ran"), "utf8"), "isolated");
+    assert.equal(fs.existsSync(path.join(root, "local", "hermes", "fixture-test-ran")), false);
     assert.equal(finished.phase, "failed", JSON.stringify(finished));
-    assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), `activation failure did not report the rollback result: ${JSON.stringify(finished)}`);
     assert.deepEqual(fs.readFileSync(configPath), beforeConfig, "failed candidate did not restore configuration bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), beforeAuth, "failed candidate changed auth bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), beforeState, "failed candidate changed tray state bytes");

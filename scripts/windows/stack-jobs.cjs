@@ -106,7 +106,7 @@ async function startWorker({ installDir, packageRoot, scriptDir, type, input = {
   const capsule = path.join(managementDir(installDir), "workers", id, "windows");
   fs.mkdirSync(capsule, { recursive: true });
   for (const file of fs.readdirSync(scriptDir, { withFileTypes: true })) {
-    if (file.isFile() && /\.(?:ps1|cjs|html|json|vbs)$/.test(file.name) && !file.name.includes(".test.")) fs.copyFileSync(path.join(scriptDir, file.name), path.join(capsule, file.name));
+    if (file.isFile() && /\.(?:ps1|cjs|py|html|json|vbs)$/.test(file.name) && !file.name.includes(".test.")) fs.copyFileSync(path.join(scriptDir, file.name), path.join(capsule, file.name));
   }
   const job = { id, type, componentId: input.componentId || null, action: input.action || null, requestId: input.requestId || null,
     phase: "queued", step: "Acquire operation ownership", startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, result: null, error: null, lines: [] };

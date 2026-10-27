@@ -17,7 +17,7 @@ function Get-StackCandidateConfiguration($Config, $Candidate) {
         'devspace' { $service='devspace'; $pathFields['cliPath']=[string]$Candidate.cliPath; if ($Candidate.nodePath) { $pathFields['nodePath']=[string]$Candidate.nodePath } }
         'management' { if ($Candidate.componentId -ne 'devspace-tray-fork') { throw 'Unknown management component.' } }
         'hermes-gpt' { $service='hermes'; $pathFields['hermesPython']=[string]$Candidate.pythonPath; $pathFields['hermesServer']=[string]$Candidate.hermesServer; $next['hermesWorkingDirectory']=$root }
-        'hermes-agent' { $pathFields['hermesAgentExe']=[string]$Candidate.hermesAgentExe; if ($Config.hermesEnabled) { $service='hermes' } }
+        'hermes-agent' { $pathFields['hermesAgentExe']=[string]$Candidate.hermesAgentExe; $next['hermesAgentWorkingDirectory']=$root; if ($Config.hermesEnabled) { $service='hermes' } }
         default { throw "Unsupported staged component kind: $($Candidate.kind)" }
     }
     if ($Candidate.componentId -eq 'devspace-tray-fork') {
@@ -107,37 +107,11 @@ function Get-HermesGatewayServiceDirectory {
 function Test-HermesGatewayLauncherInstalled {
     $serviceDir = Get-HermesGatewayServiceDirectory
     if ($serviceDir -and [IO.Directory]::Exists($serviceDir)) {
-        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
-        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction Stop).Count -gt 0) { return $true }
+        if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction Stop).Count -gt 0) { return $true }
     }
-    try {
-        if (@(Get-ScheduledTask -TaskName 'Hermes_Gateway*' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
-    } catch { }
-    return $false
-}
-
-function Get-HermesGatewayLauncherTransactionPaths {
-    $serviceDir = Get-HermesGatewayServiceDirectory
-    if (-not $serviceDir) { return @() }
-    $paths = @(
-        (Join-Path $serviceDir 'Hermes_Gateway.vbs'),
-        (Join-Path $serviceDir 'Hermes_Gateway.cmd')
-    )
-    if ([IO.Directory]::Exists($serviceDir)) {
-        $paths += @(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-        $paths += @(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-    }
-    return @($paths | Where-Object { $_ } | Select-Object -Unique)
-}
-
-function Refresh-HermesAgentGatewayLauncher([string]$AgentExe) {
-    $agentExePath = [IO.Path]::GetFullPath($AgentExe)
-    if (-not [IO.File]::Exists($agentExePath)) { throw 'Hermes Agent executable is missing while refreshing the gateway launcher.' }
-    $python = Join-Path (Split-Path $agentExePath -Parent) 'python.exe'
-    if (-not [IO.File]::Exists($python)) { throw 'Hermes Agent Python runtime is missing while refreshing the gateway launcher.' }
-    $output = & $python -c "from hermes_cli.gateway_windows import _write_task_script; print(_write_task_script())" 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Hermes Agent gateway launcher refresh failed: $($output -join ' ')" }
-    return $true
+    # Query failure is unknown, not evidence that no gateway is installed.
+    return @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'Hermes_Gateway*' }).Count -gt 0
 }
 
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
@@ -150,8 +124,6 @@ $wasRunning = $false
 $startCandidate = $false
 $hostWasRunning = $false
 $candidateActivated = $false
-$gatewayLauncherRefreshRequired = $false
-$gatewayLauncherRefreshed = $false
 $config = $null
 $change = $null
 $phase = 'initialization'
@@ -160,6 +132,33 @@ try {
     if (-not $config -or [IO.Path]::GetFullPath([string]$config.stateDir) -ne $InstallDir) { throw 'Installed configuration identity is invalid.' }
     $candidate = Get-Content -LiteralPath $CandidatePath -Raw | ConvertFrom-Json
     $change = Get-StackCandidateConfiguration $config $candidate
+    if ($candidate.kind -eq 'hermes-agent') {
+        $phase = 'verify gateway lifecycle before stopping services'
+        foreach ($agentRoot in @([string]$candidate.root,[string]$config.hermesAgentWorkingDirectory)) {
+            if ($agentRoot -and (Test-Path -LiteralPath (Join-Path $agentRoot 'pm\lock.json') -ErrorAction Stop)) {
+                throw 'Hermes Agent PM upgrade/rollback lifecycle is not supported; blocked before stopping services.'
+            }
+        }
+        # shortcut: the transaction owns GPT, not gateway; block until gateway quiesce/rollback is implemented.
+        if (Test-HermesGatewayLauncherInstalled) { throw 'Hermes Agent gateway lifecycle is not covered by this update transaction; blocked before stopping services. Existing gateway launchers and supervision are preserved.' }
+    }
+    if ($candidate.kind -in @('hermes-gpt','hermes-agent') -and $change.config.hermesEnabled) {
+        $phase = 'verify Hermes Agent source before stopping services'
+        & ([string]$change.config.hermesPython) (Join-Path $PSScriptRoot 'stack-hermes-source.py') ([string]$change.config.hermesServer) ([string]$change.config.hermesAgentWorkingDirectory)
+        if ($LASTEXITCODE -ne 0) { throw 'Hermes GPT/Agent source or dependencies are incompatible; update is blocked before stopping services.' }
+    }
+    $databasePath = $null
+    if ($candidate.kind -eq 'devspace') {
+        $resolver = Join-Path $PSScriptRoot 'stack-database-path.cjs'
+        $newPathOutput = & ([string]$change.config.nodePath) $resolver ([string]$change.config.cliPath) $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw 'Candidate does not support the database rollback contract; update is blocked.' }
+        $databasePath = [string](($newPathOutput | ConvertFrom-Json).databasePath)
+        if ([string]$config.cliPath) {
+            $oldPathOutput = & ([string]$config.nodePath) $resolver ([string]$config.cliPath) $InstallDir
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the installed DevSpace database path; update is blocked.' }
+            if (-not $databasePath -or $databasePath -ne [string](($oldPathOutput | ConvertFrom-Json).databasePath)) { throw 'Candidate changes the DevSpace database location; an explicit data migration is required.' }
+        } elseif ($candidate.action -ne 'install' -or -not $databasePath) { throw 'Previous DevSpace runtime identity is missing.' }
+    }
     if ($change.service) {
         $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
         $layer = Get-WatchdogProcessLayer $change.service $config $processes
@@ -175,7 +174,6 @@ try {
     $legacyProcesses = @(Get-InstallLegacyProcessSnapshots $InstallDir)
     $logicalQuiesceMarker = Join-Path ([string]$config.stateDir) 'legacy-watchdog-poller.disabled'
     $transactionPaths = @($configPath,(Join-Path $InstallDir 'config.json'),(Join-Path $InstallDir 'auth.json'),(Join-Path $InstallDir 'watchdog-tray-state.json'),$logicalQuiesceMarker)
-    if ($candidate.kind -eq 'hermes-agent') { $transactionPaths += @(Get-HermesGatewayLauncherTransactionPaths) }
     $phase = 'start transaction'
     $transaction = Start-InstallTransaction $InstallDir $transactionPaths $tasks $legacyProcesses
     $phase = 'quiesce legacy tasks'
@@ -196,19 +194,13 @@ try {
         Assert-StackServiceStopped $change.service $config
         $serviceStopped = $true
     }
+    if ($databasePath) {
+        $phase = 'snapshot stopped DevSpace database'
+        Add-InstallDatabaseSnapshot $transaction $databasePath
+    }
     $phase = 'write candidate configuration'
     Write-WatchdogAtomicJson $configPath $change.config 40
     $candidateActivated = $true
-    if ($candidate.kind -eq 'hermes-agent') {
-        $gatewayLauncherRefreshRequired = Test-HermesGatewayLauncherInstalled
-        if ($gatewayLauncherRefreshRequired) {
-            # Refresh the generated Scheduled Task/Startup launcher from the newly activated Agent.
-            # This keeps Hermes_Gateway.vbs/.cmd aligned with the candidate venv and launcher logic.
-            $gatewayLauncherRefreshed = $true
-            $phase = 'refresh Hermes Agent gateway launcher'
-            [void](Refresh-HermesAgentGatewayLauncher ([string]$candidate.hermesAgentExe))
-        }
-    }
     if ($startCandidate) {
         $phase = "start service $($change.service)"
         $result = Start-WatchdogManagedService $change.service $configPath $change.config
@@ -249,6 +241,7 @@ try {
                 & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir
             }
             if ($serviceStopped -and $candidateActivated -and $change.service) {
+                Disable-InstallLegacyTasks $transaction -LogicalQuiesceMarkerPath $logicalQuiesceMarker
                 [void](Stop-StackServiceIfPresent $change.service $change.config 'Pre-restore candidate cleanup')
             }
             Undo-InstallTransaction $transaction
@@ -257,11 +250,6 @@ try {
             # before the previous service is allowed to reclaim its fixed port.
             if ($serviceStopped -and $candidateActivated -and $change.service) {
                 [void](Stop-StackServiceIfPresent $change.service $change.config 'Post-restore candidate cleanup')
-            }
-            if ($gatewayLauncherRefreshed -and $config.hermesAgentExe) {
-                # The launcher lives outside the install transaction. Regenerate it from the restored
-                # Agent so a failed update cannot leave a candidate VBS/CMD pointing at the wrong venv.
-                [void](Refresh-HermesAgentGatewayLauncher ([string]$config.hermesAgentExe))
             }
             Restart-InstallLegacyProcesses $transaction
             if ($serviceStopped -and $wasRunning) {

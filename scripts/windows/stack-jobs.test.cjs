@@ -162,7 +162,7 @@ process.stdout.write("installer parent exiting\\n");
 async function testSetupHttp(root) {
   const packageRoot=path.join(root,"package"), scriptDir=path.join(packageRoot,"scripts","windows"), installDir=path.join(root,"install");
   fs.mkdirSync(scriptDir,{recursive:true});fs.mkdirSync(installDir,{recursive:true});
-  for(const file of ["devspace-stack-setup.cjs","devspace-stack-setup.html","stack-jobs.cjs","stack-operation.ps1","stack-management.cjs","stack-setup-apply.cjs","stack-apply-parameters.ps1"])
+  for(const file of ["devspace-stack-setup.cjs","devspace-stack-setup.html","stack-jobs.cjs","stack-operation.ps1","stack-management.cjs","stack-node-build.cjs","stack-release-policy.cjs","stack-release-manifest.json","stack-setup-apply.cjs","stack-apply-parameters.ps1"])
     fs.copyFileSync(path.join(__dirname,file),path.join(scriptDir,file));
   fs.writeFileSync(path.join(packageRoot,"package.json"),JSON.stringify({name:"fixture-stack",version:"1.0.0"}));
   fs.mkdirSync(path.join(packageRoot,"dist"),{recursive:true});

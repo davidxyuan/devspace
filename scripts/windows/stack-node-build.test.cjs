@@ -1,0 +1,26 @@
+"use strict";
+const assert = require("node:assert/strict");
+const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const { buildNodeCandidate, devspaceEntrypoint } = require("./stack-node-build.cjs");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "node-contract-"));
+const write = pkg => fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
+(async () => {
+  const pkg = { name: "@waishnav/devspace", bin: { devspace: "bin/devspace.js" }, scripts: { build: "node build.js", test: "node test.js" } };
+  write(pkg);
+  fs.mkdirSync(path.join(root, "bin")); fs.writeFileSync(path.join(root, pkg.bin.devspace), "// fixture");
+  assert.equal(devspaceEntrypoint(root), path.join(root, pkg.bin.devspace));
+  write({ ...pkg, bin: { devspace: "../foreign.js" } });
+  assert.throws(() => devspaceEntrypoint(root), /entrypoint/);
+  write(pkg);
+  const options = { root, stage: root, node: process.execPath, npm: "fixture", invoke: async () => { throw new Error("must not run an ambiguous contract"); } };
+  await assert.rejects(buildNodeCandidate(options), /鎖檔/);
+  fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'");
+  await assert.rejects(buildNodeCandidate(options), /packageManager/);
+  write({ ...pkg, packageManager: "npm@11.9.0" });
+  await assert.rejects(buildNodeCandidate(options), /鎖檔不符/);
+  write({ ...pkg, packageManager: "pnpm@11.25.0" });
+  await assert.rejects(buildNodeCandidate({ ...options, invoke: async () => ({ stdout: "11.24.0" }) }), /工具版本/);
+  fs.writeFileSync(path.join(root, "package-lock.json"), "{}");
+  await assert.rejects(buildNodeCandidate(options), /單一鎖檔/);
+  console.log("Node candidate contracts reject unsafe entrypoints, ambiguous locks and manager drift.");
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -22,15 +22,10 @@ try {
     [void][IO.Directory]::CreateDirectory($installDir)
     [void][IO.Directory]::CreateDirectory($candidateRoot)
     [void][IO.Directory]::CreateDirectory((Split-Path $oldCli -Parent))
-    foreach ($name in @('stack-activate.ps1', 'stack-operation.ps1', 'watchdog-control-core.ps1', 'watchdog-install-transaction.ps1')) {
+    foreach ($name in @('stack-activate.ps1', 'stack-operation.ps1', 'watchdog-control-core.ps1', 'watchdog-install-transaction.ps1', 'stack-hermes-source.py')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $scriptRoot $name)
     }
     $activationSource = [IO.File]::ReadAllText((Join-Path $scriptRoot 'stack-activate.ps1'))
-    Assert-StackE2E ($activationSource -match 'function Refresh-HermesAgentGatewayLauncher') 'Hermes Agent activation is missing the gateway launcher refresh helper.'
-    Assert-StackE2E ($activationSource -match 'function Get-HermesGatewayLauncherTransactionPaths') 'Hermes Agent activation is missing gateway-launcher transaction backup discovery.'
-    Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+\$transactionPaths \+= @\(Get-HermesGatewayLauncherTransactionPaths\)') 'Hermes Agent activation does not include gateway launchers in the rollback transaction.'
-    Assert-StackE2E ($activationSource -match 'candidate\.kind -eq ''hermes-agent''[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$candidate\.hermesAgentExe\)') 'Hermes Agent activation does not refresh the installed gateway launcher.'
-    Assert-StackE2E ($activationSource -match 'Undo-InstallTransaction[\s\S]+Refresh-HermesAgentGatewayLauncher \(\[string\]\$config\.hermesAgentExe\)') 'Hermes Agent rollback does not regenerate the launcher from the restored runtime.'
     Assert-StackE2E ($activationSource -match 'function Stop-StackServiceIfPresent') 'Rollback is missing bounded candidate-process cleanup.'
     Assert-StackE2E ($activationSource -match '\$task\.name -notin \$transaction\.disabledTasks') 'Activation must not rewrite legacy tasks that were only logically quiesced because their ACL blocked task changes.'
     Assert-StackE2E (([regex]::Matches($activationSource, 'Stop-StackServiceIfPresent \$change\.service \$change\.config')).Count -eq 2) 'Rollback must sweep the candidate service both before and after transaction restore.'
@@ -41,7 +36,7 @@ try {
         [IO.File]::WriteAllText($path, '# candidate management fixture')
     }
     [IO.File]::WriteAllText($oldCli, '# original CLI')
-    [IO.File]::WriteAllText((Join-Path $scriptRoot 'devspace-watchdog-bootstrap.ps1'), '[CmdletBinding()] param([string]$Mode, [string]$ConfigPath, [string]$RuntimeDirectory)')
+    [IO.File]::WriteAllText((Join-Path $scriptRoot 'devspace-watchdog-bootstrap.ps1'), '[CmdletBinding()] param([string]$Mode, [string]$ConfigPath, [string]$RuntimeDirectory); $global:StackE2EControlEvents += $Mode')
     $installer = Join-Path $candidateRoot 'fail-installer.ps1'
     [IO.File]::WriteAllText($installer, @'
 [CmdletBinding()]
@@ -62,7 +57,10 @@ throw 'forced activation failure'
         Actions=@([pscustomobject]@{Execute=$powershellExe; Arguments=(' -NoProfile -File "' + $taskScript + '" -ConfigPath "' + $taskConfig + '"')})
     }
     $global:StackE2ETaskEvents = @()
-    function global:Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); if ($TaskName -and $TaskName -ne $global:StackE2ETask.TaskName) { return @() }; return $global:StackE2ETask }
+    $global:StackE2EControlEvents = @()
+    $global:StackE2EGatewayTask = $null
+    $global:StackE2EQueryFailure = $false
+    function global:Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); if ($global:StackE2EQueryFailure) { throw 'fixture task inventory unavailable' }; if ($global:StackE2EGatewayTask) { return $global:StackE2EGatewayTask }; if ($TaskName -and $TaskName -ne $global:StackE2ETask.TaskName) { return @() }; return $global:StackE2ETask }
     function global:Export-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); return '<Task><Settings><Enabled>true</Enabled></Settings></Task>' }
     function global:Disable-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); $global:StackE2ETask.Settings.Enabled=$false; $global:StackE2ETaskEvents += 'disable' }
     function global:Enable-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); $global:StackE2ETask.Settings.Enabled=$true; $global:StackE2ETaskEvents += 'enable' }
@@ -86,9 +84,87 @@ throw 'forced activation failure'
     Assert-StackE2E ([IO.File]::Exists((Join-Path $installDir 'candidate-touched.txt'))) 'Failure fixture did not run after candidate activation.'
     Assert-StackE2E (([IO.File]::ReadAllText((Join-Path $installDir 'candidate-touched.txt'))) -match 'allowLegacyQuiesce=True') 'Stack activation did not forward supported legacy-task quiesce capability to the Tray installer.'
     Assert-StackE2E (-not [IO.File]::Exists((Join-Path $installDir 'stack-management\operation.lock')) -or [IO.File]::ReadAllText((Join-Path $installDir 'stack-management\operation.lock')) -eq '') 'Operation ownership was not released after rollback.'
+    # Activate a stopped Agent through the real entry point. Its source directory
+    # must follow the executable so the next inventory/update checks the new tree.
+    $oldHermesHome = $env:HERMES_HOME
+    $env:HERMES_HOME = Join-Path $testRoot 'hermes-home'
+    try {
+        $oldAgentRoot = Join-Path $testRoot 'old-agent'
+        $agentExe = Join-Path $candidateRoot 'venv\Scripts\hermes.exe'
+        [void][IO.Directory]::CreateDirectory((Split-Path $agentExe -Parent))
+        [IO.File]::WriteAllText($agentExe, '# stopped candidate Agent')
+        $config['hermesAgentWorkingDirectory'] = $oldAgentRoot
+        $config['hermesEnabled'] = $false
+        [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 20))
+        $candidate = @{kind='hermes-agent'; componentId='hermes-agent'; action='update'; root=$candidateRoot; runtimeRoot=$candidateRoot; hermesAgentExe=$agentExe}
+        [IO.File]::WriteAllText($candidatePath, ($candidate | ConvertTo-Json -Depth 20))
+        # Existing gateway launchers are outside the GPT service transaction. A failed
+        # refresh must not stop services, overwrite their custom supervision, or enter rollback.
+        $gatewayDir = Join-Path $env:HERMES_HOME 'gateway-service'
+        [void][IO.Directory]::CreateDirectory($gatewayDir)
+        $beforeGatewayConfig = [IO.File]::ReadAllText($configPath)
+        $beforeGatewayTasks = $global:StackE2ETaskEvents.Count
+        $beforeGatewayControl = $global:StackE2EControlEvents.Count
+        foreach ($extension in @('vbs','cmd')) {
+            $gatewayLauncher = Join-Path $gatewayDir "Hermes_Gateway.$extension"
+            [IO.File]::WriteAllText($gatewayLauncher, 'existing bounded supervisor')
+            $gatewayRejected = $null
+            try { & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath } catch { $gatewayRejected = $_ }
+            Assert-StackE2E ($null -ne $gatewayRejected -and $gatewayRejected.Exception.Message -match 'gateway lifecycle.*before stopping services') "Existing gateway was not rejected in preflight: $gatewayRejected"
+            Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeGatewayConfig) 'Gateway rejection changed configuration.'
+            Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeGatewayTasks) 'Gateway rejection changed a scheduled task.'
+            Assert-StackE2E ($global:StackE2EControlEvents.Count -eq $beforeGatewayControl) 'Gateway rejection reached the control host.'
+            Assert-StackE2E ([IO.File]::ReadAllText($gatewayLauncher) -eq 'existing bounded supervisor') 'Gateway rejection overwrote the old supervisor.'
+            [IO.File]::Delete($gatewayLauncher)
+        }
+        foreach ($gatewayState in @('Running','Ready','Disabled','unavailable')) {
+            $global:StackE2EGatewayTask = [pscustomobject]@{TaskName='Hermes_Gateway_profile';State=$gatewayState}
+            $global:StackE2EQueryFailure = $gatewayState -eq 'unavailable'
+            $gatewayRejected = $null
+            try { & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath } catch { $gatewayRejected = $_ }
+            Assert-StackE2E ($null -ne $gatewayRejected -and $gatewayRejected.Exception.Message -match 'gateway lifecycle|task inventory unavailable') "Gateway task $gatewayState was not blocked before activation: $gatewayRejected"
+            Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeGatewayConfig) 'Gateway task rejection changed configuration.'
+            Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeGatewayTasks) 'Gateway task rejection changed a scheduled task.'
+            Assert-StackE2E ($global:StackE2EControlEvents.Count -eq $beforeGatewayControl) 'Gateway task rejection reached the control host.'
+        }
+        $global:StackE2EGatewayTask = $null
+        $global:StackE2EQueryFailure = $false
+        # Direct activation must not bypass the PM rejection in candidate preparation.
+        foreach ($pmRoot in @($candidateRoot,$oldAgentRoot)) {
+            $pmDir = Join-Path $pmRoot 'pm'
+            [void][IO.Directory]::CreateDirectory($pmDir)
+            $pmLock = Join-Path $pmDir 'lock.json'
+            [IO.File]::WriteAllText($pmLock, '{}')
+            $pmRejected = $null
+            try { & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath } catch { $pmRejected = $_ }
+            Assert-StackE2E ($null -ne $pmRejected -and $pmRejected.Exception.Message -match 'PM.*before stopping services') "PM lifecycle was not rejected before activation: $pmRejected"
+            Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeGatewayConfig) 'PM rejection changed configuration.'
+            Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeGatewayTasks) 'PM rejection changed scheduled tasks.'
+            Assert-StackE2E ($global:StackE2EControlEvents.Count -eq $beforeGatewayControl) 'PM rejection reached the control host.'
+            [IO.File]::Delete($pmLock)
+        }
+        & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath
+        $afterAgent = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        Assert-StackE2E ($afterAgent.hermesAgentExe -eq $agentExe -and $afterAgent.hermesAgentWorkingDirectory -eq $candidateRoot) 'Agent activation must update its executable and source directory together.'
+        Assert-StackE2E ($afterAgent.custom.keep -eq 'yes') 'Agent activation changed unrelated settings.'
+        # A GPT server that ignores explicit source selection must fail before any task/service stops.
+        $afterAgent.hermesEnabled = $true
+        $afterAgent | Add-Member NoteProperty hermesPython ((Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source)
+        $badServer = Join-Path $candidateRoot 'server.py'
+        [IO.File]::WriteAllText($badServer, '# legacy GPT without a verifiable source contract')
+        $afterAgent | Add-Member NoteProperty hermesServer $badServer
+        [IO.File]::WriteAllText($configPath, ($afterAgent | ConvertTo-Json -Depth 20))
+        $beforeRejectedConfig = [IO.File]::ReadAllText($configPath)
+        $beforeRejectedTasks = $global:StackE2ETaskEvents.Count
+        $rejected = $null
+        try { & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath } catch { $rejected = $_ }
+        Assert-StackE2E ($null -ne $rejected -and $rejected.Exception.Message -match 'Hermes source/import preflight failed|source or dependencies are incompatible') "Incompatible Hermes source was not blocked in preflight: $rejected"
+        Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeRejectedConfig) 'Rejected source changed configuration.'
+        Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeRejectedTasks) 'Rejected source stopped or changed a scheduled task.'
+    } finally { $env:HERMES_HOME = $oldHermesHome }
     Write-Host 'stack-activate: real candidate activation failure restored config, task state and operation ownership.'
 } finally {
-    Remove-Variable StackE2ETask,StackE2ETaskEvents -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable StackE2ETask,StackE2ETaskEvents,StackE2EControlEvents,StackE2EGatewayTask,StackE2EQueryFailure -Scope Global -ErrorAction SilentlyContinue
     foreach ($name in @('Get-ScheduledTask','Export-ScheduledTask','Disable-ScheduledTask','Enable-ScheduledTask','Stop-ScheduledTask','Start-ScheduledTask','Get-CimInstance','Get-NetTCPConnection')) { Remove-Item "function:\global:$name" -ErrorAction SilentlyContinue }
     $resolved = [IO.Path]::GetFullPath($testRoot)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase) -and [IO.Directory]::Exists($resolved)) { Remove-Item -LiteralPath $resolved -Recurse -Force }

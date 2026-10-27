@@ -7,16 +7,21 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+function New-FreshVmWorkRoot([string]$Path) {
+    $Path = [IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $Path) { throw "Fresh-VM work path already exists; preserved: $Path" }
+    New-Item -ItemType Directory -Path $Path -ErrorAction Stop | Out-Null
+    return $Path
+}
+
 if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') { throw 'This test requires Windows.' }
 if ($env:GITHUB_ACTIONS -ne 'true' -and $env:DEVSPACE_ALLOW_FRESH_VM_TEST -ne '1') {
     throw 'Fresh-VM test mutates the current Windows user profile. Run only on an ephemeral VM/Windows Sandbox, or set DEVSPACE_ALLOW_FRESH_VM_TEST=1 explicitly.'
 }
 
 $ZipPath = [IO.Path]::GetFullPath($ZipPath)
-$WorkRoot = [IO.Path]::GetFullPath($WorkRoot)
 if (-not [IO.File]::Exists($ZipPath)) { throw "One-Click ZIP was not found: $ZipPath" }
-if ([IO.Directory]::Exists($WorkRoot)) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
-[void][IO.Directory]::CreateDirectory($WorkRoot)
+$WorkRoot = New-FreshVmWorkRoot $WorkRoot
 
 $extractRoot = Join-Path $WorkRoot 'extracted'
 $freshHome = Join-Path $WorkRoot 'fresh-home'
@@ -156,6 +161,8 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Fresh package npm ci failed with exit code $LASTEXITCODE." }
             & $nodePath (Join-Path $packageRoot 'dist\cli.js') help | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Fresh package DevSpace CLI probe failed with exit code $LASTEXITCODE." }
+            & $nodePath (Join-Path $packageRoot 'scripts\windows\stack-runtime-smoke.cjs') $packageRoot
+            if ($LASTEXITCODE -ne 0) { throw "Fresh packaged runtime startup failed with exit code $LASTEXITCODE." }
         } finally { Pop-Location }
     } finally {
         if ($null -eq $previousNodeSystemCa) { Remove-Item Env:NODE_USE_SYSTEM_CA -ErrorAction SilentlyContinue }
@@ -284,6 +291,10 @@ finally {
         & taskkill.exe /PID $setupProcess.Id /T /F | Out-Null
     }
     if (-not $KeepArtifacts -and [IO.Directory]::Exists($WorkRoot)) {
+        $workItem = Get-Item -LiteralPath $WorkRoot -Force
+        if ($workItem.FullName -ne $WorkRoot -or ($workItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Fresh-VM work path changed; preserved: $WorkRoot"
+        }
         Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

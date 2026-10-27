@@ -38,7 +38,7 @@ const forkRoot = path.join(temp, "fork");
 const forkBranch = "codex/windows-watchdog-tray-control-center";
 const managementFiles = Object.fromEntries(["devspace-stack-setup.cjs", "stack-management.cjs", "stack-host-management.ps1", "install-devspace-watchdog-tray.ps1"].map(name => [`scripts/windows/${name}`, "// management fixture"]));
 const nextHead = "a".repeat(40);
-let networkCalls = 0, remoteMode = "ok", clock = Date.UTC(2026, 8, 5), compareStatus = "ahead";
+let networkCalls = 0, remoteMode = "ok", clock = Date.UTC(2026, 8, 5), compareStatus = "ahead", pmRelease = false;
 const cache = {};
 const fetch = async (url, options) => {
   networkCalls++;
@@ -46,11 +46,11 @@ const fetch = async (url, options) => {
   if (remoteMode === "offline") throw new Error("sensitive-token-error");
   if (remoteMode === "rate") return { ok: false, status: 429, text: async () => "token=never-return" };
   let body;
-  if (url.includes("registry.npmjs.org")) body = { name: "@waishnav/devspace", version: "1.0.5", dist: { integrity: "sha512-YWJjZA==" }, gitHead: nextHead };
-  else if (url.endsWith("/releases/latest")) body = { tag_name: "v2026.8.31" };
+  if (url.includes("registry.npmjs.org")) body = { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5", dist: { integrity: "sha512-YWJjZA==" }, gitHead: nextHead };
+  else if (url.endsWith("/releases/latest")) body = { tag_name: pmRelease && url.includes("hermes-agent") ? "v0.22.2" : "v2026.8.31" };
   else if (url.includes("/commits/")) body = { sha: nextHead };
   else if (url.includes("/compare/")) body = { status: compareStatus };
-  else if (url.includes("/contents/")) body = { encoding: "base64", content: Buffer.from(url.includes("package.json") ? JSON.stringify({ version: "1.0.5" }) : `version = "${url.includes("hermes-agent") ? "0.21.0" : "0.5.1"}"`).toString("base64") };
+  else if (url.includes("/contents/")) body = { encoding: "base64", content: Buffer.from(url.includes("package.json") ? JSON.stringify({ version: "1.0.5" }) : `version = "${url.includes("hermes-agent") ? pmRelease ? "0.0.0" : "0.21.0" : "0.5.1"}"`).toString("base64") };
   else throw new Error(`Unexpected URL ${url}`);
   return { ok: true, text: async () => JSON.stringify(body) };
 };
@@ -61,10 +61,10 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
 
 (async () => {
   write(nodePath, "node fixture"); write(pythonPath, "python fixture"); write(path.join(toolDir, "node_modules", "npm", "bin", "npm-cli.js"), "npm fixture");
-  write(path.join(packageRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.4" });
+  write(path.join(packageRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.4" });
   write(path.join(packageRoot, "scripts", "windows", "install-devspace-watchdog-tray.ps1"), "# bundled installer");
   write(path.join(packageRoot, "scripts", "windows", "install-devspace-watchdog.ps1"), "# main installer");
-  const forkHead = makeRepo(forkRoot, "davidxyuan/devspace", forkBranch, { ...managementFiles, "package.json": { name: "@waishnav/devspace", version: "1.0.4" }, "dist/cli.js": "console.log('fixture');" });
+  const forkHead = makeRepo(forkRoot, "davidxyuan/devspace", forkBranch, { ...managementFiles, "package.json": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.4" }, "dist/cli.js": "console.log('fixture');" });
   const config = { cliPath: path.join(forkRoot, "dist", "cli.js"), nodePath, hermesPython: pythonPath, ngrokAuthtoken: "SECRET-NGROK", publicBaseUrl: "https://user:SECRET-PASSWORD@example.invalid", custom: { important: true } };
   write(configPath, config); write(path.join(installDir, "config.json"), { allowedRoots: [homeDir] }); write(path.join(installDir, "auth.json"), { ownerToken: "SECRET-OWNER" });
   const beforeConfig = fs.readFileSync(configPath), beforeAuth = fs.readFileSync(path.join(installDir, "auth.json"));
@@ -107,7 +107,8 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   const historicalRun = async (command, args, options = {}) => {
     if (args[0] === "clone") {
       historicalStageRoot = args.at(-1);
-      write(path.join(historicalStageRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.5", scripts: { test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } });
+      write(path.join(historicalStageRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5", scripts: { build: "node build.js", test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } });
+      write(path.join(historicalStageRoot, "package-lock.json"), { lockfileVersion: 3 });
       write(path.join(historicalStageRoot, "dist", "cli.js"), "// migrated candidate");
       for (const [name, contents] of Object.entries(managementFiles)) write(path.join(historicalStageRoot, name), contents);
       write(path.join(historicalStageRoot, "scripts", "windows", "devspace-watchdog-tray-ui.ps1"), "# candidate tray");
@@ -183,7 +184,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   // A separate clean manager checkout must update management files without changing the active DevSpace CLI.
   const managerRoot = path.join(temp, "manager");
   const managerHead = makeRepo(managerRoot, "davidxyuan/devspace", forkBranch, {
-    "package.json": { name: "@waishnav/devspace", version: "1.0.5", scripts: { test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } },
+    "package.json": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5", scripts: { test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } },
     "dist/cli.js": "console.log('manager candidate');",
     "scripts/windows/devspace-stack-setup.cjs": "// manager",
     "scripts/windows/stack-management.cjs": "// manager",
@@ -192,7 +193,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
     "scripts/windows/devspace-watchdog-tray-ui.ps1": "# manager",
   });
   const officialRoot = path.join(temp, "official", "node_modules", "@waishnav", "devspace");
-  write(path.join(officialRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.4" });
+  write(path.join(officialRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.4" });
   write(path.join(officialRoot, "dist", "cli.js"), "// official CLI");
   const mixedConfig = { ...config, cliPath: path.join(officialRoot, "dist", "cli.js"), managementPackageRoot: managerRoot };
   write(configPath, mixedConfig);
@@ -293,6 +294,15 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
     assert.equal(candidate.hermesAgentExe, path.join(path.dirname(agentStageRoot), "venv", "Scripts", "hermes.exe"));
   } });
   assert(agentPipInstallArgs?.includes("-e"), "Hermes Agent candidate install must use editable mode");
+  const pmCommands = [];
+  await assert.rejects(executeComponentAction(agentPlan, { inventoryOptions: base, run: async (command, args, options) => {
+    pmCommands.push(args);
+    const result = await agentRun(command, args, options);
+    if (args[0] === "clone") write(path.join(agentStageRoot, "pm", "lock.json"), { packages: {} });
+    return result;
+  }, activate: async () => assert.fail("PM-owned Agent must not reach the legacy activation path") }), /官方套件管理器.*尚未支援/);
+  assert(!pmCommands.some(args => args[0] === "-m" && ["venv", "pip", "pytest"].includes(args[1])), "PM-owned source must be rejected before legacy environment mutation");
+  assert.deepEqual(fs.readFileSync(configPath), beforeConfig);
   agentSmokeMode = "help";
   await executeComponentAction(agentPlan, { inventoryOptions: base, run: agentRun, activate: async candidate => {
     assert.equal(candidate.agentSmoke, "help");
@@ -300,6 +310,11 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   agentSmokeMode = "invalid";
   failAgentSmoke = true;
   await assert.rejects(executeComponentAction(agentPlan, { inventoryOptions: base, run: agentRun, activate: async () => assert.fail("failed Hermes Agent smoke must not activate") }), /Hermes Agent.*smoke/);
+  pmRelease = true;
+  clock += 16 * 60 * 1000;
+  i = await collect({ checkLatest: true });
+  assert.equal(component(i, "hermes-agent").latest.version, "0.22.2", "release tag identifies the version when upstream metadata is a placeholder");
+  pmRelease = false;
 
   // Credentials embedded in an unrecognized Git remote are neither trusted nor returned.
   git(forkRoot, ["remote", "set-url", "origin", "https://user:SECRET-GIT@github.com/davidxyuan/devspace.git"]);
@@ -321,14 +336,19 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   i = await collect({ checkLatest: true });
   const stagePlan = planComponentAction(request(i, "devspace-tray-fork", "update"), i);
   const commands = [];
-  let stageRoot, mutateDuringStage = false, failCandidateTest = false;
+  let stageRoot, mutateDuringStage = false, failCandidateTest = false, pnpmCandidate = false;
   const stageRun = async (command, args, options = {}) => {
     commands.push({ command, args, cwd: options.cwd });
     if (args[0] === "clone") {
       assert.equal(args.at(-2), "https://github.com/davidxyuan/devspace.git");
       stageRoot = args.at(-1);
       assert.ok(stageRoot.startsWith(path.join(installDir, "managed") + path.sep));
-      write(path.join(stageRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.5", scripts: { test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } });
+      write(path.join(stageRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5", scripts: { build: "node build.js", test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } });
+      if (!pnpmCandidate) write(path.join(stageRoot, "package-lock.json"), { lockfileVersion: 3 });
+      if (pnpmCandidate) {
+        write(path.join(stageRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5", packageManager: "pnpm@11.25.0", scripts: { build: "pnpm run build:app", test: "node test.js", "test:windows-watchdog": "node watchdog-test.js" } });
+        write(path.join(stageRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      }
       for (const [name, contents] of Object.entries(managementFiles)) write(path.join(stageRoot, name), contents);
       write(path.join(stageRoot, "dist", "cli.js"), "console.log('new candidate');");
       write(path.join(stageRoot, "scripts", "windows", "devspace-watchdog-tray-ui.ps1"), "# candidate tray");
@@ -338,6 +358,8 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
     if (args[0] === "-C") { assert.equal(args[1], stageRoot); if (args[2] === "rev-parse") return { stdout: nextHead }; }
     if (args.includes("build") && mutateDuringStage) write(path.join(forkRoot, "new-user-work.txt"), "retain me");
     if (args.includes("test:windows-watchdog") && failCandidateTest) throw Error("candidate watchdog test failed");
+    if (args.includes("pnpm@11.25.0")) write(path.join(args[args.indexOf("--prefix") + 1], "node_modules", "pnpm", "bin", "pnpm.cjs"), "// pinned package manager");
+    if (args[0]?.endsWith("pnpm.cjs") && args[1] === "--version") return { stdout: "11.25.0" };
     return { stdout: "" };
   };
   const staged = await executeComponentAction(stagePlan, { inventoryOptions: base, run: stageRun, activate: async (candidate) => {
@@ -351,6 +373,13 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   assert.ok(commands.some((c) => c.args.includes("--detach")), "checkout is only used in the new candidate directory");
   assert.ok(commands.some((c) => c.args.at(-1) === "test" && c.cwd === stageRoot));
   assert.ok(commands.some((c) => c.args.at(-1) === "test:windows-watchdog" && c.cwd === stageRoot));
+  pnpmCandidate = true;
+  const pnpmStart = commands.length;
+  await executeComponentAction(stagePlan, { inventoryOptions: base, run: stageRun, activate: async () => ({ verified: true }) });
+  const pnpmCommands = commands.slice(pnpmStart);
+  assert.ok(pnpmCommands.some(c => c.args[0]?.endsWith("pnpm.cjs") && c.args.includes("--frozen-lockfile")), "pnpm source must install its frozen lockfile using the declared pnpm version");
+  assert.ok(!pnpmCommands.some(c => c.cwd === stageRoot && c.args.includes("ci")), "pnpm source must not use npm ci");
+  pnpmCandidate = false;
   assert.ok(commands.every((c) => !c.args.includes("pull") && !c.args.includes("reset") && !c.args.includes("stash") && !c.args.includes("--global")));
   failCandidateTest = true;
   await assert.rejects(executeComponentAction(stagePlan, { inventoryOptions: base, run: stageRun, activate: async () => assert.fail("failed candidate must not activate") }), /candidate watchdog test failed/);
@@ -383,14 +412,14 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
     if (args.includes("--prefix")) {
       const prefix = args[args.indexOf("--prefix") + 1];
       assert.ok(prefix.startsWith(path.join(installDir, "managed", "devspace-official") + path.sep));
-      assert.ok(args.includes("@waishnav/devspace@1.0.5"));
-      write(path.join(prefix, "node_modules", "@waishnav", "devspace", "package.json"), { name: "@waishnav/devspace", version: "1.0.5" });
+      assert.ok(args.includes(`@waishnav/devspace@${npmPlan.target.version}`));
+      write(path.join(prefix, "node_modules", "@waishnav", "devspace", "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: npmPlan.target.version });
       write(path.join(prefix, "node_modules", "@waishnav", "devspace", "dist", "cli.js"), "// candidate");
-      write(path.join(prefix, "package-lock.json"), { packages: { "node_modules/@waishnav/devspace": { version: "1.0.5", integrity: badIntegrity ? "sha512-bad" : "sha512-YWJjZA==" } } });
+      write(path.join(prefix, "package-lock.json"), { packages: { "node_modules/@waishnav/devspace": { version: npmPlan.target.version, integrity: badIntegrity ? "sha512-bad" : npmPlan.target.integrity } } });
     }
     return { stdout: "" };
   };
-  await executeComponentAction(npmPlan, { inventoryOptions: base, run: npmRun, activate: async (candidate) => assert.equal(candidate.version, "1.0.5") });
+  await executeComponentAction(npmPlan, { inventoryOptions: base, run: npmRun, activate: async (candidate) => assert.equal(candidate.version, npmPlan.target.version) });
   badIntegrity = true;
   await assert.rejects(executeComponentAction(npmPlan, { inventoryOptions: base, run: npmRun, activate: async () => assert.fail() }), /套件與已核對版本不符/);
   write(configPath, config);
@@ -400,20 +429,31 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   const hermesPlan = planComponentAction(request(i, "hermes-gpt", "install"), i);
   let pythonRoot, failPythonTests = false, missingPythonTests = false;
   const pythonCommands = [];
-  const pythonRun = async (command, args) => {
-    pythonCommands.push({ command, args });
+  const pythonRun = async (command, args, options = {}) => {
+    pythonCommands.push({ command, args, options });
     if (args[0] === "clone") {
       pythonRoot = args.at(-1);
       assert.equal(args.at(-2), "https://github.com/asimons81/hermes-gpt.git");
-      write(path.join(pythonRoot, "pyproject.toml"), '[project]\nname="hermes-gpt"\nversion="0.5.1"');
+      write(path.join(pythonRoot, "pyproject.toml"), `[project]\nname="hermes-gpt"\nversion="${hermesPlan.target.version}"`);
       write(path.join(pythonRoot, "server.py"), "# fixture server");
       write(path.join(pythonRoot, "requirements.txt"), "mcp\nuvicorn\n");
       write(path.join(pythonRoot, "requirements-dev.txt"), "pytest\n");
     }
-    if (args[0] === "-C") { assert.equal(args[1], pythonRoot); if (args[2] === "rev-parse") return { stdout: nextHead }; }
+    if (args[0] === "-C") { assert.equal(args[1], pythonRoot); if (args[2] === "rev-parse") return { stdout: hermesPlan.target.commit }; }
     if (args[0] === "-m" && args[1] === "venv") write(path.join(args[2], "Scripts", "python.exe"), "isolated python");
     if (args[0] === "-c" && args[1].includes("tomllib")) return { stdout: JSON.stringify({ extras: ["dev"], tests: !missingPythonTests }) };
-    if (args[1] === "pytest" && failPythonTests) throw Error("candidate Python tests failed");
+    if (args[1] === "pytest") {
+      assert.ok(options.env?.HERMES_HOME, "candidate tests need their own profile");
+      const validationHome = options.env.HERMES_HOME;
+      assert.ok(validationHome.startsWith(path.dirname(pythonRoot) + path.sep));
+      for (const key of ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TEMP", "TMP"]) assert.equal(options.env[key], validationHome);
+      for (const key of ["HERMES_GPT_OWNER_ACTIVE", "OPENAI_API_KEY", "PYTHONPATH", "HERMES_AGENT_ROOT"]) assert.equal(options.env[key], undefined);
+      assert.equal(options.env.HERMES_DISABLE_LAZY_INSTALLS, "1");
+      assert.equal(options.env.HERMES_HTTP_TEST, "1");
+      execFileSync(process.execPath, ["-e", "require('node:fs').writeFileSync(require('node:path').join(process.env.HERMES_HOME,'validation-marker'),'candidate')"], { env: options.env, windowsHide: true });
+      assert.equal(fs.readFileSync(path.join(validationHome, "validation-marker"), "utf8"), "candidate");
+      if (failPythonTests) throw Error("candidate Python tests failed");
+    }
     return { stdout: "" };
   };
   await executeComponentAction(hermesPlan, { inventoryOptions: base, run: pythonRun, activate: async (candidate) => {
@@ -434,7 +474,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   assert.deepEqual(fs.readFileSync(configPath), beforeConfig);
 
   const archiveRoot = path.join(temp, "archive", "node_modules", "@waishnav", "devspace");
-  write(path.join(archiveRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.4" });
+  write(path.join(archiveRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.4" });
   write(path.join(archiveRoot, "dist", "cli.js"), "// workspace payload");
   for (const [name, contents] of Object.entries(managementFiles)) write(path.join(archiveRoot, name), contents);
   const digest = value => crypto.createHash("sha256").update(value).digest("hex");
@@ -453,7 +493,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   write(configPath, config);
 
   const cleanBundleRoot = path.join(temp, "clean-bundle");
-  write(path.join(cleanBundleRoot, "package.json"), { name: "@waishnav/devspace", version: "1.0.5" });
+  write(path.join(cleanBundleRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.5" });
   write(path.join(cleanBundleRoot, "dist", "cli.js"), "// clean verified bundle");
   for (const [name, contents] of Object.entries(managementFiles)) write(path.join(cleanBundleRoot, name), contents);
   const cleanBundleFiles = ["dist/cli.js", "package.json", ...Object.keys(managementFiles)].map(name => ({ path: name, sha256: digest(fs.readFileSync(path.join(cleanBundleRoot, name))) }));

@@ -1,0 +1,27 @@
+name: Tray upstream release discovery
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '25 2 * * 1'
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify discovery behavior
+        run: node scripts/windows/stack-upstream-check.test.cjs
+      - name: Read official releases
+        run: node scripts/windows/stack-upstream-check.cjs upstream-releases.json
+      - name: Preserve checked and unavailable results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-releases-${{ github.run_id }}
+          path: upstream-releases.json
+          if-no-files-found: warn

@@ -315,6 +315,60 @@ function Disable-InstallLegacyTasks($Transaction, [string]$LogicalQuiesceMarkerP
     }
 }
 
+function Add-InstallDatabaseSnapshot($Transaction, [string]$DatabasePath) {
+    # Caller has stopped both the service and its launchers. Hold exclusive Windows
+    # handles on the complete SQLite file set while copying, including a surviving
+    # WAL or rollback journal. A live client blocks the update instead of producing
+    # a database-only backup that silently loses committed WAL records.
+    $paths = @($DatabasePath, ($DatabasePath + '-wal'), ($DatabasePath + '-shm'), ($DatabasePath + '-journal'))
+    $streams = @{}
+    $records = @()
+    try {
+        foreach ($target in $paths) {
+            if ([IO.File]::Exists($target)) { $streams[$target] = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None) }
+        }
+        foreach ($target in $paths) {
+            # Shared-memory locks/indexes are disposable; SQLite reconstructs them
+            # from the restored database/WAL. Never restore stale process locks.
+            $exists = $streams.ContainsKey($target) -and -not $target.EndsWith('-shm')
+            $saved = Join-Path $Transaction.backupPath ('database-' + $records.Count)
+            if ($exists) {
+                $destination = [IO.File]::Open($saved, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try { $streams[$target].CopyTo($destination); $destination.Flush($true) } finally { $destination.Dispose() }
+            }
+            $records += [pscustomobject]@{ target=$target; existed=$exists; backup=$saved; sha256=$(if ($exists) { Get-WatchdogFileSha256 $saved } else { '' }); database=$true }
+        }
+        $Transaction.files += $records
+        [IO.File]::WriteAllText((Join-Path $Transaction.backupPath 'transaction.json'), ($Transaction | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+    } finally { foreach ($stream in $streams.Values) { $stream.Dispose() } }
+}
+
+function Restore-InstallDatabaseSnapshot($Files) {
+    $streams = @{}
+    try {
+        # Acquire every handle before changing any database byte. Access denied or
+        # another client keeps rollback failed/closed and the old service stopped.
+        foreach ($item in $Files) {
+            if ($item.existed -or [IO.File]::Exists($item.target)) {
+                $streams[$item.target] = [IO.File]::Open($item.target, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            }
+        }
+        foreach ($item in $Files) {
+            if (-not $streams.ContainsKey($item.target)) { continue }
+            $stream = $streams[$item.target]
+            $stream.SetLength(0)
+            if ($item.existed) {
+                $source = [IO.File]::OpenRead($item.backup)
+                try { $source.CopyTo($stream) } finally { $source.Dispose() }
+            }
+            $stream.Flush($true)
+        }
+    } finally { foreach ($stream in $streams.Values) { $stream.Dispose() } }
+    foreach ($item in $Files) {
+        if (-not $item.existed -and [IO.File]::Exists($item.target)) { [IO.File]::Delete($item.target) }
+    }
+}
+
 function Undo-InstallTransaction($Transaction) {
     # Verify every backup before restoring any byte.
     foreach ($item in $Transaction.files) {
@@ -329,7 +383,8 @@ function Undo-InstallTransaction($Transaction) {
         if ([string]$task.State -eq 'Running') { Stop-ScheduledTask -TaskName $created.name -TaskPath $created.path -ErrorAction Stop }
         Unregister-ScheduledTask -TaskName $created.name -TaskPath $created.path -Confirm:$false -ErrorAction Stop
     }
-    foreach ($item in $Transaction.files) {
+    Restore-InstallDatabaseSnapshot @($Transaction.files | Where-Object { $_.database })
+    foreach ($item in @($Transaction.files | Where-Object { -not $_.database })) {
         if ($item.existed) { [IO.File]::Copy($item.backup, $item.target, $true) }
         elseif ([IO.File]::Exists($item.target)) { [IO.File]::Delete($item.target) }
     }

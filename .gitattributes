@@ -1,0 +1,2 @@
+# Preserve the reviewed patch bytes; blank diff context lines contain one space.
+scripts/windows/patches/hermes-windows-control-pipe.patch text eol=lf whitespace=-blank-at-eol

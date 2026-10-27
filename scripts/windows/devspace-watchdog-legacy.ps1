@@ -370,7 +370,7 @@ function Start-Hermes {
 
     if ($hermesPython -and $hermesServer -and (Test-Path -LiteralPath $hermesPython) -and (Test-Path -LiteralPath $hermesServer)) {
         $hermesEnvNames = @(
-            "HERMES_HOME", "HERMES_GPT_ENABLE_WRITE", "HERMES_GPT_ENABLE_MEMORY_WRITE",
+            "HERMES_HOME", "HERMES_AGENT_ROOT", "PATH", "HERMES_GPT_ENABLE_WRITE", "HERMES_GPT_ENABLE_MEMORY_WRITE",
             "HERMES_GPT_ENABLE_SESSION_SEARCH", "HERMES_GPT_ENABLE_TERMINAL",
             "HERMES_GPT_ENABLE_VISION", "HERMES_GPT_ENABLE_WEB", "HERMES_GPT_ENABLE_CODEX",
             "HERMES_GPT_ENABLE_MCP", "HERMES_GPT_ENABLE_CRON", "HERMES_GPT_ENABLE_DIAGNOSTICS",
@@ -385,6 +385,9 @@ function Start-Hermes {
         foreach ($name in $hermesEnvNames) { $previousHermesEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process") }
         try {
             $env:HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
+            $sourceEnvironment = Get-WatchdogHermesEnvironment $config
+            $env:HERMES_AGENT_ROOT = $sourceEnvironment['HERMES_AGENT_ROOT']
+            if ($sourceEnvironment.ContainsKey('PATH')) { $env:PATH = $sourceEnvironment['PATH'] }
             $caps = $config.capabilities.hermes
             if ($caps) {
                 $gateValues = [ordered]@{

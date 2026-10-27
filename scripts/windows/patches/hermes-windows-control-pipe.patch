@@ -1,0 +1,120 @@
+diff --git a/gateway/control_socket.py b/gateway/control_socket.py
+index edcfcffd..b2407215 100644
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -255,19 +255,33 @@ class _PipeControlProtocol(asyncio.Protocol):
+         self._server = server
+         self._transport: Any = None
+         self._buffer = bytearray()
++        self._request_task: Optional[asyncio.Task] = None
+ 
+     def connection_made(self, transport) -> None:  # pragma: no cover - windows
+         self._transport = transport
+ 
+     def data_received(self, data: bytes) -> None:  # pragma: no cover - windows
++        if self._request_task is not None or self._transport.is_closing():
++            return
+         self._buffer.extend(data)
+         if len(self._buffer) > _MAX_REQUEST_BYTES:
+             self._transport.close()
+         elif b"\n" in self._buffer:
+-            try:
+-                self._transport.write(self._server.handle_request_line(bytes(self._buffer).partition(b"\n")[0]))
+-            finally:
+-                self._transport.close()
++            self._request_task = asyncio.create_task(
++                self._respond(bytes(self._buffer).partition(b"\n")[0]))
++
++    async def _respond(self, raw: bytes) -> None:
++        try:
++            # Handlers may wait for the gateway loop; preserve profile context off-loop.
++            response = await asyncio.to_thread(self._server.handle_request_line, raw)
++            if not self._transport.is_closing():
++                self._transport.write(response)
++        except (ConnectionError, OSError):
++            pass
++        except Exception:
++            logger.debug("Control pipe connection handler error", exc_info=True)
++        finally:
++            self._transport.close()
+ 
+ 
+ def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
+diff --git a/tests/gateway/test_control_socket_windows_dispatch.py b/tests/gateway/test_control_socket_windows_dispatch.py
+new file mode 100644
+index 00000000..7e549dcb
+--- /dev/null
++++ b/tests/gateway/test_control_socket_windows_dispatch.py
+@@ -0,0 +1,72 @@
++"""Windows pipe verbs must be able to marshal work back onto the gateway loop."""
++import asyncio
++import contextvars
++import json
++import os
++import threading
++from unittest.mock import Mock
++
++import pytest
++
++from gateway.control_socket import GatewayControlServer, _PipeControlProtocol, pause_gateway_for_update
++
++pytestmark = pytest.mark.platforms("windows")
++
++
++def test_pause_ack_can_wait_for_main_loop_without_blocking_it(tmp_path):
++    async def scenario():
++        loop = asyncio.get_running_loop()
++        calls = []
++
++        def pause():
++            done = threading.Event()
++            loop.call_soon_threadsafe(done.set)
++            accepted = done.wait(timeout=5)
++            calls.append(accepted)
++            return {"pausing": accepted, "pid": os.getpid()}
++
++        server = GatewayControlServer(home=tmp_path, verb_handlers={"pause-for-update": pause})
++        assert await server.start()
++        try:
++            reply = await asyncio.to_thread(pause_gateway_for_update, tmp_path)
++        finally:
++            await server.stop()
++        assert calls == [True]
++        assert reply == {"pausing": True, "pid": os.getpid()}
++
++    asyncio.run(scenario())
++
++
++def test_pending_pipe_request_runs_once_with_profile_context(tmp_path):
++    async def scenario():
++        loop = asyncio.get_running_loop()
++        profile = contextvars.ContextVar("test_profile", default="wrong-home")
++        profile.set(str(tmp_path))
++        entered, closed = asyncio.Event(), asyncio.Event()
++        release = threading.Event()
++        calls = []
++
++        def identify():
++            calls.append(profile.get())
++            loop.call_soon_threadsafe(entered.set)
++            assert release.wait(timeout=5)
++            return {"home": profile.get()}
++
++        server = GatewayControlServer(home=tmp_path, verb_handlers={"identify": identify})
++        protocol = _PipeControlProtocol(server)
++        transport = Mock()
++        transport.is_closing.return_value = False
++        transport.close.side_effect = closed.set
++        protocol.connection_made(transport)
++        try:
++            protocol.data_received(b'{"verb":"identify"}\n')
++            await asyncio.wait_for(entered.wait(), timeout=2)
++            protocol.data_received(b'{"verb":"identify"}\n')
++        finally:
++            release.set()
++        await asyncio.wait_for(closed.wait(), timeout=2)
++        assert calls == [str(tmp_path)]
++        transport.write.assert_called_once()
++        assert json.loads(transport.write.call_args.args[0])["result"] == {"home": str(tmp_path)}
++
++    asyncio.run(scenario())

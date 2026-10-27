@@ -342,12 +342,16 @@ function Find-HermesAgentExe {
 
 function Find-HermesAgentSourceRoot([string]$exe) {
     $candidates = New-Object System.Collections.Generic.List[string]
-    [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'))
     if ($exe) {
         try {
             $scripts = Split-Path ([IO.Path]::GetFullPath($exe)) -Parent
             $venv = Split-Path $scripts -Parent
-            [void]$candidates.Add((Split-Path $venv -Parent))
+            $runtime = Split-Path $venv -Parent
+            [void]$candidates.Add($runtime)
+            [void]$candidates.Add((Join-Path $runtime 'payload'))
+            if ([IO.Path]::GetFullPath($exe) -eq (Join-Path $env:LOCALAPPDATA 'hermes\bin\hermes.exe')) {
+                [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'))
+            }
         } catch { }
     }
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
@@ -357,21 +361,6 @@ function Find-HermesAgentSourceRoot([string]$exe) {
         }
     }
     return ''
-}
-
-function Ensure-UvSystemCertificates {
-    $uvDir = Join-Path $env:APPDATA "uv"
-    $uvConfig = Join-Path $uvDir "uv.toml"
-    [void][IO.Directory]::CreateDirectory($uvDir)
-    if (-not [IO.File]::Exists($uvConfig)) {
-        [IO.File]::WriteAllText($uvConfig, "system-certs = true" + [Environment]::NewLine, [Text.Encoding]::UTF8)
-        return
-    }
-    $content = [IO.File]::ReadAllText($uvConfig)
-    if ($content -notmatch '(?m)^\s*system-certs\s*=') {
-        $separator = if ($content.Length -and -not $content.EndsWith([Environment]::NewLine)) { [Environment]::NewLine } else { "" }
-        [IO.File]::AppendAllText($uvConfig, $separator + "system-certs = true" + [Environment]::NewLine, [Text.Encoding]::UTF8)
-    }
 }
 
 function Test-PythonForHermesAgent([string]$candidate) {
@@ -396,8 +385,10 @@ function Find-PythonForHermesAgent {
 }
 
 function Install-HermesAgentRuntimeFast {
-    $commit = '601d98c2709f766290cc3627b035ab73cfd54232'
-    $ref = 'oneclick-runtime-601d98c'
+    $pin = $releasePolicy.components.'hermes-agent'
+    $commit = [string]$pin.revision
+    $ref = [string]$pin.ref
+    $repositoryUrl = 'https://github.com/' + [string]$pin.repository + '.git'
     $hermesHome = Join-Path $env:LOCALAPPDATA 'hermes'
     $target = Join-Path $hermesHome 'hermes-agent'
     if ([IO.Directory]::Exists($target)) { return $null }
@@ -406,13 +397,12 @@ function Install-HermesAgentRuntimeFast {
     if (-not $git -or -not $python) { return $null }
 
     [void][IO.Directory]::CreateDirectory($hermesHome)
-    $created = $false
     try {
         Write-Host "Installing lightweight Hermes Agent MCP runtime (pinned $($commit.Substring(0,8)))..."
-        Invoke-Checked { & $git clone --depth=1 --branch $ref --single-branch -- https://github.com/davidxyuan/hermes-agent.git $target 2>&1 | Out-Host } "Hermes Agent fast clone failed."
-        $created = $true
+        Invoke-Checked { & $git clone --depth=1 --branch $ref --single-branch -- $repositoryUrl $target 2>&1 | Out-Host } "Hermes Agent fast clone failed."
         $head = (& $git -C $target rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0 -or $head -cne $commit) { throw "Hermes Agent pinned commit verification failed." }
+        if (Test-Path -LiteralPath (Join-Path $target 'pm\lock.json')) { throw 'Hermes Agent official package manager is not supported by this fast installer; the existing service is preserved.' }
 
         $venv = Join-Path $target 'venv'
         Invoke-Checked { & $python -m venv $venv 2>&1 | Out-Host } "Hermes Agent fast venv creation failed."
@@ -425,11 +415,7 @@ function Install-HermesAgentRuntimeFast {
         Write-Host "Lightweight Hermes Agent MCP runtime ready."
         return [IO.Path]::GetFullPath($exe)
     } catch {
-        Write-Warning ("Lightweight Hermes Agent runtime failed; falling back to the official installer. " + $_.Exception.Message)
-        if ($created -and [IO.Directory]::Exists($target)) {
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        return $null
+        throw ("Pinned Hermes Agent installation failed; candidate files retained at $target. No alternate release was installed. " + $_.Exception.Message)
     }
 }
 
@@ -449,34 +435,7 @@ function Install-HermesAgentIfNeeded {
     $exe = Install-HermesAgentRuntimeFast
     if ($exe) { return $exe }
 
-    Write-Host "Installing full Hermes Agent fallback..."
-    Ensure-UvSystemCertificates
-    $previousUvSystemCerts = $env:UV_SYSTEM_CERTS
-    $env:UV_SYSTEM_CERTS = "true"
-    $installScriptPath = Join-Path $env:TEMP ("hermes-agent-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
-    try {
-        [void](Invoke-WebRequest -Uri "https://hermes-agent.nousresearch.com/install.ps1" -OutFile $installScriptPath)
-        $previousErrorActionPreferenceForHermes = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            & powershell.exe -NoLogo -NoProfile -NonInteractive -File $installScriptPath -SkipSetup 2>&1 | Out-Host
-            $hermesInstallerExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousErrorActionPreferenceForHermes
-        }
-        if ($hermesInstallerExitCode -ne 0) {
-            Fail "Hermes Agent installer exited with code $hermesInstallerExitCode." "Review the Hermes installer output above, fix the reported network/certificate prerequisite, then rerun this installer."
-        }
-    } finally {
-        if ($null -eq $previousUvSystemCerts) { Remove-Item Env:UV_SYSTEM_CERTS -ErrorAction SilentlyContinue }
-        else { $env:UV_SYSTEM_CERTS = $previousUvSystemCerts }
-        Remove-Item -LiteralPath $installScriptPath -Force -ErrorAction SilentlyContinue
-    }
-    $exe = Find-HermesAgentExe
-    if (-not $exe) {
-        Fail "Hermes Agent install finished, but hermes.exe was not found." "Open a new PowerShell window and rerun, or pass -HermesAgentExe with the full hermes.exe path."
-    }
-    return $exe
+    Fail 'Pinned Hermes Agent prerequisites or target directory are not ready.' 'Preserve the existing directory and select a verified runtime explicitly.'
 }
 
 function Find-GitForClone {
@@ -764,6 +723,10 @@ if ($needsNode) {
     if (-not [IO.File]::Exists($NodePath)) { Fail "Configured Node.js was not found: $NodePath" }
     $nodeVersion = [version](& $NodePath -p 'process.versions.node')
     if ($LASTEXITCODE -ne 0 -or $nodeVersion -lt [version]'22.19' -or $nodeVersion -ge [version]'27.0') { Fail 'Node.js must be >=22.19 and <27.' 'Select a compatible Node installation; the existing runtime was not replaced.' }
+    $releaseOutput = & $NodePath (Join-Path $PSScriptRoot 'stack-release-policy.cjs')
+    if ($LASTEXITCODE -ne 0) { Fail 'Release component policy is missing or invalid.' }
+    $releasePolicy = $releaseOutput | ConvertFrom-Json
+    Write-Host "Release channel: $($releasePolicy.channel); component set: $($releasePolicy.id)"
 }
 if ($installDevSpace -and -not $CliPath) {
     $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
@@ -804,10 +767,12 @@ if (-not $SkipNgrok) {
 if ($installDevSpace) {
     if (-not $CliPath) {
         if ($UsePublishedPackage) {
-            Write-Host "Installing @waishnav/devspace globally..."
-            Invoke-Checked { & $npmPath install -g "@waishnav/devspace" } "npm install -g @waishnav/devspace failed."
-            $globalRoot = (& $npmPath root -g).Trim()
-            $CliPath = Join-Path $globalRoot "@waishnav\devspace\dist\cli.js"
+            $pin = $releasePolicy.components.'devspace-official'
+            $packagePrefix = Join-Path $InstallDir ('managed\devspace-official\' + [string]$pin.version + '-' + [guid]::NewGuid().ToString('N'))
+            Invoke-Checked { & $npmPath install --prefix $packagePrefix --save-exact --no-audit --no-fund --registry=https://registry.npmjs.org ("@waishnav/devspace@" + [string]$pin.version) } 'Pinned DevSpace install failed.'
+            $locked = (Get-Content -LiteralPath (Join-Path $packagePrefix 'package-lock.json') -Raw | ConvertFrom-Json).packages.'node_modules/@waishnav/devspace'
+            if ($locked.version -cne $pin.version -or $locked.integrity -cne $pin.integrity) { Fail 'Installed DevSpace package does not match the release manifest.' }
+            $CliPath = Join-Path $packagePrefix 'node_modules\@waishnav\devspace\dist\cli.js'
         } else {
             if (-not $SkipNpmInstall) {
                 Write-Host "Installing repo dependencies..."
@@ -931,7 +896,13 @@ if ($installHermes) {
         if (-not (Test-Path -LiteralPath $HermesDir)) {
             Write-Host "Cloning hermes-gpt..."
             $gitPath = Find-GitForClone
-            Invoke-Checked { & $gitPath clone $HermesRepo $HermesDir } "git clone hermes-gpt failed."
+            $pin = $releasePolicy.components.'hermes-gpt'
+            $pinnedRepository = 'https://github.com/' + [string]$pin.repository + '.git'
+            if ($HermesRepo.TrimEnd('/') -ine $pinnedRepository) { Fail 'A custom Hermes repository requires its own pinned release manifest.' }
+            Invoke-Checked { & $gitPath clone --no-checkout -- $pinnedRepository $HermesDir } 'git clone hermes-gpt failed.'
+            Invoke-Checked { & $gitPath -C $HermesDir checkout --detach ([string]$pin.revision) } 'Pinned Hermes checkout failed.'
+            $installedHead = (& $gitPath -C $HermesDir rev-parse HEAD).Trim()
+            if ($LASTEXITCODE -ne 0 -or $installedHead -cne $pin.revision) { Fail 'Hermes revision does not match the release manifest.' }
         } elseif (-not (Test-Path -LiteralPath (Join-Path $HermesDir 'server.py'))) { Fail "Existing Hermes directory is not a recognized Hermes-GPT installation: $HermesDir" }
 
         $venvPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
@@ -1002,6 +973,7 @@ if ($installHermes) {
     $hermesCommandContent = @"
 @echo off
 set "HERMES_HOME=%LOCALAPPDATA%\hermes"
+set "HERMES_AGENT_ROOT=$hermesAgentWorkingDirectory"
 $hermesFullAccessEnv
 cd /d "$HermesDir"
 "$hermesPython" "$hermesServer" --http --host 127.0.0.1 --port $HermesPort
@@ -1132,6 +1104,10 @@ if (-not [IO.File]::Exists((Join-Path $ManagementPackageRoot 'scripts\windows\de
 $watchdogConfig['managementPackageRoot'] = $ManagementPackageRoot
 
 # Everything needed by the new configuration is prepared before activation.
+if ($watchdogConfig.hermesEnabled) {
+    & ([string]$watchdogConfig.hermesPython) (Join-Path $PSScriptRoot 'stack-hermes-source.py') ([string]$watchdogConfig.hermesServer) ([string]$watchdogConfig.hermesAgentWorkingDirectory)
+    if ($LASTEXITCODE -ne 0) { throw 'Hermes GPT/Agent source or dependencies are incompatible; installation is blocked before stopping services.' }
+}
 $taskSnapshots = @(Get-InstallTaskSnapshots $InstallDir)
 $legacyProcessSnapshots = @(Get-InstallLegacyProcessSnapshots $InstallDir)
 $transactionNames = @('config.json','auth.json','ngrok-auth.dpapi.json','devspace-watchdog.config.json','devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','watchdog-control-core.ps1','stack-operation.ps1','run-devspace-watchdog-hidden.vbs','run-hermes-gpt.cmd','mcp-router.cjs','restart-devspace.flag','legacy-watchdog-poller.disabled','watchdog-tray-state.json')

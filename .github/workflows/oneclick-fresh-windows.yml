@@ -27,12 +27,25 @@ jobs:
       - name: Install build dependencies
         run: npm ci
 
-      - name: Verify committed package runtime
+      - name: Verify clean source
         shell: powershell
         run: |
           if (git status --porcelain) { throw "Checkout is dirty before packaging." }
-          node dist/cli.js help | Out-Null
-          npm run typecheck
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build runtime from source
+        run: npm run build
+
+      - name: Core regression suite
+        run: npm test
+
+      - name: Windows Watchdog regression suite
+        run: npm run test:windows-watchdog
+
+      - name: Start built runtime in isolated state
+        run: node scripts/windows/stack-runtime-smoke.cjs
 
       - name: Build One-Click ZIP
         shell: powershell
@@ -59,8 +72,8 @@ jobs:
           if ([bool]$manifest.dirty) { throw "ZIP manifest reports a dirty source tree." }
           if ($manifest.fingerprint -ne "$env:ZIP_FINGERPRINT") { throw "ZIP fingerprint changed after build." }
 
-      - name: Upload tested ZIP and fresh-machine evidence
-        if: always()
+      - name: Upload verified candidate ZIP
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: oneclick-fresh-windows-${{ github.sha }}
@@ -68,6 +81,14 @@ jobs:
           path: |
             ${{ runner.temp }}\oneclick\*.zip
             ${{ runner.temp }}\oneclick\build-result.json
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneclick-diagnostics-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
             ${{ runner.temp }}\fresh-vm\fresh-vm-result.json
             ${{ runner.temp }}\fresh-vm\setup.stdout.log
             ${{ runner.temp }}\fresh-vm\setup.stderr.log

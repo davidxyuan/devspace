@@ -13,6 +13,7 @@ $entry = Get-Content (Join-Path $PSScriptRoot "detect-and-apply-tested-stack.ps1
     "HERMES_GPT_ALLOW_CRON_WRITE", "HERMES_GPT_ALLOW_SKILL_WRITE",
     "HERMES_GPT_ALLOW_PRIVATE_NETWORK", "HERMES_GPT_CODEX_ALLOWED_ROOTS"
 ) | ForEach-Object { if (-not $watchdog.Contains($_)) { throw "Watchdog missing supported gate: $_" } }
+if (-not $watchdog.Contains('Get-WatchdogHermesEnvironment $config') -or -not $watchdog.Contains('"HERMES_AGENT_ROOT", "PATH"')) { throw 'Legacy launcher must use and restore the shared Agent source environment.' }
 
 if ($installer -match 'if \(\$FullAccess\)\s*\{\s*\$env:HERMES') {
     throw "DevSpace FullAccess must not enable Hermes capabilities."

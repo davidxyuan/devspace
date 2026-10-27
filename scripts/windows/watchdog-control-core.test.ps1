@@ -96,6 +96,19 @@ try {
         runner=$true; allowedRoots=@($tempRoot); filesystemScope="restricted"
     }
     $ownerEnv = Get-WatchdogHermesEnvironment $ownerConfig
+    Assert-True "Hermes source override is cleared when not configured" ($ownerEnv.ContainsKey('HERMES_AGENT_ROOT') -and $null -eq $ownerEnv['HERMES_AGENT_ROOT'])
+    $agentSource = Join-Path $tempRoot 'managed-agent'
+    [void][IO.Directory]::CreateDirectory($agentSource)
+    $ownerConfig | Add-Member NoteProperty hermesAgentWorkingDirectory $agentSource
+    $sourceEnv = Get-WatchdogHermesEnvironment $ownerConfig
+    Assert-Equal "Hermes imports the configured Agent source" $sourceEnv['HERMES_AGENT_ROOT'] $agentSource
+    Assert-Equal "Agent source does not replace user data home" $sourceEnv['HERMES_HOME'] (Join-Path $env:LOCALAPPDATA 'hermes')
+    $ownerConfig.hermesAgentWorkingDirectory = 'relative-agent'
+    Assert-Throws "Relative Agent source is rejected" { Get-WatchdogHermesEnvironment $ownerConfig } 'absolute.*source'
+    $ownerConfig.hermesAgentWorkingDirectory = Join-Path $tempRoot 'missing-agent'
+    Assert-Throws "Missing Agent source is rejected" { Get-WatchdogHermesEnvironment $ownerConfig } 'absolute.*source'
+    $ownerConfig.hermesAgentWorkingDirectory = '\Windows'
+    Assert-Throws "Drive-relative Agent source is rejected" { Get-WatchdogHermesEnvironment $ownerConfig } 'absolute.*source'
     Assert-Equal "Hermes owner level is explicit" $ownerEnv["HERMES_GPT_OPERATOR_LEVEL"] "owner"
     Assert-Equal "Hermes v0.10 owner activation gate is explicit" $ownerEnv["HERMES_GPT_OWNER_ACTIVE"] "1"
     Assert-Equal "Hermes owner acknowledgement is preserved" $ownerEnv["HERMES_GPT_OWNER_ACK"] "I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"

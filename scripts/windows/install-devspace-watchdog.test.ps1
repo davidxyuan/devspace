@@ -92,6 +92,47 @@ public static class NativePythonProbeFixture {
     }
 
     $source = Get-Content -LiteralPath $scriptPath -Raw
+    $sourceFinder = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-HermesAgentSourceRoot' }, $true)
+    . ([scriptblock]::Create($sourceFinder.Extent.Text))
+    $originalLocalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = Join-Path $tempRoot 'local'
+        $oldRoot = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'
+        $managed = Join-Path $tempRoot 'managed\revision'
+        $payload = Join-Path $managed 'payload'
+        foreach ($root in @($oldRoot,$payload)) {
+            [void][IO.Directory]::CreateDirectory((Join-Path $root 'hermes_cli'))
+            [IO.File]::WriteAllText((Join-Path $root 'pyproject.toml'), '[project]')
+        }
+        $exe = Join-Path $managed 'venv\Scripts\hermes.exe'
+        if ((Find-HermesAgentSourceRoot $exe) -ne [IO.Path]::GetFullPath($payload)) { throw 'Managed Agent source was replaced by an unrelated legacy checkout.' }
+        if (Find-HermesAgentSourceRoot (Join-Path $tempRoot 'unknown\hermes.exe')) { throw 'Unknown executable silently adopted the default Agent source.' }
+    } finally { $env:LOCALAPPDATA = $originalLocalAppData }
+    $fastInstall = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-HermesAgentRuntimeFast' }, $true)
+    . ([scriptblock]::Create($fastInstall.Extent.Text))
+    try {
+        $env:LOCALAPPDATA = Join-Path $tempRoot 'pm-install'
+        $releasePolicy = @{ components = @{ 'hermes-agent' = @{ revision = ('a' * 40); ref = 'v0.22.2'; repository = 'NousResearch/hermes-agent' } } }
+        $fakeGit = Join-Path $tempRoot 'git-pm.ps1'
+        [IO.File]::WriteAllText($fakeGit, @'
+if ($args[0] -eq 'clone') {
+    $pm = Join-Path $args[-1] 'pm'
+    [void][IO.Directory]::CreateDirectory($pm)
+    [IO.File]::WriteAllText((Join-Path $pm 'lock.json'), '{}')
+} else { 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
+$global:LASTEXITCODE = 0
+'@)
+        function Find-GitForClone { return $fakeGit }
+        function Find-PythonForHermesAgent { return $nativeGood }
+        $rejected = $false
+        try { Install-HermesAgentRuntimeFast | Out-Null } catch {
+            if ($_.Exception.Message -match 'official package manager.*not supported') { $rejected = $true } else { throw }
+        }
+        if (-not $rejected) { throw 'Fast installer accepted PM-owned Agent source.' }
+        if (Test-Path (Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent\venv')) { throw 'Fast installer created a legacy venv for PM-owned source.' }
+    } finally { $env:LOCALAPPDATA = $originalLocalAppData }
+    if ($source.IndexOf('stack-hermes-source.py') -lt 0 -or $source.IndexOf('stack-hermes-source.py') -gt $source.IndexOf('$installTransaction = Start-InstallTransaction')) { throw 'Hermes source preflight must happen before installation starts its transaction.' }
+    if (-not $source.Contains('set "HERMES_AGENT_ROOT=$hermesAgentWorkingDirectory"')) { throw 'Generated Hermes launcher omits the selected Agent source.' }
     if ($source -notmatch 'Install-WingetPackage\s+"Python\.Python\.3\.12"\s+"Python 3"') {
         throw 'Python 3.12 winget fallback is missing.'
     }
@@ -104,17 +145,13 @@ public static class NativePythonProbeFixture {
     if ($source -notmatch 'hermes\\bin\\hermes\.exe') {
         throw 'Hermes Agent discovery does not include the official %LOCALAPPDATA%\hermes\bin\hermes.exe path.'
     }
-    if ($source -notmatch 'system-certs = true' -or $source -notmatch 'UV_SYSTEM_CERTS') {
-        throw 'Hermes/uv installer does not opt into Windows system certificates.'
+    if ($source -match 'hermes-agent\.nousresearch\.com/install\.ps1' -or $source -notmatch 'stack-release-policy\.cjs') {
+        throw 'Installation must use the shared pinned release policy, without a floating fallback.'
     }
-    if ($source -notmatch 'Invoke-WebRequest.+hermes-agent\.nousresearch\.com/install\.ps1.+-OutFile' -or
-        $source -notmatch 'powershell\.exe.+\$installScriptPath.+-SkipSetup.+Out-Host') {
-        throw 'Hermes Agent full fallback is not staged/output-isolated correctly.'
-    }
-    if ($source -notmatch '601d98c2709f766290cc3627b035ab73cfd54232' -or
-        $source -notmatch 'oneclick-runtime-601d98c' -or
+    if ($source -notmatch '\$commit = \[string\]\$pin\.revision' -or
+        $source -notmatch '\$ref = \[string\]\$pin\.ref' -or
         $source -notmatch 'Installing lightweight Hermes Agent MCP runtime' -or
-        $source -notmatch 'https://github\.com/davidxyuan/hermes-agent\.git' -or
+        $source -notmatch '\[string\]\$pin\.repository' -or
         $source -notmatch 'pip install --disable-pip-version-check -e' -or
         $source -notmatch 'hermesAgentExe = if \(\$hermesAgentPath\)' -or
         $source -notmatch 'hermesAgentWorkingDirectory = \$hermesAgentWorkingDirectory') {

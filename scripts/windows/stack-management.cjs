@@ -5,6 +5,9 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
+const { buildNodeCandidate, devspaceEntrypoint } = require("./stack-node-build.cjs");
+const { readReleasePolicy, installationTarget } = require("./stack-release-policy.cjs");
+const RELEASE_POLICY = readReleasePolicy();
 
 const SOURCES = Object.freeze({
   "devspace-official": { repository: "Waishnav/devspace", branch: "main", kind: "npm", package: "@waishnav/devspace" },
@@ -112,6 +115,9 @@ function registeredSource(id, source) {
   if (!canonical) return null;
   if (id === "devspace-official" && source.kind === "git") return { ...canonical, kind: "git" };
   if (id === "hermes-gpt" && sameRepository(source.repository, "davidxyuan/hermes-gpt") && (source.branch === "codex/hermes-runtime-provider-fixes" || source.historical)) return { ...canonical, repository: "davidxyuan/hermes-gpt", branch: "codex/hermes-runtime-provider-fixes" };
+  const pin = RELEASE_POLICY.components[id];
+  if (id === "hermes-agent" && pin && sameRepository(source.repository, pin.repository) && (source.branch === pin.updateBranch || source.releasePinned))
+    return { ...canonical, repository: pin.repository, branch: pin.updateBranch, release: false };
   return canonical;
 }
 function sourceProblem(id, source) {
@@ -122,6 +128,7 @@ function sourceProblem(id, source) {
   const trustedBundle = id === "devspace-tray-fork" && source.kind === "bundled" && source.provenance === "workspace" && source.verified && source.provenanceVerified;
   if (source.kind !== "git" && !trustedBundle || !source.head || source.dirty === null) return "無法確認工作目錄及版本身分。";
   if (source.dirty) return "工作目錄有修改或未追蹤檔案，更新已停用。";
+  if (source.releasePinned) return null;
   if (source.branch !== registered.branch || source.trackingRef !== `${source.remoteName || "origin"}/${registered.branch}`) return "目前分支或追蹤來源不同，更新不會自動切換來源。";
   return null;
 }
@@ -167,6 +174,10 @@ async function latestSource(source, installed, fetcher) {
       if (!VERSION.test(version || "")) version = null;
     }
   } catch { /* A release tag remains useful when its product version is unavailable. */ }
+  if (version === "0.0.0") {
+    const releaseVersion = tag?.replace(/^v/, "");
+    version = VERSION.test(releaseVersion || "") ? releaseVersion : null;
+  }
   let comparison = installed.source?.head === commit.sha ? "identical" : "unknown";
   if (installed.source?.head && comparison !== "identical" && (!sourceProblem(installed.id, installed.source) || installed.source.historical)) {
     const compare = await requestJson(`${base}/compare/${installed.source.head}...${commit.sha}`, fetcher);
@@ -251,6 +262,8 @@ async function collectInventory(options = {}) {
   const legacy = component("legacy-watchdog", legacyPath, exists(legacyPath) ? "installed" : "missing", null, { kind: "bundled", fingerprint: fileHash(legacyPath) });
   legacy.detail = exists(path.join(installDir, "legacy-watchdog-poller.disabled")) ? "舊排程已標記停用；檔案保留供回復。" : "排程與程序身分會在移轉前再次驗證。";
   for (const entry of components) {
+    const pin = RELEASE_POLICY.components[entry.id];
+    entry.source.releasePinned = Boolean(pin && entry.source.kind === "git" && entry.source.dirty === false && !entry.source.branch && !entry.source.trackingRef && sameRepository(entry.source.repository, pin.repository) && entry.source.head === pin.revision && entry.installedVersion === pin.version);
     if (entry.id === "devspace-tray-fork") entry.tested = manifest.devspace || null;
     if (entry.id === "hermes-gpt") { entry.tested = manifest["hermes-gpt"] || null; entry.source.historical = knownHistorical(entry.source, entry.installedVersion, entry.tested); }
     if (options.runtimeStates && ["running", "stopped", "unknown", "n/a"].includes(options.runtimeStates[entry.id])) entry.runtimeState = options.runtimeStates[entry.id];
@@ -295,7 +308,7 @@ async function collectInventory(options = {}) {
   }
   components.sort((a, b) => Object.keys(LABELS).indexOf(a.id) - Object.keys(LABELS).indexOf(b.id));
   const evidence = { installDir, packageRoot, configurationFingerprint: hash(textFile(configPath)), components: components.map(({ id, installState, installedVersion, path: p, source, activationKind, previousManagementRoot }) => ({ id, installState, installedVersion, path: p, source, activationKind, previousManagementRoot })) };
-  const inventory = { schemaVersion: 1, installDir, packageRoot, revision: hash(JSON.stringify(evidence)), configurationFingerprint: evidence.configurationFingerprint, checkedAt, remoteCheckedAt: components.map((c) => c.latest.checkedAt).filter(Boolean).sort().at(-1) || null, refreshing: false, components, blockers };
+  const inventory = { schemaVersion: 1, release: { id: RELEASE_POLICY.id, channel: RELEASE_POLICY.channel }, installDir, packageRoot, revision: hash(JSON.stringify(evidence)), configurationFingerprint: evidence.configurationFingerprint, checkedAt, remoteCheckedAt: components.map((c) => c.latest.checkedAt).filter(Boolean).sort().at(-1) || null, refreshing: false, components, blockers };
   return inventory;
 }
 
@@ -309,6 +322,7 @@ function planComponentAction(request, inventory, context = {}) {
   let target;
   if (TOOL_PACKAGES[component.id]) target = { kind: "winget", packageId: TOOL_PACKAGES[component.id] };
   else if (["tray", "router", "legacy-watchdog", "ngrok"].includes(component.id) || component.id === "devspace-tray-fork" && request.action === "install") target = { kind: "bundled", repository: SOURCES["devspace-tray-fork"].repository, payloadFingerprint: bundleFingerprint(packageRoot) };
+  else if (request.action === "install") target = installationTarget(component.id);
   else {
     const registered = request.action === "install" ? SOURCES[component.id] : registeredSource(component.id, component.source);
     if (!registered || !sameRepository(component.latest.repository, registered.repository)) throw new Error("版本來源與已登錄來源不符。");
@@ -337,7 +351,8 @@ async function executeComponentAction(plan, callbacks = {}) {
     candidate = { kind: plan.componentId === "devspace-tray-fork" ? (plan.activationKind === "management" ? "management" : "devspace") : "bundled", componentId: plan.componentId, root: plan.packageRoot, version: productVersion(plan.packageRoot), cliPath: path.join(plan.packageRoot, "dist", "cli.js"), installerPath: path.join(plan.packageRoot, "scripts", "windows", ["tray", "legacy-watchdog", "devspace-tray-fork"].includes(plan.componentId) ? "install-devspace-watchdog-tray.ps1" : "install-devspace-watchdog.ps1") };
     if (!exists(candidate.installerPath)) throw new Error("隨附安裝程式不完整。");
   } else {
-    const registered = plan.action === "install" ? SOURCES[plan.componentId] : registeredSource(plan.componentId, component.source);
+    const registered = plan.action === "install" ? installationTarget(plan.componentId) : registeredSource(plan.componentId, component.source);
+    if (plan.action === "install" && JSON.stringify(target) !== JSON.stringify(registered)) throw new Error("安裝版本與發布清單不符。");
     if (!registered || target.kind !== registered.kind || !sameRepository(target.repository, registered.repository) || target.branch !== registered.branch || plan.action === "update" && sourceProblem(plan.componentId, component.source) || plan.action === "migrate" && !component.source.historical) throw new Error("不允許切換或覆寫此來源。");
     const requiredTools = target.kind === "npm" ? ["node", "npm"] : plan.componentId.startsWith("devspace-") ? ["git", "node", "npm"] : ["git", "python"];
     for (const id of requiredTools) if (tool(id)?.installState !== "installed" || tool(id).detail) throw new Error(`請先安裝相容的 ${LABELS[id]}。`);
@@ -373,41 +388,42 @@ async function executeComponentAction(plan, callbacks = {}) {
       const head = await attempt(run, tool("git").path, ["-C", root, "rev-parse", "HEAD"]);
       if (head !== target.commit) throw new Error("候選版本提交不符。");
       if (plan.componentId.startsWith("devspace-")) {
-        await invoke(tool("node").path, [tool("npm").path, "ci", "--no-audit", "--no-fund"], { cwd: root });
-        await invoke(tool("node").path, [tool("npm").path, "run", "build"], { cwd: root });
-        if (plan.componentId === "devspace-tray-fork") {
-          const scripts = json(path.join(root, "package.json"))?.scripts || {};
-          if (typeof scripts.test !== "string" || typeof scripts["test:windows-watchdog"] !== "string") throw new Error("候選 DevSpace Fork 缺少 npm test 或 npm run test:windows-watchdog；更新已停用。");
-          await invoke(tool("node").path, [tool("npm").path, "test"], { cwd: root });
-          await invoke(tool("node").path, [tool("npm").path, "run", "test:windows-watchdog"], { cwd: root });
-        }
+        await buildNodeCandidate({ root, stage, node: tool("node").path, npm: tool("npm").path, invoke, windowsTests: plan.componentId === "devspace-tray-fork" });
       } else {
+        if (plan.componentId === "hermes-agent" && exists(path.join(root, "pm", "lock.json"))) throw new Error("此 Hermes Agent 版本使用官方套件管理器；目前更新器尚未支援，已保留原服務，請等候相容版本。");
+        const validationHome = path.join(stage, "validation-home");
+        fs.mkdirSync(validationHome);
+        // Candidate imports/tests must not inherit live profiles, credentials or Owner gates.
+        const validationEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG"].includes(key.toUpperCase())));
+        for (const key of ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "HERMES_HOME", "TEMP", "TMP"]) validationEnv[key] = validationHome;
+        Object.assign(validationEnv, { HERMES_DISABLE_LAZY_INSTALLS: "1", HERMES_HTTP_TEST: "1", PYTHONUTF8: "1" });
+        const validationOptions = { cwd: root, env: validationEnv };
         const venv = path.join(stage, "venv");
-        await invoke(tool("python").path, ["-m", "venv", venv]);
+        await invoke(tool("python").path, ["-m", "venv", venv], validationOptions);
         const python = path.join(venv, "Scripts", "python.exe");
-        if (plan.componentId === "hermes-gpt" && exists(path.join(root, "requirements.txt"))) await invoke(python, ["-m", "pip", "install", "-r", path.join(root, "requirements.txt")]);
-        const declared = await invoke(python, ["-c", "import json,pathlib,tomllib; p=pathlib.Path('.'); d=tomllib.loads((p/'pyproject.toml').read_text(encoding='utf-8')); groups=d.get('project',{}).get('optional-dependencies',{}); print(json.dumps({'extras':[k for k in ('dev','test','tests') if k in groups], 'tests':any(p.glob('test_*.py')) or any((p/'tests').rglob('test_*.py'))}))"], { cwd: root });
+        if (plan.componentId === "hermes-gpt" && exists(path.join(root, "requirements.txt"))) await invoke(python, ["-m", "pip", "install", "-r", path.join(root, "requirements.txt")], validationOptions);
+        const declared = await invoke(python, ["-c", "import json,pathlib,tomllib; p=pathlib.Path('.'); d=tomllib.loads((p/'pyproject.toml').read_text(encoding='utf-8')); groups=d.get('project',{}).get('optional-dependencies',{}); print(json.dumps({'extras':[k for k in ('dev','test','tests') if k in groups], 'tests':any(p.glob('test_*.py')) or any((p/'tests').rglob('test_*.py'))}))"], validationOptions);
         const pythonTests = JSON.parse(declared.stdout);
         if (!pythonTests.tests || !Array.isArray(pythonTests.extras) || pythonTests.extras.some(name => !["dev", "test", "tests"].includes(name))) throw new Error("候選 Hermes 沒有可驗證的測試套件；尚未啟用。");
-        for (const requirement of ["requirements-dev.txt", "requirements-test.txt"]) if (exists(path.join(root, requirement))) await invoke(python, ["-m", "pip", "install", "-r", path.join(root, requirement)]);
+        for (const requirement of ["requirements-dev.txt", "requirements-test.txt"]) if (exists(path.join(root, requirement))) await invoke(python, ["-m", "pip", "install", "-r", path.join(root, requirement)], validationOptions);
         const installTarget = root + (pythonTests.extras.length ? `[${pythonTests.extras.join(",")}]` : "");
         const installArgs = ["-m", "pip", "install", ...(plan.componentId === "hermes-agent" ? ["-e"] : []), installTarget];
-        await invoke(python, installArgs);
+        await invoke(python, installArgs, validationOptions);
         candidate = { kind: plan.componentId, componentId: plan.componentId, root, version: productVersion(root), commit: target.commit, pythonPath: python, ...(plan.componentId === "hermes-gpt" ? { hermesServer: path.join(root, "server.py") } : { hermesAgentExe: path.join(venv, "Scripts", "hermes.exe") }) };
         const check = plan.componentId === "hermes-gpt" ? "import ast,pathlib; ast.parse(pathlib.Path('server.py').read_text(encoding='utf-8')); import mcp,uvicorn" : "import hermes_cli.main";
-        await invoke(python, ["-c", check], { cwd: root });
+        await invoke(python, ["-c", check], validationOptions);
         if (!exists(candidate.hermesServer || candidate.hermesAgentExe)) throw new Error("候選 Hermes 執行入口不存在。");
-        await invoke(python, ["-m", "pytest", "-q"], { cwd: root });
+        await invoke(python, ["-m", "pytest", "-q"], validationOptions);
         if (plan.componentId === "hermes-agent") {
           let smoke = "", versionOk = false;
           try {
-            const result = await invoke(candidate.hermesAgentExe, ["--version"], { cwd: root });
+            const result = await invoke(candidate.hermesAgentExe, ["--version"], validationOptions);
             smoke = `${result.stdout || ""}${result.stderr || ""}`;
             versionOk = /\d+\.\d+\.\d+/.test(smoke);
           } catch { /* --help below is the supported fallback for CLIs without --version. */ }
           if (!versionOk) {
             try {
-              const result = await invoke(candidate.hermesAgentExe, ["--help"], { cwd: root });
+              const result = await invoke(candidate.hermesAgentExe, ["--help"], validationOptions);
               smoke = `${result.stdout || ""}${result.stderr || ""}`;
             } catch { /* report the common validation error below */ }
           }
@@ -419,7 +435,7 @@ async function executeComponentAction(plan, callbacks = {}) {
     }
     if (plan.componentId.startsWith("devspace-")) {
       if (json(path.join(root, "package.json"))?.name !== "@waishnav/devspace") throw new Error("候選 DevSpace 套件身分不符。");
-      candidate = { kind: plan.componentId === "devspace-tray-fork" && plan.activationKind === "management" ? "management" : "devspace", componentId: plan.componentId, root, version: productVersion(root), commit: target.commit, cliPath: path.join(root, "dist", "cli.js"), nodePath: tool("node").path, installerPath: path.join(root, "scripts", "windows", plan.componentId === "devspace-tray-fork" ? "install-devspace-watchdog-tray.ps1" : "install-devspace-watchdog.ps1") };
+      candidate = { kind: plan.componentId === "devspace-tray-fork" && plan.activationKind === "management" ? "management" : "devspace", componentId: plan.componentId, root, version: productVersion(root), commit: target.commit, cliPath: devspaceEntrypoint(root), nodePath: tool("node").path, installerPath: path.join(root, "scripts", "windows", plan.componentId === "devspace-tray-fork" ? "install-devspace-watchdog-tray.ps1" : "install-devspace-watchdog.ps1") };
       if (!exists(candidate.cliPath)) throw new Error("候選 DevSpace 執行入口不存在。");
       await invoke(tool("node").path, ["--check", candidate.cliPath]);
       await invoke(tool("node").path, [candidate.cliPath, "help"], { cwd: root });

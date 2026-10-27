@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - main
+      - codex/tray-release-readiness-20261018
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -60,6 +65,23 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Setup candidate-preparation bootstrap Python
+        if: matrix.os == 'windows-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Windows Watchdog regression suite
+        if: matrix.os == 'windows-latest'
+        run: npm run test:windows-watchdog
+
+      - name: Candidate preparation boundaries
+        if: matrix.os == 'windows-latest'
+        run: python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
+
+      - name: Start the built CLI in isolated state
+        run: node scripts/windows/stack-runtime-smoke.cjs
 
       - name: Doctor
         run: node dist/cli.js doctor

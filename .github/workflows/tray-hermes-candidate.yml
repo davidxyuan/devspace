@@ -1,0 +1,60 @@
+name: Prepare Hermes runtime candidate with Windows compatibility patch
+on:
+  workflow_dispatch:
+    inputs:
+      agent_revision:
+        description: Full official Agent commit; apply reviewed Windows patch, stop on conflict, never deploy
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify preparation and failure boundaries
+        run: python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
+      - name: Fetch the immutable official source
+        env:
+          AGENT_REVISION: ${{ inputs.agent_revision }}
+        shell: pwsh
+        run: |
+          if ($env:AGENT_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Full commit SHA required' }
+          $source = Join-Path $env:RUNNER_TEMP 'hermes-agent-source'
+          git init $source
+          if ($LASTEXITCODE) { throw 'Source initialization failed' }
+          git -C $source remote add origin https://github.com/NousResearch/hermes-agent.git
+          if ($LASTEXITCODE) { throw 'Origin setup failed' }
+          git -C $source fetch --no-tags --depth=1 origin $env:AGENT_REVISION
+          if ($LASTEXITCODE) { throw 'Pinned fetch failed' }
+          git -C $source checkout --detach $env:AGENT_REVISION
+          if ($LASTEXITCODE) { throw 'Pinned checkout failed' }
+      - name: Prepare frozen dependencies and inspect CLI
+        env:
+          AGENT_REVISION: ${{ inputs.agent_revision }}
+        shell: pwsh
+        run: |
+          python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source "$env:RUNNER_TEMP/hermes-agent-source" --revision $env:AGENT_REVISION --patch scripts/windows/patches/hermes-windows-control-pipe.patch --out "$env:RUNNER_TEMP/hermes-pm-candidate"
+          if ($LASTEXITCODE) { throw 'Candidate preparation failed; preserved diagnostics below' }
+      - name: Verify bounded external gateway supervision with real test processes
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/hermes-pm-candidate/runtime/Scripts/python.exe" -I -B scripts/windows/hermes-gateway-supervisor.test.py -v *> "$env:RUNNER_TEMP/hermes-pm-candidate/supervisor-tests.log"
+          if ($LASTEXITCODE) { throw 'Supervisor tests failed' }
+      - name: Preserve evidence (not an installable release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-preparation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/hermes-pm-candidate/*.json
+            ${{ runner.temp }}/hermes-pm-candidate/*.log
+            ${{ runner.temp }}/hermes-pm-candidate/candidate.patch
+          if-no-files-found: warn

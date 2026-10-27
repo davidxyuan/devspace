@@ -1475,6 +1475,13 @@ function Invoke-WithWatchdogEnvironment($Variables, [scriptblock]$Action) {
 function Get-WatchdogHermesEnvironment($Config) {
     $values = @{
         HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
+        HERMES_AGENT_ROOT = $null
+    }
+    $agentRoot = [string](Get-WatchdogProperty $Config 'hermesAgentWorkingDirectory' '')
+    if ($agentRoot) {
+        $prefix = [IO.Path]::GetPathRoot($agentRoot)
+        if (-not [IO.Path]::IsPathRooted($agentRoot) -or $prefix -in @('\','/') -or $prefix -match '^[A-Za-z]:$' -or -not [IO.Directory]::Exists($agentRoot)) { throw 'The configured Hermes Agent needs an existing absolute source directory.' }
+        $values['HERMES_AGENT_ROOT'] = [IO.Path]::GetFullPath($agentRoot)
     }
     $agentExecutable = [string](Get-WatchdogProperty $Config 'hermesAgentExe' '')
     if ($agentExecutable) {

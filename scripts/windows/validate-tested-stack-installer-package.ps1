@@ -36,7 +36,10 @@ $required = @(
     "devspace-stack-setup.test.cjs",
     "install-devspace-stack.ps1", "install-devspace-stack.cmd", "build-oneclick-package.ps1",
     "stack-jobs.cjs", "stack-management.cjs", "stack-setup-apply.cjs", "stack-cloud-policy.cjs", "stack-apply-parameters.ps1",
+    "stack-node-build.cjs", "stack-database-path.cjs", "stack-release-policy.cjs", "stack-release-manifest.json", "stack-runtime-smoke.cjs", "stack-hermes-source.py",
     "stack-operation.ps1", "stack-host-management.ps1", "stack-activate.ps1",
+    "prepare-hermes-pm-candidate.py", "hermes-gateway-supervisor.py",
+    "patches\hermes-windows-control-pipe.patch",
     "watchdog-install-transaction.ps1", "tested-stack-manifest.json"
 )
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root $_)) })
@@ -59,7 +62,9 @@ $setupSource = [IO.File]::ReadAllText((Join-Path $root "devspace-stack-setup.cjs
 foreach ($marker in @('127.0.0.1', 'x-devspace-setup-token', 'configurationFingerprint', 'startWorker')) {
     if (-not $setupSource.Contains($marker)) { throw "Setup Dashboard bootstrap is missing required marker: $marker" }
 }
-foreach ($name in @('stack-jobs.cjs','stack-management.cjs','stack-setup-apply.cjs')) { & node.exe --check (Join-Path $root $name); if ($LASTEXITCODE -ne 0) { throw "$name syntax validation failed." } }
+foreach ($name in @('stack-jobs.cjs','stack-management.cjs','stack-setup-apply.cjs','stack-node-build.cjs','stack-database-path.cjs','stack-release-policy.cjs','stack-runtime-smoke.cjs')) { & node.exe --check (Join-Path $root $name); if ($LASTEXITCODE -ne 0) { throw "$name syntax validation failed." } }
+& node.exe (Join-Path $root 'stack-release-policy.cjs') | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Candidate release manifest validation failed.' }
 if ($setupSource.Contains('devspace-watchdog-tray-launcher.exe')) { throw "Setup Dashboard must not depend on the retired native Tray launcher executable." }
 foreach ($marker in @('devspace-watchdog-bootstrap.ps1', 'devspace-watchdog-tray.ps1', 'devspace-watchdog-tray-ui.ps1', 'run-devspace-watchdog-tray-hidden.vbs')) {
     if (-not $setupSource.Contains($marker)) { throw "Setup Dashboard Tray detection is missing supported startup file: $marker" }
