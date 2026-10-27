@@ -105,6 +105,20 @@ def runtime_ready(identity, health, control, runtime):
             and runtime.get("answering_pid") == identity["pid"])
 
 
+def observed_alive(pid, start):
+    try:
+        process = psutil.Process(pid)
+        if process.create_time() != start:
+            return False
+        # Windows can retain creation metadata after exit; a signaled process handle is authoritative.
+        process.wait(timeout=0)
+        return False
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.TimeoutExpired:
+        return True
+
+
 def ready(previous=None):
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -146,6 +160,7 @@ try:
                                    "--prepared", str(PREPARED)],
                                   env=env, stdout=log, stderr=subprocess.STDOUT,
                                   stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        report["workerPid"] = worker.pid
         first = ready()
         manager.write(HOME / "test-fault.json", first)
         event("requested_owned_child_crash_37", first)
@@ -163,10 +178,7 @@ try:
         final = manager.read(state_path)
         assert final["phase"] == "stopped" and len(final["starts"]) == 3, final
         for pid, start in observed:
-            try:
-                assert psutil.Process(pid).create_time() != start, f"Owned process still alive: {pid}"
-            except psutil.NoSuchProcess:
-                pass
+            assert not observed_alive(pid, start), f"Owned process still alive: {pid}"
         event("graceful_stop_no_survivors", {"final": final, "observedIdentities": sorted(observed)})
         report["passed"] = True
 except Exception as exc:
@@ -183,11 +195,8 @@ finally:
     report["observedIdentities"] = sorted(observed)
     survivors = []
     for pid, start in observed:
-        try:
-            if psutil.Process(pid).create_time() == start:
-                survivors.append({"pid": pid, "startTime": start})
-        except psutil.NoSuchProcess:
-            pass
+        if observed_alive(pid, start):
+            survivors.append({"pid": pid, "startTime": start})
     report["survivingObservedIdentities"] = survivors
     report["lastState"] = manager.read(state_path)
     report["finishedAt"] = time.time()
