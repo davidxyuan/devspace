@@ -138,15 +138,15 @@ test("workspace paths outside the allowed roots are rejected", async (t) => {
   );
 });
 
-test("a symlinked allowed root preserves checkout and worktree path behavior", { skip: platform() === "win32" }, async (t) => {
+test("a symlinked allowed root preserves checkout and worktree path behavior", async (t) => {
   const context = await fixture(t);
-  const aliasRoot = join(context.root, "alias-root");
-  await symlink(context.root, aliasRoot, "dir");
+  const aliasRoot = join(context.outsideRoot, "alias-root");
+  await symlink(await realpath(context.root), aliasRoot, platform() === "win32" ? "junction" : "dir");
   await createGitProject(context.root);
 
   const aliasConfig = loadConfig({
     DEVSPACE_ALLOWED_ROOTS: aliasRoot,
-    DEVSPACE_WORKTREE_ROOT: join(aliasRoot, ".devspace", "alias-worktrees"),
+    DEVSPACE_WORKTREE_ROOT: join(context.root, ".devspace", "alias-worktrees"),
     DEVSPACE_AGENT_DIR: context.agentDir,
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
