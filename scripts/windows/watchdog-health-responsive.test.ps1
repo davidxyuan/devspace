@@ -146,29 +146,42 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
     $clientWorker.Dispose(); $clientWorker=[PowerShell]::Create()
     $slowClientBody={
         param($Port,$HeartbeatPath,$StopName)
+        $ErrorActionPreference='Stop'
         $stop=[Threading.EventWaitHandle]::OpenExisting($StopName)
-        $results=@()
         try {
             foreach($part in @('headers','body')) {
                 $client=New-Object Net.Sockets.TcpClient
                 $client.Connect('127.0.0.1',$Port); $client.NoDelay=$true
-                $stream=$client.GetStream(); $watch=[Diagnostics.Stopwatch]::StartNew(); $maxAge=0; $reply=''
+                $stream=$client.GetStream(); $watch=[Diagnostics.Stopwatch]::StartNew(); $maxAge=0; $reply=''; $closed=$false
                 $prefix=if($part -eq 'headers'){"GET /api/status HTTP/1.1`r`nHost: 127.0.0.1:$Port`r`nX-Slow: "}else{"POST /fixture HTTP/1.1`r`nHost: 127.0.0.1:$Port`r`nContent-Length: 1000`r`n`r`n"}
                 $bytes=[Text.Encoding]::ASCII.GetBytes($prefix); $stream.Write($bytes,0,$bytes.Length)
                 try {
                     while($watch.Elapsed.TotalSeconds -lt 17) {
-                        $stream.WriteByte(120)
+                        try {
+                            if($client.Client.Poll(0,[Net.Sockets.SelectMode]::SelectRead)) {
+                                $buffer=New-Object byte[] 4096
+                                $count=$stream.Read($buffer,0,$buffer.Length)
+                                $closed=$count -eq 0
+                                $reply=[Text.Encoding]::UTF8.GetString($buffer,0,$count)
+                                break
+                            }
+                            $stream.WriteByte(120)
+                        } catch {
+                            $cause=$_.Exception.GetBaseException()
+                            # A deadline close with unread request bytes can reset the Windows socket before the 400 arrives.
+                            if($cause -is [Net.Sockets.SocketException] -and $cause.SocketErrorCode -eq [Net.Sockets.SocketError]::ConnectionReset) { $closed=$true; break }
+                            throw
+                        }
                         Start-Sleep -Milliseconds 100
                         $file=[IO.File]::Open($HeartbeatPath,'Open','Read',[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
                         $reader=New-Object IO.StreamReader($file)
                         try {$hb=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}
                         $maxAge=[Math]::Max($maxAge,([DateTimeOffset]::UtcNow-[DateTimeOffset]$hb.timestamp).TotalSeconds)
-                        if($stream.DataAvailable){$buffer=New-Object byte[] 4096;$count=$stream.Read($buffer,0,$buffer.Length);$reply=[Text.Encoding]::UTF8.GetString($buffer,0,$count);break}
                     }
                 } finally {$client.Dispose()}
                 $elapsed=$watch.Elapsed.TotalSeconds
                 $healthy=Invoke-RestMethod "http://127.0.0.1:$Port/api/status" -TimeoutSec 3
-                $results+=[pscustomobject]@{part=$part;seconds=$elapsed;maxHeartbeatAge=$maxAge;rejected=($reply -match '^HTTP/1.1 400');responsive=($null -ne $healthy.overall)}
+                [pscustomobject]@{part=$part;seconds=$elapsed;maxHeartbeatAge=$maxAge;rejected=($closed -or $reply -match '^HTTP/1.1 400');connectionClosed=$closed;responsive=($null -ne $healthy.overall)}
             }
             $idleClients=@()
             try {
@@ -182,9 +195,8 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
                     Start-Sleep -Milliseconds 100
                 }
                 $healthy=Invoke-RestMethod "http://127.0.0.1:$Port/api/status" -TimeoutSec 3
-                $results+=[pscustomobject]@{part='idle-batch';seconds=$watch.Elapsed.TotalSeconds;maxHeartbeatAge=$maxAge;rejected=$true;responsive=($null -ne $healthy.overall)}
+                [pscustomobject]@{part='idle-batch';seconds=$watch.Elapsed.TotalSeconds;maxHeartbeatAge=$maxAge;rejected=$true;responsive=($null -ne $healthy.overall)}
             } finally {foreach($idle in $idleClients){$idle.Dispose()}}
-            $results
         } finally {[void]$stop.Set();$stop.Dispose()}
     }
     [void]$clientWorker.AddScript($slowClientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($stopName)
@@ -192,6 +204,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
     Invoke-Expression $loop.Extent.Text
     $slowResults=@($clientWorker.EndInvoke($clientAsync))
     Write-Host ('Slow-client evidence: '+($slowResults|ConvertTo-Json -Compress))
+    if ($clientWorker.Streams.Error.Count) { throw ('Slow-client worker failed: ' + ($clientWorker.Streams.Error | Out-String)) }
     Assert-True 'slow header and body clients finish within a total request budget' ($slowResults.Count -eq 3 -and @($slowResults|Where-Object {-not $_.rejected -or ($_.part -ne 'idle-batch' -and $_.seconds -ge 2.5) -or -not $_.responsive -or $_.maxHeartbeatAge -ge 6}).Count -eq 0)
     Write-Host "Host responsiveness passed: $($result.ok) real HTTP rounds while cancellation pending, $($recoveryResult.ok) during recovery; maximum heartbeat ages $([Math]::Round($result.maxAge,2))s/$([Math]::Round($recoveryResult.maxAge,2))s; no overlapping probes; recovery drained."
 } finally {
