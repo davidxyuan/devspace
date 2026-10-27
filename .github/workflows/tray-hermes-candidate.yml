@@ -1,5 +1,13 @@
 name: Prepare Hermes runtime candidate with Windows compatibility patch
 on:
+  push:
+    branches:
+      - codex/tray-release-readiness-20261018
+    paths:
+      - .github/workflows/tray-hermes-candidate.yml
+      - scripts/windows/prepare-hermes-pm-candidate*.py
+      - scripts/windows/hermes-gateway-supervisor*.py
+      - scripts/windows/patches/hermes-windows-control-pipe.patch
   workflow_dispatch:
     inputs:
       agent_revision:
@@ -12,6 +20,9 @@ jobs:
   prepare:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # Push validation stays on the reviewed official baseline; newer revisions require explicit dispatch.
+      AGENT_REVISION: ${{ inputs.agent_revision || 'd923a5eb487a17c0a68801bba9ef0f56c81040a8' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,8 +33,6 @@ jobs:
       - name: Verify preparation and failure boundaries
         run: python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
       - name: Fetch the immutable official source
-        env:
-          AGENT_REVISION: ${{ inputs.agent_revision }}
         shell: pwsh
         run: |
           if ($env:AGENT_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Full commit SHA required' }
@@ -37,8 +46,6 @@ jobs:
           git -C $source checkout --detach $env:AGENT_REVISION
           if ($LASTEXITCODE) { throw 'Pinned checkout failed' }
       - name: Prepare frozen dependencies and inspect CLI
-        env:
-          AGENT_REVISION: ${{ inputs.agent_revision }}
         shell: pwsh
         run: |
           python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source "$env:RUNNER_TEMP/hermes-agent-source" --revision $env:AGENT_REVISION --patch scripts/windows/patches/hermes-windows-control-pipe.patch --out "$env:RUNNER_TEMP/hermes-pm-candidate"
