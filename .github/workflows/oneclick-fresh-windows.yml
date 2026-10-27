@@ -103,3 +103,5 @@ jobs:
             ${{ runner.temp }}\fresh-vm\fresh-vm-result.json
             ${{ runner.temp }}\fresh-vm\setup.stdout.log
             ${{ runner.temp }}\fresh-vm\setup.stderr.log
+            ${{ runner.temp }}\fresh-vm\hermes-mcp-smoke.json
+            ${{ runner.temp }}\fresh-vm\hermes-mcp-smoke.stderr.log

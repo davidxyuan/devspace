@@ -36,7 +36,7 @@ $required = @(
     "devspace-stack-setup.test.cjs",
     "install-devspace-stack.ps1", "install-devspace-stack.cmd", "build-oneclick-package.ps1",
     "stack-jobs.cjs", "stack-management.cjs", "stack-setup-apply.cjs", "stack-cloud-policy.cjs", "stack-apply-parameters.ps1",
-    "stack-node-build.cjs", "stack-database-path.cjs", "stack-release-policy.cjs", "stack-release-manifest.json", "stack-runtime-smoke.cjs", "stack-hermes-source.py",
+    "stack-node-build.cjs", "stack-database-path.cjs", "stack-release-policy.cjs", "stack-release-manifest.json", "stack-runtime-smoke.cjs", "stack-hermes-source.py", "stack-hermes-mcp-smoke.py",
     "stack-operation.ps1", "stack-host-management.ps1", "stack-activate.ps1",
     "prepare-hermes-pm-candidate.py", "hermes-gateway-supervisor.py",
     "patches\hermes-windows-control-pipe.patch",
