@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "tray-20261018-candidate.1",
+  "id": "tray-20261027-candidate.2",
   "channel": "candidate",
   "description": "Pinned candidate inputs, not a tested stable combination. Preserve existing installations; stage upgrades separately.",
   "components": {
@@ -11,11 +11,11 @@
       "integrity": "sha512-uyEgFUmt8UcxRy7xnH2rddYdEm6lLIPMKgS2JHwRP7qVnWFtC7j1l4//EOfEVhO4NqGMckWxixNkCWAHPvgZqg=="
     },
     "hermes-gpt": {
-      "repository": "asimons81/hermes-gpt",
+      "repository": "davidxyuan/hermes-gpt",
       "version": "0.14.0",
-      "revision": "8306b95a95281f3ac2014a1237aa26e68b3f49b4",
-      "ref": "v0.14.0",
-      "updateBranch": "master"
+      "revision": "535d928ee238e99a5dfeb58d77a59d25b02ef378",
+      "ref": "codex/explicit-agent-source-20261019",
+      "updateBranch": "codex/explicit-agent-source-20261019"
     },
     "hermes-agent": {
       "repository": "davidxyuan/hermes-agent",

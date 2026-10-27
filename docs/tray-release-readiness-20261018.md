@@ -8,6 +8,8 @@
 
 ## 已完成的程式修正
 
+10/27 GitHub 候選已交付：DevSpace `0a4b46e68df9de131699d7c3e01aa218bbf512c6` 的 [Windows／Linux／macOS CI](https://github.com/davidxyuan/devspace/actions/runs/40435638968) 全部通過；Hermes GPT `535d928ee238e99a5dfeb58d77a59d25b02ef378` 的 [20 項 CI](https://github.com/davidxyuan/hermes-gpt/actions/runs/40435255153) 全部通過。修正了工作目錄別名被 canonical path 取代、檔案系統錯誤被當成失效綁定，以及 Windows 測試子程序尚未退出就刪除工作目錄的問題。Agent loader 的來源固定於已驗證的官方 `d923a5e`，避免浮動 main 的新依賴衝突混入候選驗證。以上為候選程式測試，非整組安裝或正式部署證明。
+
 - **資料回復：** 透過實際 DevSpace 設定取得資料庫位置；先確認新舊位置相符，再停止已識別服務並備份 SQLite、WAL／journal。快照與回復取得整組檔案的獨占鎖；備份雜湊不符或有其他寫入者時中止。候選啟動失敗後，一併回復設定及資料。涵蓋自訂資料目錄、未 checkpoint 的已提交 WAL、首次安裝、檔案占用及備份損壞測試。
 - **Agent 來源同步：** 啟用／回復一起切換 `hermesAgentExe` 和 `hermesAgentWorkingDirectory`；Host、舊 watchdog、安裝器產生的 launcher 都傳入獨立 `HERMES_AGENT_ROOT`。來源與使用者資料目錄分開；無效來源、混入舊模組或缺依賴會拒絕啟動。安裝／更新在停止服務之前，用實際 GPT Python 與暫存資料驗證必要模組的真實來源；檢查禁止自動安裝依賴，並有 30 秒上限。管理工作副本與發布包均包含該檢查程式。
 - **來源建置：** 按候選的單一 lockfile 與固定 `packageManager` 使用 npm／pnpm，執行建置及測試；工具只裝在候選目錄。啟動入口取自套件 `bin.devspace`，驗證實際路徑留在套件內。歧義鎖檔、工具版本不符、缺測試、入口越界均拒絕。
@@ -26,10 +28,10 @@
 | 元件 | 乾淨安裝候選 |
 |---|---|
 | DevSpace official | 1.0.8／`fe712e2b6c07231d2a76503bf2a674b165850616`，npm integrity 固定 |
-| Hermes GPT | 0.14.0／`8306b95a95281f3ac2014a1237aa26e68b3f49b4` |
+| Hermes GPT candidate fork | 0.14.0／`535d928ee238e99a5dfeb58d77a59d25b02ef378`，`davidxyuan/hermes-gpt` 的來源契約修正版 |
 | Hermes Agent fork | 0.21.1／`601d98c2709f766290cc3627b035ab73cfd54232`，沿用原快速安裝的固定基準 |
 
-這不是 TYO 現在的安裝組合，也未宣稱三者已整合通過。Agent 不是目前 TYO 的 0.21.3，更不是官方 0.22.2；既有安裝不會被這份清單直接降版。清單內未修補的官方 GPT 尚不具備新的來源契約，會被新檢查拒絕；修補後產物尚未發布並重新固定，因此這份清單目前不可當作正式整組安裝。Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是本次本機驗證版本，非所有受支援 Node／OS 組合均已測過。
+這不是 TYO 現在的安裝組合，也未宣稱三者已整合通過。Agent 不是目前 TYO 的 0.21.3，更不是官方 0.22.2；既有安裝不會被這份清單直接降版。10/27 candidate.2 已將 GPT 固定至上述通過 CI 的 fork 提交；安裝器預設使用清單來源，管理器僅登錄該分支與完全相符的乾淨固定提交。另保留官方 `asimons81/hermes-gpt` 的更新發現，不能因採用 fork 就漏看官方新版。整組乾淨 Windows 安裝仍須通過獨立驗證；Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是本次本機驗證版本，非所有受支援 Node／OS 組合均已測過。
 
 ## 實際通過的驗證
 

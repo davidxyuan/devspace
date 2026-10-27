@@ -116,7 +116,7 @@ function registeredSource(id, source) {
   if (id === "devspace-official" && source.kind === "git") return { ...canonical, kind: "git" };
   if (id === "hermes-gpt" && sameRepository(source.repository, "davidxyuan/hermes-gpt") && (source.branch === "codex/hermes-runtime-provider-fixes" || source.historical)) return { ...canonical, repository: "davidxyuan/hermes-gpt", branch: "codex/hermes-runtime-provider-fixes" };
   const pin = RELEASE_POLICY.components[id];
-  if (id === "hermes-agent" && pin && sameRepository(source.repository, pin.repository) && (source.branch === pin.updateBranch || source.releasePinned))
+  if (["hermes-agent", "hermes-gpt"].includes(id) && pin && sameRepository(source.repository, pin.repository) && (source.branch === pin.updateBranch || source.releasePinned))
     return { ...canonical, repository: pin.repository, branch: pin.updateBranch, release: false };
   return canonical;
 }

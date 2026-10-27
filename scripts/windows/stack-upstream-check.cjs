@@ -12,7 +12,7 @@ async function checkUpstreams(fetcher = fetch) {
     return JSON.parse(body);
   }
   const components = await Promise.all(Object.entries(policy.components).map(async ([id, pin]) => {
-    const upstream = id === "hermes-agent" ? "NousResearch/hermes-agent" : pin.repository;
+    const upstream = id === "hermes-agent" ? "NousResearch/hermes-agent" : id === "hermes-gpt" ? "asimons81/hermes-gpt" : pin.repository;
     try {
       let release;
       if (id === "devspace-official") {

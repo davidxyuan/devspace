@@ -17,7 +17,7 @@ param(
     [string]$NodePath,
     [string]$CliPath,
     [string[]]$Components = @("DevSpace"),
-    [string]$HermesRepo = "https://github.com/asimons81/hermes-gpt.git",
+    [string]$HermesRepo,
     [string]$HermesDir = "$env:USERPROFILE\hermes-gpt",
     [string]$PythonPath,
     [string]$MachineName,
@@ -898,7 +898,7 @@ if ($installHermes) {
             $gitPath = Find-GitForClone
             $pin = $releasePolicy.components.'hermes-gpt'
             $pinnedRepository = 'https://github.com/' + [string]$pin.repository + '.git'
-            if ($HermesRepo.TrimEnd('/') -ine $pinnedRepository) { Fail 'A custom Hermes repository requires its own pinned release manifest.' }
+            if ($PSBoundParameters.ContainsKey('HermesRepo') -and $HermesRepo.TrimEnd('/') -ine $pinnedRepository) { Fail 'A custom Hermes repository requires its own pinned release manifest.' }
             Invoke-Checked { & $gitPath clone --no-checkout -- $pinnedRepository $HermesDir } 'git clone hermes-gpt failed.'
             Invoke-Checked { & $gitPath -C $HermesDir checkout --detach ([string]$pin.revision) } 'Pinned Hermes checkout failed.'
             $installedHead = (& $gitPath -C $HermesDir rev-parse HEAD).Trim()

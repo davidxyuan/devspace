@@ -28,6 +28,19 @@ if (-not $invokeCheckedFunction) { throw 'Invoke-Checked function not found.' }
 . ([scriptblock]::Create($invokeCheckedFunction.Extent.Text))
 function Fail([string]$message, [string]$fix) { throw $message }
 
+$repoParameter = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'HermesRepo' }
+if ($null -ne $repoParameter.DefaultValue) { throw 'Hermes clone source must default to the release manifest, not an independent repository.' }
+# Exercise the actual leaf guard without running the installer or touching a user profile.
+$repoGuard = $ast.FindAll({ param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.Contains("Fail 'A custom Hermes repository requires its own pinned release manifest.'") }, $true) | Sort-Object { $_.Extent.Text.Length } | Select-Object -First 1
+$checkRepository = [scriptblock]::Create("param([string]`$HermesRepo)`n`$pinnedRepository = 'https://github.com/davidxyuan/hermes-gpt.git'`n" + $repoGuard.Extent.Text)
+& $checkRepository
+& $checkRepository -HermesRepo 'https://github.com/davidxyuan/hermes-gpt.git'
+foreach ($invalidRepo in @('https://github.com/asimons81/hermes-gpt.git', 'https://github.com/unregistered/hermes-gpt.git', '')) {
+    $rejected = $false
+    try { & $checkRepository -HermesRepo $invalidRepo } catch { if ($_.Exception.Message -match 'custom Hermes repository') { $rejected = $true } else { throw } }
+    if (-not $rejected) { throw 'Explicit mismatched Hermes repository was accepted.' }
+}
+
 $tempRoot = Join-Path $env:TEMP ('devspace-python-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {

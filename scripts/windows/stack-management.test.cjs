@@ -181,6 +181,32 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   write(historicalManifestPath, historicalManifest);
   write(configPath, config);
 
+  // The release pin registers exactly its own source/channel, preserving older installations.
+  const gptPin = require("./stack-release-policy.cjs").readReleasePolicy().components["hermes-gpt"];
+  const pinnedGptRoot = path.join(temp, "pinned-gpt");
+  const pinnedGptHead = makeRepo(pinnedGptRoot, gptPin.repository, gptPin.updateBranch, {
+    "pyproject.toml": `[project]\nname="hermes-gpt"\nversion="${gptPin.version}"`,
+    "server.py": "# pinned source fixture",
+  });
+  write(configPath, { ...config, hermesWorkingDirectory: pinnedGptRoot });
+  i = await collect({ checkLatest: true });
+  assert.equal(action(i, "hermes-gpt", "update").enabled, true, "the pinned candidate branch is registered");
+  assert.equal(component(i, "hermes-gpt").latest.repository, gptPin.repository);
+  const pinnedGptPlan = planComponentAction(request(i, "hermes-gpt", "update"), i);
+  assert.equal(pinnedGptPlan.target.branch, gptPin.updateBranch);
+  git(pinnedGptRoot, ["checkout", "--detach", pinnedGptHead]);
+  const pinnedRead = async (command, args, options) => args[0] === "-C" && args[1] === pinnedGptRoot && args[2] === "rev-parse" && args[3] === "HEAD"
+    ? { stdout: gptPin.revision } : run(command, args, options);
+  i = await collect({ checkLatest: true, run: pinnedRead });
+  assert.equal(component(i, "hermes-gpt").source.releasePinned, true);
+  assert.equal(action(i, "hermes-gpt", "update").enabled, true, "a clean exact detached release pin is registered");
+  i = await collect({ checkLatest: true });
+  assert.equal(action(i, "hermes-gpt", "update").enabled, false, "an unknown detached fork cannot adopt the candidate channel");
+  git(pinnedGptRoot, ["checkout", "-b", "unregistered-branch"]);
+  i = await collect({ checkLatest: true });
+  assert.equal(action(i, "hermes-gpt", "update").enabled, false, "a different branch is not registered by repository alone");
+  write(configPath, config);
+
   // A separate clean manager checkout must update management files without changing the active DevSpace CLI.
   const managerRoot = path.join(temp, "manager");
   const managerHead = makeRepo(managerRoot, "davidxyuan/devspace", forkBranch, {
@@ -427,13 +453,15 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
 
   i = await collect({ checkLatest: true });
   const hermesPlan = planComponentAction(request(i, "hermes-gpt", "install"), i);
+  assert.equal(hermesPlan.target.repository, gptPin.repository);
+  assert.equal(hermesPlan.target.commit, gptPin.revision);
   let pythonRoot, failPythonTests = false, missingPythonTests = false;
   const pythonCommands = [];
   const pythonRun = async (command, args, options = {}) => {
     pythonCommands.push({ command, args, options });
     if (args[0] === "clone") {
       pythonRoot = args.at(-1);
-      assert.equal(args.at(-2), "https://github.com/asimons81/hermes-gpt.git");
+      assert.equal(args.at(-2), `https://github.com/${gptPin.repository}.git`);
       write(path.join(pythonRoot, "pyproject.toml"), `[project]\nname="hermes-gpt"\nversion="${hermesPlan.target.version}"`);
       write(path.join(pythonRoot, "server.py"), "# fixture server");
       write(path.join(pythonRoot, "requirements.txt"), "mcp\nuvicorn\n");

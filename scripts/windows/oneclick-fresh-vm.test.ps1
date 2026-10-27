@@ -265,6 +265,14 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     if (-not [IO.File]::Exists([string]$watchdog.cliPath)) { throw 'DevSpace CLI was not installed.' }
     if (@($devspaceConfig.allowedRoots).Count -eq 0) { throw 'DevSpace allowedRoots is empty.' }
 
+    $releasePolicy = [IO.File]::ReadAllText((Join-Path $packageRoot 'scripts\windows\stack-release-manifest.json')) | ConvertFrom-Json
+    $componentHeads = [ordered]@{}
+    foreach ($entry in @(@{ id='hermes-gpt'; root=$hermesDir }, @{ id='hermes-agent'; root=[string]$watchdog.hermesAgentWorkingDirectory })) {
+        $head = (& git.exe -C $entry.root rev-parse HEAD | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $head -cne $releasePolicy.components.($entry.id).revision) { throw "Installed $($entry.id) revision does not match the packaged release manifest." }
+        $componentHeads[$entry.id] = $head
+    }
+
     $stopwatch.Stop()
     if ($MaxElapsedSeconds -gt 0 -and $stopwatch.Elapsed.TotalSeconds -gt $MaxElapsedSeconds) {
         throw ("Fresh One-Click install exceeded the performance budget: {0}s > {1}s." -f [math]::Round($stopwatch.Elapsed.TotalSeconds,1), $MaxElapsedSeconds)
@@ -274,6 +282,8 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         elapsedSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         packageHead = [string]$manifest.head
         packageFingerprint = [string]$manifest.fingerprint
+        candidateSetId = [string]$releasePolicy.id
+        componentHeads = $componentHeads
         state = 'core-installed-skip-start'
         ngrokCredentialRoundTrip = $true
         devspaceProfile = 'full/stateless-json/skills/subagents'
