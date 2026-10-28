@@ -110,7 +110,8 @@ function Wait-UpdateRolesReady([int]$DashboardPort) {
     return $false
 }
 function Test-UpdateServiceAcceptable([string]$Name, $Service) {
-    if (-not $Service -or -not $Service.enabled) { return $true }
+    if (-not $Service -or $Service.enabled -isnot [bool]) { return $false }
+    if (-not $Service.enabled) { return $true }
     if ($Service.identityConflict) { return $false }
     if ($Service.healthy) { return $true }
     if ($Name -eq 'hermes' -and $AllowHermesBusyTransport -and $Service.processFound -and $Service.listenerFound -and $Service.busyIndeterminate) { return $true }

@@ -45,6 +45,12 @@ try {
   assert.deepEqual(plan.changes.map(item => item.name), ["mcp-router.cjs"], "only semantic runtime changes should be planned");
   assert.match(supervisorTaskName(installDir), /^DevSpaceWatchdogSupervisor-[a-f0-9]{12}$/, "supervisor task name should be stable and bounded");
 
+  for (const service of [undefined, null, {}, { healthy: true }, { enabled: null }, { enabled: 0 }, { enabled: "false", healthy: true }]) {
+    assert.equal(serviceAcceptable("devspace", service, false), false, "missing or invalid service state must block updates");
+  }
+  assert.equal(serviceAcceptable("devspace", { enabled: false }, false), true, "explicitly disabled services remain supported");
+  assert.equal(serviceAcceptable("devspace", { enabled: true, healthy: true }, false), true);
+
   assert.equal(serviceAcceptable("hermes", { enabled: true, healthy: false, busyIndeterminate: true, processFound: true, listenerFound: true, identityConflict: false }, true), true,
     "active Hermes transport may be accepted only with proven process/listener identity");
   assert.equal(serviceAcceptable("hermes", { enabled: true, healthy: false, busyIndeterminate: true, processFound: true, listenerFound: false, identityConflict: false }, true), false,

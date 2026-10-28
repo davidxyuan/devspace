@@ -113,7 +113,8 @@ function httpJson({ port, method = "GET", pathname = "/api/status", body, timeou
   });
 }
 function serviceAcceptable(name, service, allowHermesBusy) {
-  if (!service || !service.enabled) return true;
+  if (!service || typeof service.enabled !== "boolean") return false;
+  if (!service.enabled) return true;
   if (service.identityConflict) return false;
   if (service.healthy) return true;
   return name === "hermes" && allowHermesBusy && service.busyIndeterminate && service.processFound && service.listenerFound;

@@ -51,6 +51,17 @@ Assert-NotContains 'does not stop DevSpace service' "Stop-WatchdogManagedService
 Assert-NotContains 'does not stop Hermes service' "Stop-WatchdogManagedService 'hermes'"
 Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'ngrok'"
 
+& {
+    $healthFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-UpdateServiceAcceptable'}, $true)
+    . ([scriptblock]::Create($healthFunction.Extent.Text))
+    $AllowHermesBusyTransport = $false
+    foreach ($service in @($null, @{}, @{healthy=$true}, @{enabled=$null}, @{enabled=0}, @{enabled='false';healthy=$true})) {
+        if (Test-UpdateServiceAcceptable 'devspace' $service) { throw 'Missing or invalid service state must block updates.' }
+    }
+    if (-not (Test-UpdateServiceAcceptable 'devspace' @{enabled=$false})) { throw 'Explicitly disabled services must remain supported.' }
+    if (-not (Test-UpdateServiceAcceptable 'devspace' @{enabled=$true;healthy=$true})) { throw 'Healthy services must remain supported.' }
+}
+
 # A failed task query is not proof that the supervisor exited.
 & {
     . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
