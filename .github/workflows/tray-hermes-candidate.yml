@@ -84,4 +84,6 @@ jobs:
             ${{ runner.temp }}/hermes-pm-candidate/*.json
             ${{ runner.temp }}/hermes-pm-candidate/*.log
             ${{ runner.temp }}/hermes-pm-candidate/candidate.patch
+            ${{ runner.temp }}/hermes-gateway-disposable-profile/test-manager.log
+            ${{ runner.temp }}/hermes-gateway-disposable-profile/supervised-gateway.log
           if-no-files-found: warn

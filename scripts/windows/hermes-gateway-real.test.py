@@ -89,6 +89,7 @@ report = {"scope": "Real pinned gateway candidate, isolated loopback API only; n
           "prepared": str(PREPARED), "revision": manager.read(PREPARED / "preparation.json")["revision"],
           "home": str(HOME), "port": port, "events": [], "passed": False}
 observed = set()
+observed_details = {}
 worker = None
 
 def event(kind, value):
@@ -119,6 +120,16 @@ def observed_alive(pid, start):
         return True
 
 
+def wait_observed_exit(identities, deadline):
+    for pid, start in identities:
+        try:
+            process = psutil.Process(pid)
+            if process.create_time() == start:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+        except psutil.NoSuchProcess:
+            pass
+
+
 def ready(previous=None):
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -132,7 +143,10 @@ def ready(previous=None):
             parent = psutil.Process(worker.pid)
             for process in [parent, *parent.children(recursive=True)]:
                 try:
-                    observed.add((process.pid, process.create_time()))
+                    key = (process.pid, process.create_time())
+                    observed.add(key)
+                    if key not in observed_details:
+                        observed_details[key] = process.as_dict(attrs=["pid", "ppid", "create_time", "name", "exe"])
                 except psutil.NoSuchProcess:
                     pass
         except psutil.NoSuchProcess:
@@ -173,10 +187,15 @@ try:
         assert third != second
         event("replacement_after_official_handoff", third)
         state = manager.read(state_path)
+        stop_deadline = time.monotonic() + 190
         manager.write(HOME / ".devspace-gateway-stop.json", {"runId": state["runId"]})
-        assert worker.wait(timeout=190) == 0
+        assert worker.wait(timeout=max(0, stop_deadline - time.monotonic())) == 0
         final = manager.read(state_path)
         assert final["phase"] == "stopped" and len(final["starts"]) == 3, final
+        event("manager_exited", {"remaining": [observed_details.get((pid, start), {"pid": pid, "create_time": start})
+                                               for pid, start in observed if observed_alive(pid, start)]})
+        # Waiting for the launcher does not join its descendants; all share the original stop deadline.
+        wait_observed_exit(observed, stop_deadline)
         for pid, start in observed:
             assert not observed_alive(pid, start), f"Owned process still alive: {pid}"
         event("graceful_stop_no_survivors", {"final": final, "observedIdentities": sorted(observed)})
@@ -193,6 +212,7 @@ except Exception as exc:
     raise
 finally:
     report["observedIdentities"] = sorted(observed)
+    report["observedProcesses"] = list(observed_details.values())
     survivors = []
     for pid, start in observed:
         if observed_alive(pid, start):
