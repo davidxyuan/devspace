@@ -50,4 +50,93 @@ Assert-Contains 'rollback uses backed-up supervisor XML' '-Xml $previousSupervis
 Assert-NotContains 'does not stop DevSpace service' "Stop-WatchdogManagedService 'devspace'"
 Assert-NotContains 'does not stop Hermes service' "Stop-WatchdogManagedService 'hermes'"
 Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'ngrok'"
+
+# A failed task query is not proof that the supervisor exited.
+& {
+    . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+    function Get-ScheduledTask {
+        [CmdletBinding()]param($TaskName,$TaskPath)
+        Write-Error 'fixture scheduler unavailable'
+    }
+    $queryFailed = $false
+    try { Wait-InstallSupervisorTaskStopped (Join-Path ([IO.Path]::GetTempPath()) 'watchdog-query-fixture') }
+    catch { $queryFailed = $_.Exception.Message -like '*fixture scheduler unavailable*' }
+    if (-not $queryFailed) { throw 'A failed supervisor query was accepted as exit proof.' }
+    function Get-ScheduledTask { [CmdletBinding()]param($TaskName,$TaskPath) }
+    Wait-InstallSupervisorTaskStopped (Join-Path ([IO.Path]::GetTempPath()) 'watchdog-query-fixture')
+}
+
+# Run the real transaction block with isolated files and lifecycle doubles.
+$transaction = $ast.FindAll({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Body.Extent.Text.Contains('$lease = Enter-StackOperation $InstallDir')}, $true) | Select-Object -First 1
+if (-not $transaction) { throw 'Runtime update transaction was not found.' }
+$transactionBlock = [scriptblock]::Create($transaction.Extent.Text)
+$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('watchdog-update-rollback-' + [guid]::NewGuid().ToString('N'))
+try {
+    $SourceDir = Join-Path $fixtureRoot 'source'
+    $InstallDir = Join-Path $fixtureRoot 'installed'
+    [void][IO.Directory]::CreateDirectory($SourceDir)
+    [void][IO.Directory]::CreateDirectory($InstallDir)
+    $bootstrap = @'
+param($Mode,$ConfigPath,$RuntimeDirectory)
+$global:RuntimeRollbackFixture.events.Add($Mode)
+switch ($Mode) {
+    'Stop' {
+        if ($global:RuntimeRollbackFixture.stopFails -and $global:RuntimeRollbackFixture.running) { throw 'fixture stop failed' }
+        $global:RuntimeRollbackFixture.running = $false
+    }
+    'CheckStopped' {
+        if ($global:RuntimeRollbackFixture.checkFails -and $global:RuntimeRollbackFixture.events.Contains('Run')) { throw 'fixture exit proof failed' }
+        if ($global:RuntimeRollbackFixture.running) { throw 'fixture still running' }
+    }
+    'Run' {
+        $global:RuntimeRollbackFixture.running = $true
+        if ($global:RuntimeRollbackFixture.startFails -and $global:RuntimeRollbackFixture.events.FindAll({param($e) $e -eq 'Run'}).Count -eq 1) { throw 'fixture partially started' }
+    }
+    default { throw 'Unexpected lifecycle mode' }
+}
+'@
+    foreach ($dir in @($SourceDir,$InstallDir)) { [IO.File]::WriteAllText((Join-Path $dir 'devspace-watchdog-bootstrap.ps1'),$bootstrap) }
+    function Enter-StackOperation { param($Path) if ($global:RuntimeRollbackFixture.leaseFails) { throw 'fixture lease busy' }; 'fixture-lease' }
+    function Exit-StackOperation { param($Lease) $global:RuntimeRollbackFixture.events.Add('unlock') }
+    function Wait-InstallSupervisorTaskStopped { param($Path) $global:RuntimeRollbackFixture.events.Add('supervisor-stopped') }
+    function Convert-InstallSupervisorTaskAction { param($Path) @{changed=$false} }
+    function Start-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) $global:RuntimeRollbackFixture.events.Add('start-supervisor') }
+    function Register-ScheduledTask { throw 'Unexpected task registration' }
+    function Wait-UpdateRolesReady { param($Port) $global:RuntimeRollbackFixture.events.Add('readiness'); return $global:RuntimeRollbackFixture.ready }
+    function Get-WatchdogControlSettings { param($Config) @{dashboardPort=18777} }
+    function Get-WatchdogFileSha256 { param($Path) 'fixture-hash' }
+    function Write-WatchdogAtomicJson { param($Path,$Value) $global:RuntimeRollbackFixture.events.Add('write-record') }
+    function Copy-UpdateFile {
+        param($Source,$Destination)
+        if ($global:RuntimeRollbackFixture.running) { throw 'attempted overwrite while fixture role was running' }
+        $global:RuntimeRollbackFixture.events.Add($(if ($Source -like '*backup*') {'restore'} else {'copy-new'}))
+    }
+    foreach ($scenario in @('healthy','readiness-failure','partial-start-failure','stop-failure','check-failure','lease-failure')) {
+        $global:RuntimeRollbackFixture = @{events=[Collections.Generic.List[string]]::new(); running=$false; ready=$scenario -eq 'healthy'; startFails=$scenario -eq 'partial-start-failure'; stopFails=$scenario -eq 'stop-failure'; checkFails=$scenario -eq 'check-failure'; leaseFails=$scenario -eq 'lease-failure'}
+        $configPath = Join-Path $InstallDir 'fixture.json'; $config=@{}; $record=@{}; $recordPath=Join-Path $InstallDir 'record.json'
+        $payloadFiles=@('payload.ps1'); $changes=@([pscustomobject]@{name='payload.ps1'})
+        $installedMap=@{'payload.ps1'=@{sha256='old'}}; $supervisorSpec=@{name='fixture-supervisor'}
+        $backupDir=Join-Path $fixtureRoot 'backup'; $backupFiles=@(@{name='payload.ps1';existed=$true;path=(Join-Path $backupDir 'payload.ps1');sha256='fixture-hash'})
+        $recordBackup=Join-Path $backupDir 'record.json'; $recordBackupHash='fixture-hash'; $supervisorActionChanged=$false
+        $lease=$null; $rolesStopped=$false; $failureMessage=''
+        try { . $transactionBlock } catch { $failureMessage=$_.Exception.Message }
+        $events=$global:RuntimeRollbackFixture.events
+        if ($events[-1] -ne 'unlock') { throw "$scenario did not release its lease." }
+        if ($scenario -eq 'healthy') {
+            if ($failureMessage -or $events.Contains('restore')) { throw "Healthy update failed: $failureMessage" }
+        } elseif ($scenario -eq 'lease-failure') {
+            if ($failureMessage -ne 'fixture lease busy' -or $events.Count -ne 1) { throw 'Lease contention must not touch another operation.' }
+        } elseif ($scenario -in @('stop-failure','check-failure')) {
+            if ($failureMessage -notlike '*Rollback also needs attention*' -or $events.Contains('restore')) { throw 'Unconfirmed shutdown must preserve the files.' }
+        } else {
+            if ($failureMessage -notlike '*payload was restored*' -or -not $events.Contains('restore')) { throw "$scenario did not safely restore: $failureMessage" }
+            $firstRestore=$events.IndexOf('restore')
+            if ($events[$firstRestore-1] -ne 'CheckStopped') { throw "$scenario restored without stopped-role proof." }
+        }
+    }
+} finally {
+    Remove-Variable RuntimeRollbackFixture -Scope Global -ErrorAction SilentlyContinue
+    if ([IO.Path]::GetFullPath($fixtureRoot) -ne $fixtureRoot -or -not $fixtureRoot.StartsWith([IO.Path]::GetTempPath(),[StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture cleanup escaped its temporary directory.' }
+    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+}
 Write-Host 'installed runtime updater checks passed: existing-install-only, bounded supervisor action migration, lifecycle proof, backup and router-only restart.'

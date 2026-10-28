@@ -127,7 +127,8 @@ function Wait-InstallSupervisorTaskStopped([string]$InstallDir) {
     $spec = Get-InstallSupervisorTaskSpec $InstallDir
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
     do {
-        $task = Get-ScheduledTask -TaskName $spec.name -TaskPath '\' -ErrorAction SilentlyContinue
+        # Distinguish an absent task from a failed scheduler query before replacing runtime files.
+        $task = Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -eq $spec.name }
         if (-not $task) { return }
         Assert-InstallSupervisorTask $task $spec -AllowLegacyAction
         if ([string]$task.State -notin @('Running','Queued')) { return }

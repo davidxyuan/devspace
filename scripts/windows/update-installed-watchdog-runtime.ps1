@@ -246,17 +246,20 @@ try {
     $supervisorAction = Convert-InstallSupervisorTaskAction $InstallDir
     $supervisorActionChanged = [bool]$supervisorAction.changed
 
+    # Run may partially start a role before throwing; rollback must quiesce it again.
+    $rolesStopped = $false
     & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath
     Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
     if (-not (Wait-UpdateRolesReady ([int](Get-WatchdogControlSettings $config).dashboardPort))) { throw 'Updated Host/Tray/Supervisor did not become ready in time.' }
-    $rolesStopped = $false
 } catch {
+    if (-not $lease) { throw }
     $failure = $_.Exception.Message
     try {
         if (-not $rolesStopped) {
             & (Join-Path $SourceDir 'devspace-watchdog-bootstrap.ps1') -Mode Stop -ConfigPath $configPath -RuntimeDirectory $InstallDir
             Wait-InstallSupervisorTaskStopped $InstallDir
         }
+        & (Join-Path $SourceDir 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $InstallDir
         foreach ($item in $backupFiles) {
             $target = Join-Path $InstallDir $item.name
             if ([bool]$item.existed) {

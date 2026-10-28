@@ -136,6 +136,18 @@ function run(command, args, options = {}) {
   if (result.status !== 0) throw new Error(`${path.basename(command)} exited with code ${result.status}. ${String(result.stderr || result.stdout || "").trim()}`);
   return result;
 }
+function stopControl(plan, powershell) {
+  const quote = value => `'${value.replace(/'/g, "''")}'`;
+  const bootstrap = quote(path.join(plan.sourceDir, "devspace-watchdog-bootstrap.ps1"));
+  const runtimeArgs = `-ConfigPath ${quote(plan.configPath)} -RuntimeDirectory ${quote(plan.installDir)}`;
+  run(powershell, ["-NoProfile", "-Command", [
+    "$ErrorActionPreference = 'Stop'",
+    `& ${bootstrap} -Mode Stop ${runtimeArgs}`,
+    `. ${quote(path.join(plan.sourceDir, "watchdog-install-transaction.ps1"))}`,
+    `Wait-InstallSupervisorTaskStopped ${quote(plan.installDir)}`,
+    `& ${bootstrap} -Mode CheckStopped ${runtimeArgs}`,
+  ].join("; ")]);
+}
 function kasperskyEndpointSecurityActive() {
   const roots = [process.env["ProgramFiles(x86)"], process.env.ProgramFiles]
     .filter(Boolean)
@@ -223,14 +235,15 @@ async function main(argv = process.argv.slice(2)) {
   const powershell = path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const bootstrap = path.join(plan.installDir, "devspace-watchdog-bootstrap.ps1");
   const configPath = plan.configPath;
-  let copied = false;
+  let copyStarted = false;
   try {
     // Recheck immediately before taking the control plane down.
     const beforeStop = await httpJson({ port });
     if (beforeStop.mutationInProgress || beforeStop.activeJob) throw new Error("Dashboard reports a mutation/job in progress; refusing runtime update.");
-    run(powershell, ["-NoProfile", "-File", bootstrap, "-Mode", "Stop", "-ConfigPath", configPath, "-RuntimeDirectory", plan.installDir], { timeout: 30000 });
+    stopControl(plan, powershell);
+    // A copy can replace its destination and then fail verification.
+    copyStarted = true;
     for (const change of plan.changes) copyVerified(path.join(plan.sourceDir, change.name), path.join(plan.installDir, change.name));
-    copied = true;
     for (const name of PAYLOAD_FILES) {
       if (!plan.changes.some(change => change.name === name)) continue;
       const entry = plan.installedMap.get(name);
@@ -242,15 +255,15 @@ async function main(argv = process.argv.slice(2)) {
     run(path.join(process.env.WINDIR || "C:\\Windows", "System32", "schtasks.exe"), ["/Run", "/TN", taskName], { timeout: 15000 });
     await waitControlReady(plan.installDir, port);
   } catch (failure) {
+    if (!copyStarted) throw failure;
     try {
-      if (copied) {
-        for (const item of backups) {
-          if (sha256File(item.path) !== item.sha256) throw new Error(`Rollback backup hash mismatch: ${item.name}`);
-          copyVerified(item.path, path.join(plan.installDir, item.name));
-        }
-        if (sha256File(recordBackup) !== recordBackupHash) throw new Error("Install-record rollback backup hash mismatch.");
-        copyVerified(recordBackup, plan.recordPath);
+      stopControl(plan, powershell);
+      for (const item of backups) {
+        if (sha256File(item.path) !== item.sha256) throw new Error(`Rollback backup hash mismatch: ${item.name}`);
+        copyVerified(item.path, path.join(plan.installDir, item.name));
       }
+      if (sha256File(recordBackup) !== recordBackupHash) throw new Error("Install-record rollback backup hash mismatch.");
+      copyVerified(recordBackup, plan.recordPath);
       run(powershell, ["-NoProfile", "-File", bootstrap, "-Mode", "Run", "-ConfigPath", configPath, "-RuntimeDirectory", plan.installDir], { timeout: 60000 });
       const taskName = supervisorTaskName(plan.installDir);
       run(path.join(process.env.WINDIR || "C:\\Windows", "System32", "schtasks.exe"), ["/Run", "/TN", taskName], { timeout: 15000 });
