@@ -69,7 +69,7 @@ try {
 // Exercise the actual transaction and file copies; never invoke installed processes or tasks.
 async function transactionChecks() {
   const vm = require("node:vm");
-  for (const scenario of ["healthy", "readiness", "partial-start", "copy", "stop", "supervisor", "check", "busy"]) {
+  for (const scenario of ["healthy", "readiness", "partial-start", "copy", "stop", "supervisor", "check", "busy", "backup"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "watchdog-rollback-'"));
     const installDir = path.join(root, "installed"), sourceDir = path.join(root, "source");
     const events = [];
@@ -95,6 +95,7 @@ async function transactionChecks() {
       fs.writeFileSync(recordPath, originalRecord);
       const fakeFs = Object.create(fs);
       fakeFs.copyFileSync = (source, target) => {
+        if (scenario === "backup" && target.startsWith(path.join(installDir, "configuration-backups"))) throw new Error("fixture backup disk failure");
         const installedWrite = path.dirname(target) === installDir && !path.basename(target).includes(".node-update-");
         if (installedWrite) {
           assert.equal(running, false, `${scenario}: overwriting a running role`);
@@ -152,9 +153,11 @@ async function transactionChecks() {
       if (scenario === "healthy") {
         assert.equal(failure, undefined);
         for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `new ${name}`);
-      } else if (scenario === "busy") {
-        assert.match(failure?.message || "", /mutation\/job in progress/);
+      } else if (["busy", "backup"].includes(scenario)) {
+        assert.match(failure?.message || "", scenario === "busy" ? /mutation\/job in progress/ : /fixture backup disk failure/);
         assert.deepEqual(events, [], "preflight failure must not start or stop anything");
+        for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `old ${name}`);
+        assert.equal(fs.readFileSync(recordPath, "utf8"), originalRecord);
       } else if (["stop", "supervisor", "check"].includes(scenario)) {
         assert.match(failure?.message || "", /Rollback also needs attention/);
         assert.equal(launches, 1, "unproven stop must not relaunch a mixed runtime");
@@ -173,6 +176,6 @@ async function transactionChecks() {
       fs.rmSync(root, {recursive: true, force: true});
     }
   }
-  console.log("PASS: runtime transaction success, partial copy/start, readiness failure, stopped-role proof, and busy preflight.");
+  console.log("PASS: runtime transaction success, partial copy/start, readiness failure, stopped-role proof, busy preflight, and backup failure.");
 }
 transactionChecks().catch(error => { console.error(error); process.exitCode = 1; });

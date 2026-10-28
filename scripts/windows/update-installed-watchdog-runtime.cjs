@@ -216,27 +216,27 @@ async function main(argv = process.argv.slice(2)) {
   try { lock = fs.openSync(lockPath, "wx"); }
   catch (error) { if (error.code === "EEXIST") throw new Error("Another Node runtime update is already running."); throw error; }
   const backupDir = path.join(plan.installDir, "configuration-backups", `runtime-node-update-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${crypto.randomUUID().slice(0, 8)}`);
-  fs.mkdirSync(backupDir, { recursive: false });
   const backups = [];
   const recordBackup = path.join(backupDir, "watchdog-tray-install.json");
-  fs.copyFileSync(plan.recordPath, recordBackup);
-  const recordBackupHash = sha256File(recordBackup);
-  for (const change of plan.changes) {
-    const src = path.join(plan.installDir, change.name);
-    const dst = path.join(backupDir, change.name);
-    fs.copyFileSync(src, dst);
-    const hash = sha256File(dst);
-    if (hash !== change.targetHash) throw new Error(`Backup hash mismatch for ${change.name}`);
-    backups.push({ name: change.name, path: dst, sha256: hash });
-  }
-  writeJsonAtomic(path.join(backupDir, "runtime-update-manifest.json"), { schemaVersion: 1, createdAt: new Date().toISOString(), machineSlug: plan.config.machineSlug,
-    sourceDir: plan.sourceDir, installDir: plan.installDir, files: backups, installRecordSha256: recordBackupHash });
-
+  let recordBackupHash;
   const powershell = path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const bootstrap = path.join(plan.installDir, "devspace-watchdog-bootstrap.ps1");
   const configPath = plan.configPath;
   let copyStarted = false;
   try {
+    fs.mkdirSync(backupDir, { recursive: false });
+    fs.copyFileSync(plan.recordPath, recordBackup);
+    recordBackupHash = sha256File(recordBackup);
+    for (const change of plan.changes) {
+      const src = path.join(plan.installDir, change.name);
+      const dst = path.join(backupDir, change.name);
+      fs.copyFileSync(src, dst);
+      const hash = sha256File(dst);
+      if (hash !== change.targetHash) throw new Error(`Backup hash mismatch for ${change.name}`);
+      backups.push({ name: change.name, path: dst, sha256: hash });
+    }
+    writeJsonAtomic(path.join(backupDir, "runtime-update-manifest.json"), { schemaVersion: 1, createdAt: new Date().toISOString(), machineSlug: plan.config.machineSlug,
+      sourceDir: plan.sourceDir, installDir: plan.installDir, files: backups, installRecordSha256: recordBackupHash });
     // Recheck immediately before taking the control plane down.
     const beforeStop = await httpJson({ port });
     if (beforeStop.mutationInProgress || beforeStop.activeJob) throw new Error("Dashboard reports a mutation/job in progress; refusing runtime update.");
