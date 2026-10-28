@@ -1,8 +1,18 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-10-27，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。官方新版的隔離 MCP 讀取，以及另加 Windows 控制管線修正的真實 gateway 啟動／故障恢復／更新交接／正常停止已通過。10/25 補上可重播的 Windows 補丁與直接啟用 PM 的阻擋。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
+更新：2026-10-28，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。10/24 本機隔離 gateway 啟動／恢復／交接／停止曾通過；10/27 的雲端執行在退出檢查失敗，不能算通過。10/28 已補上程序樹收尾檢查，但 GitHub 拒絕啟動新測試，尚待雲端驗證。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。正式 `D:\devspace` 與目前服務未切換；現場查核限 TYO，其他四台未操作。
+
+10/27 雲端進展：`2145a897e8317f245841b8b303eae67e08d10533` 的 [Windows／Linux／macOS CI](https://github.com/davidxyuan/devspace/actions/runs/40486439227) 全部通過。`27c2fb2be9e54d9197e5d489d535ec4b44b8b086` 的 [乾淨 Windows 安裝與實際 Hermes MCP](https://github.com/davidxyuan/devspace/actions/runs/40485786216) 通過，包含固定 GPT／Agent 提交、DPAPI 憑證往返、136 個工具，以及安裝後的 operator status／檔案讀取。範圍為 `core-installed-skip-start`，不含 Tray 登入／重開機。ZIP 的 519 個檔案、來源 fingerprint 與整包 SHA-256 `941411368612804d9183b9b4e8fb03390a0a121a2eecd193ca7d81f30bb1656a` 已下載核對；它是候選產物，尚未發布 stable 或部署。
+
+官方 `d923a5e` 加 Windows 控制管線補丁的 [雲端 PM 準備](https://github.com/davidxyuan/devspace/actions/runs/40469551254) 通過，115 個 runtime 套件版本及三個依賴輸入雜湊與 10/24 本機結果相同，三項 CLI smoke 與 17 項監督器測試通過。測試保留不明 owner 時的子程序仍自然退出，該測試產生的 ResourceWarning 保留。輸出仍為 `activationEligible=false`；真實 gateway 雲端啟動／故障恢復／更新交接另行驗證，不以 fixture 代替。
+
+10/28 續查：[第二次雲端 gateway 測試](https://github.com/davidxyuan/devspace/actions/runs/40486439229) 的三次實際就緒、故障恢復及官方交接 ACK 都成功，manager 正常退出，但 PID 1712 的開始時間相符且零等待仍未退出，整輪失敗。先前「只是保留 PID 資訊」的假設未獲證實；舊資料未保存該程序名稱，不能確定它是什麼。`6d81f5175b30e0924d59f3e22f482799dccfc0e3` 改為等待已觀察子程序，與 manager 共用原本 190 秒停止期限，另記錄程序名稱／路徑。三項契約測試及本機小型真實程序的拒絕／自然退出檢查通過；沒有強制終止或排除殘留程序。完整 gateway 重跑仍待完成。
+
+GitHub 的 dispatch API 回覆 HTTP 422 `Actions has been disabled for this repository`，同時 repository permissions API 的 `enabled` 為 true、workflow 為 active；未確定原因，也沒有修改帳號、計費或 repo 安全設定。新提交未產生 workflow run。當下 TYO 可用 RAM 約 1.15 GiB，低於真實隔離 gateway 的 1.5 GiB 與 Windows VM 的 6 GiB 主機門檻，未繞過門檻啟動。TYO 兩個現行 Codex connector 唯讀呼叫成功，與候選部署證明分開保存。
+
+本輪還修正兩個 Windows 測試競態：慢速 HTTP 客戶端能記錄服務逾時關閉造成的 socket reset，且會呈現 runspace 原始錯誤；在隔離副本移除總期限後，測試仍抓到約 17 秒的阻塞與心跳延遲。來源探針收尾直接等待測試子程序自然退出，避免額外啟動 PowerShell 的冷啟動逾時，沒有增加服務期限或強制結束程序。
 
 10/26 完整 Windows watchdog 回歸退出 0，包含 49 個必要套件檔案檢查。10/27 型別檢查、建置、完整核心測試、隔離 CLI 啟動皆退出 0；PM 準備 9 項、gateway 監督器 17 項測試通過。監督器測試保留不明 owner 的案例曾產生 `ResourceWarning`，其測試子程序隨後自然退出，查核時已不存在。CI 已納入此候選分支的 push 及手動執行，Windows 回歸前先準備 Python。遠端 CI、正式部署與 VM 證據須分開核對，不能由本機通過推定；以下 10/25 以前的紀錄保留其當時範圍。
 
@@ -15,10 +25,10 @@
 - **來源建置：** 按候選的單一 lockfile 與固定 `packageManager` 使用 npm／pnpm，執行建置及測試；工具只裝在候選目錄。啟動入口取自套件 `bin.devspace`，驗證實際路徑留在套件內。歧義鎖檔、工具版本不符、缺測試、入口越界均拒絕。
 - **固定安裝組合：** 安裝器與管理器共用 `stack-release-manifest.json`。乾淨安裝固定來源／提交／版本；npm 另核對完整性。Agent 固定來源安裝失敗會保留現場並報錯，已移除改跑浮動官方安裝器的 fallback。
 - **發布檢查：** CI 補上 source build、核心／Windows 測試、隔離實際啟動，再打包與乾淨 VM 驗證。ZIP 只有成功才上傳，失敗診斷另存；包內來源 SHA／dirty／fingerprint 必須一致。新增執行期檔案已納入包內容及完整性檢查。
-- **上游發現：** 新增三個官方來源的固定 release 查詢、錯誤狀態與每週 GitHub Actions 工作流程。查詢已在本機實測；workflow 尚未推送／啟用。它只產出候選資訊，不自動安裝、合併、建立 PR 或提升 stable。
+- **上游發現：** 新增三個官方來源的固定 release 查詢、錯誤狀態與每週 GitHub Actions 工作流程。查詢已在本機實測；workflow 已推送候選分支，尚未進入預設分支，因此每週排程尚未啟用。它只產出候選資訊，不自動安裝、合併、建立 PR 或提升 stable。
 - **新版安裝契約：** 發現 Hermes Agent 的 `pm/lock.json` 時，舊快速安裝器與更新器在建立 venv／pip 安裝及切換服務前拒絕，保留現場。官方 `pyproject.toml` 的占位版本 `0.0.0` 不再顯示為真正 release 版本，改用已解析至提交的發行標籤。這是相容性阻擋，尚不是完整 PM 更新支援。
 - **候選驗證資料隔離：** Hermes 更新器的 venv 建立、依賴安裝、模組匯入、測試及 CLI smoke 共用候選內的獨立資料／暫存目錄；只保留必要系統環境，不繼承現用 profile、API key、Owner gates 或 Python 路徑。驗證禁用 Agent 自動安裝依賴，明確啟用 GPT HTTP 測試。這是避免誤用現場資料的環境隔離，不是限制程式檔案存取的 OS 沙箱。
-- **官方 PM 候選準備入口：** `scripts/windows/prepare-hermes-pm-candidate.py` 從指定的官方來源 checkout 核對完整提交，將已提交內容取到全新目錄，再用官方 `pm.build_env` 建置 frozen `all` 依賴；不複製原目錄的忽略／未追蹤檔案。保存來源／鎖檔雜湊、實際 Python 與套件版本、三項 CLI smoke、各步退出碼及失敗紀錄。已有輸出不可覆寫；`preparation.json` 固定 `activationEligible=false`，不是更新器的 `candidate.json`。新增手動 GitHub Actions 入口及 CI 行為測試，尚未推送或執行遠端工作流程。
+- **官方 PM 候選準備入口：** `scripts/windows/prepare-hermes-pm-candidate.py` 從指定的官方來源 checkout 核對完整提交，將已提交內容取到全新目錄，再用官方 `pm.build_env` 建置 frozen `all` 依賴；不複製原目錄的忽略／未追蹤檔案。保存來源／鎖檔雜湊、實際 Python 與套件版本、三項 CLI smoke、各步退出碼及失敗紀錄。已有輸出不可覆寫；`preparation.json` 固定 `activationEligible=false`，不是更新器的 `candidate.json`。候選分支與手動 GitHub Actions 已交付，遠端準備結果見上方紀錄；不代表完整更新交易通過。
 - **保留 gateway 監督器：** Agent 更新交易目前只管理 GPT，無法安全停止及回復獨立 gateway。新增停服務前檢查：既有 `Hermes_Gateway*.vbs`／`.cmd` 或同名排程存在時阻擋更新；Running／Ready／Disabled 都不當成 gateway 已退出，排程查詢錯誤也直接中止。移除啟用及 rollback 時重新產生 launcher 的行為，避免快照還原後又覆蓋客製監督器。這是已知 launcher／排程的保護，不是完整手動 gateway 探測或生命週期支援。
 
 現在的 release policy 只接受 `candidate`，沒有可用的 stable 提升流程。手動指定更新仍按已登錄來源取得固定候選提交，再跑原有隔離建置／測試；這不等於整組 stable 驗證。後續正式提升必須綁定同一來源提交、產物雜湊和實際證據，不能只靠 JSON 自稱 passed。
@@ -31,7 +41,7 @@
 | Hermes GPT candidate fork | 0.14.0／`535d928ee238e99a5dfeb58d77a59d25b02ef378`，`davidxyuan/hermes-gpt` 的來源契約修正版 |
 | Hermes Agent fork | 0.21.1／`601d98c2709f766290cc3627b035ab73cfd54232`，沿用原快速安裝的固定基準 |
 
-這不是 TYO 現在的安裝組合，也未宣稱三者已整合通過。Agent 不是目前 TYO 的 0.21.3，更不是官方 0.22.2；既有安裝不會被這份清單直接降版。10/27 candidate.2 已將 GPT 固定至上述通過 CI 的 fork 提交；安裝器預設使用清單來源，管理器僅登錄該分支與完全相符的乾淨固定提交。另保留官方 `asimons81/hermes-gpt` 的更新發現，不能因採用 fork 就漏看官方新版。整組乾淨 Windows 安裝仍須通過獨立驗證；Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是本次本機驗證版本，非所有受支援 Node／OS 組合均已測過。
+這不是 TYO 現在的安裝組合。Agent 不是目前 TYO 的 0.21.3，更不是官方 0.22.2；既有安裝不會被這份清單直接降版。10/27 candidate.2 已將 GPT 固定至上述通過 CI 的 fork 提交；安裝器預設使用清單來源，管理器僅登錄該分支與完全相符的乾淨固定提交。另保留官方 `asimons81/hermes-gpt` 的更新發現，不能因採用 fork 就漏看官方新版。整組乾淨 Windows 安裝及隔離 MCP 已通過上方限定範圍的雲端驗證；Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是本次本機驗證版本，非所有受支援 Node／OS 組合均已測過。
 
 ## 實際通過的驗證
 
@@ -167,7 +177,7 @@ bootstrap 需 Python 3.11 以上及 Git；實際 runtime 由固定來源的官�
 - [ ] 候選先通過上述檢查後，再建立獨立固定 24 小時觀察及資源判讀。
 - [ ] 將通過的同一產物與證據發布，再讓「建議更新」指向 stable；上游發現 workflow 必須先進入遠端預設分支才能排程執行。
 
-資料回復仍不是斷電下多檔案原子交易；外部未知寫入者及回復中磁碟故障仍是風險，原備份必須保留。沒有做正式資料還原、服務切換、遠端 CI、新 24 小時觀察或正式發布。
+資料回復仍不是斷電下多檔案原子交易；外部未知寫入者及回復中磁碟故障仍是風險，原備份必須保留。遠端 CI 與候選安裝結果見上方 10/27 紀錄；尚未做正式資料還原、服務切換、新 24 小時觀察或正式發布。
 
 10/20 唯讀查核：TYO 已啟用 hypervisor，但目前 PATH 未找到 WindowsSandbox／vmrun／VBoxManage，亦未找到 Hyper-V PowerShell 模組，當時可用實體 RAM 約 1.83 GiB。這只能說尚未找到可直接使用的測試 runner，不能斷言機器無法執行 VM；沒有啟用 Windows 功能、建立 VM 或更改權限。證據：`outputs/tray-release-20261020-vm-availability.json`。
 
