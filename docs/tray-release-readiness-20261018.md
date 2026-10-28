@@ -1,6 +1,6 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-10-28，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。10/24 本機隔離 gateway 啟動／恢復／交接／停止曾通過；10/27 的雲端執行在退出檢查失敗，不能算通過。10/28 已補上程序樹收尾檢查，但 GitHub 拒絕啟動新測試，尚待雲端驗證。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
+更新：2026-10-28，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。10/28 修正更新失敗時的回復安全與備份失敗的鎖定清理，隔離交易測試通過；真實本機 gateway 的恢復／交接／退出也通過。10/27 的雲端執行在退出檢查失敗，GitHub 目前拒絕啟動新測試，尚待雲端重驗。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。正式 `D:\devspace` 與目前服務未切換；現場查核限 TYO，其他四台未操作。
 
@@ -8,7 +8,9 @@
 
 官方 `d923a5e` 加 Windows 控制管線補丁的 [雲端 PM 準備](https://github.com/davidxyuan/devspace/actions/runs/40469551254) 通過，115 個 runtime 套件版本及三個依賴輸入雜湊與 10/24 本機結果相同，三項 CLI smoke 與 17 項監督器測試通過。測試保留不明 owner 時的子程序仍自然退出，該測試產生的 ResourceWarning 保留。輸出仍為 `activationEligible=false`；真實 gateway 雲端啟動／故障恢復／更新交接另行驗證，不以 fixture 代替。
 
-10/28 續查：[第二次雲端 gateway 測試](https://github.com/davidxyuan/devspace/actions/runs/40486439229) 的三次實際就緒、故障恢復及官方交接 ACK 都成功，manager 正常退出，但 PID 1712 的開始時間相符且零等待仍未退出，整輪失敗。先前「只是保留 PID 資訊」的假設未獲證實；舊資料未保存該程序名稱，不能確定它是什麼。`6d81f5175b30e0924d59f3e22f482799dccfc0e3` 改為等待已觀察子程序，與 manager 共用原本 190 秒停止期限，另記錄程序名稱／路徑。三項契約測試及本機小型真實程序的拒絕／自然退出檢查通過；沒有強制終止或排除殘留程序。完整 gateway 重跑仍待完成。
+10/28 續查：[第二次雲端 gateway 測試](https://github.com/davidxyuan/devspace/actions/runs/40486439229) 的三次實際就緒、故障恢復及官方交接 ACK 都成功，manager 正常退出，但 PID 1712 的開始時間相符且零等待仍未退出，整輪失敗。先前「只是保留 PID 資訊」的假設未獲證實；舊資料未保存該程序名稱，不能確定它是什麼。`6d81f5175b30e0924d59f3e22f482799dccfc0e3` 改為等待已觀察子程序，與 manager 共用原本 190 秒停止期限，另記錄程序名稱／路徑。三項契約測試及本機小型真實程序的拒絕／自然退出檢查通過；沒有強制終止或排除殘留程序。完整 gateway 雲端重跑仍待完成。
+
+10/28 14:45 TYO 新的隔離真實測試通過：主機可用 RAM 連續三筆為 1874.39／2138.40／2086.31 MiB，另由探針維持 1536 MiB 啟動門檻。使用全新 `D:\hermes-gateway-validation-20261028-r1` profile，沿用已準備的官方修補候選。故障注入只要求已核對 PID／開始時間的測試 gateway 自行退出 37，12.048 秒後替代程序就緒；官方 pause-for-update ACK 及第三次啟動成功。三次就緒均核對 HTTP、控制管線、runtime 的 PID／開始時間／home；manager 退出 0，67 個已觀察身分全部退出，8128 測試埠不再監聽。此輪沿用候選的 `observed_alive`／`wait_observed_exit` 函式，保存來源雜湊且另行核對相符。測試前後現行 DevSpace 與 Hermes 的真實唯讀 MCP 均成功。證據：`outputs/tray-goal-20261028-gateway-real-local.json`、`-gateway-real-verification.json`。這不回溯更改雲端失敗，也不證明未被輪詢捕捉的瞬間脫離程序、實際版本升級回復、VM 登入重開或正式部署。
 
 GitHub 的 dispatch API 回覆 HTTP 422 `Actions has been disabled for this repository`，同時 repository permissions API 的 `enabled` 為 true、workflow 為 active；未確定原因，也沒有修改帳號、計費或 repo 安全設定。新提交未產生 workflow run。當下 TYO 可用 RAM 約 1.15 GiB，低於真實隔離 gateway 的 1.5 GiB 與 Windows VM 的 6 GiB 主機門檻，未繞過門檻啟動。TYO 兩個現行 Codex connector 唯讀呼叫成功，與候選部署證明分開保存。
 
