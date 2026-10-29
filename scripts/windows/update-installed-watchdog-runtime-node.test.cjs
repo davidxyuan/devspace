@@ -16,8 +16,7 @@ const {
 const updaterSource = fs.readFileSync(path.join(__dirname, "update-installed-watchdog-runtime.cjs"), "utf8");
 assert.match(updaterSource, /Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes/,
   "Kaspersky-managed machines must fail closed before batch mutation");
-assert.ok(updaterSource.indexOf("kasperskyEndpointSecurityActive()") < updaterSource.indexOf("const lockPath = path.join(plan.installDir"),
-  "Kaspersky guard must execute before lock/backup/copy mutation begins");
+
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "devspace-node-runtime-update-test-"));
 const installDir = path.join(root, "installed");
@@ -72,116 +71,48 @@ try {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
-// Exercise the actual transaction and file copies; never invoke installed processes or tasks.
-async function transactionChecks() {
+// Apply must use the same locked transaction as the PowerShell entry point.
+async function delegationChecks() {
   const vm = require("node:vm");
-  for (const scenario of ["healthy", "readiness", "partial-start", "copy", "stop", "supervisor", "check", "busy", "backup"]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "watchdog-rollback-'"));
-    const installDir = path.join(root, "installed"), sourceDir = path.join(root, "source");
-    const events = [];
-    let running = true, launches = 0, failedCopy = false;
-    try {
-      fs.mkdirSync(installDir); fs.mkdirSync(sourceDir);
-      fs.mkdirSync(path.join(installDir, "configuration-backups"));
-      for (const name of [...PAYLOAD_FILES, ...BACKEND_FILES]) {
-        fs.writeFileSync(path.join(installDir, name), `old ${name}`);
-        fs.writeFileSync(path.join(sourceDir, name), `old ${name}`);
-      }
-      if (scenario === "healthy" && process.platform === "win32") {
-        for (const directory of [installDir, sourceDir]) {
-          fs.writeFileSync(path.join(directory, "devspace-watchdog-bootstrap.ps1"), "param($Mode,$ConfigPath,$RuntimeDirectory)\n[IO.File]::AppendAllText((Join-Path $RuntimeDirectory 'modes.log'), ($Mode + \"`n\"))");
-          fs.writeFileSync(path.join(directory, "watchdog-install-transaction.ps1"), "function Wait-InstallSupervisorTaskStopped($InstallDir) { [IO.File]::AppendAllText((Join-Path $InstallDir 'modes.log'), \"supervisor-stopped`n\") }");
-        }
-      }
-      const changed = [PAYLOAD_FILES[0], "mcp-router.cjs"];
-      for (const name of changed) fs.writeFileSync(path.join(sourceDir, name), `new ${name}`);
-      fs.writeFileSync(path.join(installDir, "devspace-watchdog.config.json"), JSON.stringify({stateDir: installDir, machineSlug: "fixture"}));
-      const recordPath = path.join(installDir, "watchdog-tray-install.json");
-      const originalRecord = JSON.stringify({installDir, installedFiles: PAYLOAD_FILES.map(name => ({name, sha256: sha256File(path.join(installDir, name))}))});
-      fs.writeFileSync(recordPath, originalRecord);
-      const fakeFs = Object.create(fs);
-      fakeFs.copyFileSync = (source, target) => {
-        if (scenario === "backup" && target.startsWith(path.join(installDir, "configuration-backups"))) throw new Error("fixture backup disk failure");
-        const installedWrite = path.dirname(target) === installDir && !path.basename(target).includes(".node-update-");
-        if (installedWrite) {
-          assert.equal(running, false, `${scenario}: overwriting a running role`);
-          events.push(`write:${path.basename(target)}`);
-        }
-        fs.copyFileSync(source, target);
-        if (installedWrite && scenario === "copy" && !failedCopy) {
-          failedCopy = true;
-          throw new Error("fixture copy failed after replacing one file");
-        }
-      };
-      const fixture = {
-        health: async () => ({}),
-        status: async () => ({activeJob: scenario === "busy"}),
-        ready: async () => { if (scenario !== "healthy") throw new Error("fixture readiness failed"); },
-        run: (command, args) => {
-          const mode = args.includes("-Mode") ? args[args.indexOf("-Mode") + 1] : null;
-          if (mode === "Stop" || args.includes("-Command")) {
-            events.push("Stop");
-            if (scenario === "stop" && launches) throw new Error("fixture stop failed");
-            running = false;
-            if (args.includes("-Command")) {
-              const script = args.at(-1);
-              const quotedSource = sourceDir.replace(/'/g, "''");
-              assert.ok(script.includes(quotedSource), "cleanup must use the source helpers, not partially replaced installed scripts");
-              assert.ok(script.indexOf("-Mode Stop") < script.indexOf("Wait-InstallSupervisorTaskStopped"));
-              assert.ok(script.indexOf("Wait-InstallSupervisorTaskStopped") < script.indexOf("-Mode CheckStopped"));
-              if (scenario === "healthy" && process.platform === "win32") {
-                const child = require("node:child_process").spawnSync(command, args, {windowsHide: true, encoding: "utf8", timeout: 15000});
-                assert.equal(child.status, 0, child.error?.message || child.stderr);
-                assert.equal(fs.readFileSync(path.join(installDir, "modes.log"), "utf8"), "Stop\nsupervisor-stopped\nCheckStopped\n");
-              }
-              events.push("supervisor-stopped");
-              if (scenario === "supervisor" && launches) throw new Error("fixture supervisor still running");
-              events.push("CheckStopped");
-              if (scenario === "check" && launches) throw new Error("fixture role still running");
-            }
-          } else if (mode === "Run") {
-            events.push("Run"); running = true; launches++;
-            if (scenario === "partial-start" && launches === 1) throw new Error("fixture partially started");
-          } else {
-            assert.equal(path.basename(command), "schtasks.exe");
-            assert.deepEqual(Array.from(args), ["/Run", "/TN", supervisorTaskName(installDir)]);
-            events.push("start-supervisor");
-          }
-          return {status: 0};
-        },
-      };
-      const context = vm.createContext({module: {exports: {}}, process, Buffer, console: {log() {}}, fixture,
-        require: name => name === "node:fs" ? fakeFs : name === "node:child_process" ? {spawnSync() { throw new Error("Unexpected real process request"); }} : require(name)});
-      vm.runInContext(updaterSource + "\nstableHealth=fixture.health; httpJson=fixture.status; run=fixture.run; waitControlReady=fixture.ready; kasperskyEndpointSecurityActive=()=>false; module.exports.main=main;", context);
-      let failure;
-      try { await context.module.exports.main(["--install-dir", installDir, "--source-dir", sourceDir, "--apply"]); }
-      catch (error) { failure = error; }
-      if (scenario === "healthy") {
-        assert.equal(failure, undefined);
-        for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `new ${name}`);
-      } else if (["busy", "backup"].includes(scenario)) {
-        assert.match(failure?.message || "", scenario === "busy" ? /mutation\/job in progress/ : /fixture backup disk failure/);
-        assert.deepEqual(events, [], "preflight failure must not start or stop anything");
-        for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `old ${name}`);
-        assert.equal(fs.readFileSync(recordPath, "utf8"), originalRecord);
-      } else if (["stop", "supervisor", "check"].includes(scenario)) {
-        assert.match(failure?.message || "", /Rollback also needs attention/);
-        assert.equal(launches, 1, "unproven stop must not relaunch a mixed runtime");
-        for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `new ${name}`);
-      } else {
-        assert.match(failure?.message || "", /payload was restored/);
-        for (const name of changed) assert.equal(fs.readFileSync(path.join(installDir, name), "utf8"), `old ${name}`, `${scenario}: partial update not restored`);
-        assert.equal(fs.readFileSync(recordPath, "utf8"), originalRecord);
-        const firstRestore = events.findIndex((event, i) => event.startsWith("write:") && events.slice(0, i).filter(e => e === "CheckStopped").length === 2);
-        assert.ok(firstRestore > 0, `${scenario}: no stop proof before restore`);
-        assert.equal(events[firstRestore - 1], "CheckStopped");
-      }
-      assert.equal(fs.existsSync(path.join(installDir, "stack-management", "node-runtime-update.lock")), false, "lock must be released");
-    } finally {
-      assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
-      fs.rmSync(root, {recursive: true, force: true});
+  const installDir = path.resolve(os.tmpdir(), "runtime fixture-'$();-測試");
+  const sourceDir = path.resolve(__dirname);
+  for (const scenario of ["preview", "healthy", "guard", "health", "child-failure", "spawn-failure"]) {
+    const invocations = [];
+    const fixture = {
+      plan: () => ({installDir, sourceDir, config: {machineSlug: "fixture"}, changes: [{name: "mcp-router.cjs"}]}),
+      health: async () => { if (scenario === "health") throw new Error("fixture unhealthy"); },
+      guarded: () => scenario === "guard",
+    };
+    const context = vm.createContext({module: {exports: {}}, __dirname, process, Buffer, console: {log() {}}, fixture,
+      require: name => name === "node:child_process" ? {spawnSync(command, args, options) {
+        invocations.push({command, args: Array.from(args), options});
+        return scenario === "spawn-failure" ? {error: new Error("fixture cannot spawn")}
+          : {status: scenario === "child-failure" ? 7 : 0};
+      }} : require(name)});
+    vm.runInContext(updaterSource + "\nbuildPlan=fixture.plan; stableHealth=fixture.health; kasperskyEndpointSecurityActive=fixture.guarded; module.exports.main=main;", context);
+    const argv = ["--install-dir", installDir, "--source-dir", sourceDir, "--expected-machine-slug", "fixture", "--allow-hermes-busy"];
+    if (scenario !== "preview") argv.push("--apply");
+    let failure, result;
+    try { result = await context.module.exports.main(argv); } catch (error) { failure = error; }
+    if (["preview", "guard", "health"].includes(scenario)) {
+      assert.equal(invocations.length, 0, `${scenario}: must not invoke a mutation`);
+      if (scenario !== "preview") assert.match(failure?.message || "", scenario === "guard" ? /Kaspersky/ : /fixture unhealthy/);
+      else assert.equal(result.changed, 1);
+      continue;
     }
+    assert.equal(invocations.length, 1);
+    const call = invocations[0];
+    assert.equal(path.basename(call.command), "powershell.exe");
+    assert.deepEqual(call.args, ["-NoProfile", "-File", path.join(__dirname, "update-installed-watchdog-runtime.ps1"),
+      "-InstallDir", installDir, "-SourceDir", sourceDir, "-Apply", "-ExpectedMachineSlug", "fixture", "-AllowHermesBusyTransport"]);
+    assert.equal(call.options.windowsHide, true);
+    assert.equal(call.options.shell, undefined, "paths must remain literal arguments");
+    assert.equal(call.options.timeout, undefined, "the lock owner must not be killed midway through rollback");
+    if (scenario === "healthy") {
+      assert.equal(failure, undefined);
+      assert.equal(result.routerRestartRequired, false, "the shared transaction handles its router restart");
+    } else assert.match(failure?.message || "", scenario === "child-failure" ? /exit 7/ : /fixture cannot spawn/);
   }
-  console.log("PASS: runtime transaction success, partial copy/start, readiness failure, stopped-role proof, busy preflight, and backup failure.");
+  console.log("PASS: preview, guarded apply, shared PowerShell delegation, literal paths, and child failure propagation.");
 }
-transactionChecks().catch(error => { console.error(error); process.exitCode = 1; });
+delegationChecks().catch(error => { console.error(error); process.exitCode = 1; });

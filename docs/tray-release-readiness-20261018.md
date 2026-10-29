@@ -1,18 +1,24 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-10-28，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。10/28 修正更新失敗時的回復安全與備份失敗的鎖定清理，隔離交易測試通過；真實本機 gateway 的恢復／交接／退出也通過。10/27 的雲端執行在退出檢查失敗，GitHub 目前拒絕啟動新測試，尚待雲端重驗。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
+更新：2026-10-29，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。更新失敗回復、備份鎖清理與服務健康資料缺失的修正已推送。GitHub fork 的 Actions 已恢復；真實本機與雲端 gateway 的恢復／交接／退出均通過。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。正式 `D:\devspace` 與目前服務未切換；現場查核限 TYO，其他四台未操作。
+
+10/28 晚間查明 GitHub 頁面顯示 `Workflows on this fork have been disabled`；已登入的 owner 可重新啟用原有工作流程。核對沒有預設分支排程後恢復 Actions，未更改憑證、權限或計費。[雲端 Gateway 第五輪](https://github.com/davidxyuan/devspace/actions/runs/40716862013) 在 `8c7e55b` 通過：固定官方 `d923a5e` 與相同 Windows 補丁，115 個 runtime 套件、17 項監督器測試、三次不同 PID／開始時間的真實就緒；故障後 7.442 秒恢復，官方 pause-for-update ACK 成功。manager 退出時仍觀察到 `conhost.exe`，在原停止期限內自然退出；49 個已觀察身分最終全部退出。完整證據另存 `outputs/tray-goal-20261028-pm-real-cloud-green/verification.json`。仍只證明隔離 loopback Gateway 生命週期，不含版本切換、聊天模型呼叫或正式排程。
+
+`2c7ef7f` 修正 PowerShell／Node 更新預檢：缺少服務資料或 `enabled` 不是布林值時拒絕更新；只有明確停用的服務可略過健康檢查。兩入口回歸均先重現失敗，再通過修正；TYO 唯讀 preview 通過，現行兩個 MCP connector 唯讀呼叫成功。該提交的 [跨平台 CI](https://github.com/davidxyuan/devspace/actions/runs/40717149550) 已於第二次嘗試全部通過；第一次 macOS 未取得 GitHub runner，沒有執行測試，僅重跑該項後成功。[乾淨 Windows 安裝](https://github.com/davidxyuan/devspace/actions/runs/40717572043) 也通過，下載核對 521 個檔案、來源／產物 fingerprint 與 ZIP SHA-256 `d02cb92bfff15e04fe5eb857a5c80213f3ed25b4a0b8398d8e4657a685d406bb`；136 個 Hermes 工具及兩次安裝後真實 MCP 呼叫成功。仍為 `core-installed-skip-start`，不含互動登入、重開或 TYO 部署。
+
+10/29 另修正兩入口各自更新的競態：Node 的私有鎖無法排斥其他 PowerShell 安裝／修復工作，現在 Node Apply 委派同目錄的 PowerShell 更新器，共用既有 OS 檔案鎖。持鎖範圍涵蓋讀取計畫、備份、換檔、啟動、必要回復與最後健康確認；失敗與提早返回都釋放本次鎖。舊 Node 鎖或尚待回復的 durable job 均保留並阻擋，不以檔案年齡猜測失效。共用流程仍要求 Host／Tray／Supervisor 與 dashboard 就緒，保留 Kaspersky 啟用阻擋；Node 不再自行以逾時終止持鎖的交易程序。隔離真實檔案回復、實際跨程序鎖競爭、失敗釋鎖、委派參數／退出碼及既有 stack jobs／安裝回歸通過；移除鎖的負向副本被測試抓到。這項較新的修改需自己的 CI 與乾淨安裝結果，不能沿用 `2c7ef7f` 的綠燈。
 
 10/27 雲端進展：`2145a897e8317f245841b8b303eae67e08d10533` 的 [Windows／Linux／macOS CI](https://github.com/davidxyuan/devspace/actions/runs/40486439227) 全部通過。`27c2fb2be9e54d9197e5d489d535ec4b44b8b086` 的 [乾淨 Windows 安裝與實際 Hermes MCP](https://github.com/davidxyuan/devspace/actions/runs/40485786216) 通過，包含固定 GPT／Agent 提交、DPAPI 憑證往返、136 個工具，以及安裝後的 operator status／檔案讀取。範圍為 `core-installed-skip-start`，不含 Tray 登入／重開機。ZIP 的 519 個檔案、來源 fingerprint 與整包 SHA-256 `941411368612804d9183b9b4e8fb03390a0a121a2eecd193ca7d81f30bb1656a` 已下載核對；它是候選產物，尚未發布 stable 或部署。
 
 官方 `d923a5e` 加 Windows 控制管線補丁的 [雲端 PM 準備](https://github.com/davidxyuan/devspace/actions/runs/40469551254) 通過，115 個 runtime 套件版本及三個依賴輸入雜湊與 10/24 本機結果相同，三項 CLI smoke 與 17 項監督器測試通過。測試保留不明 owner 時的子程序仍自然退出，該測試產生的 ResourceWarning 保留。輸出仍為 `activationEligible=false`；真實 gateway 雲端啟動／故障恢復／更新交接另行驗證，不以 fixture 代替。
 
-10/28 續查：[第二次雲端 gateway 測試](https://github.com/davidxyuan/devspace/actions/runs/40486439229) 的三次實際就緒、故障恢復及官方交接 ACK 都成功，manager 正常退出，但 PID 1712 的開始時間相符且零等待仍未退出，整輪失敗。先前「只是保留 PID 資訊」的假設未獲證實；舊資料未保存該程序名稱，不能確定它是什麼。`6d81f5175b30e0924d59f3e22f482799dccfc0e3` 改為等待已觀察子程序，與 manager 共用原本 190 秒停止期限，另記錄程序名稱／路徑。三項契約測試及本機小型真實程序的拒絕／自然退出檢查通過；沒有強制終止或排除殘留程序。完整 gateway 雲端重跑仍待完成。
+10/28 續查：[第二次雲端 gateway 測試](https://github.com/davidxyuan/devspace/actions/runs/40486439229) 的三次實際就緒、故障恢復及官方交接 ACK 都成功，manager 正常退出，但 PID 1712 的開始時間相符且零等待仍未退出，整輪失敗。先前「只是保留 PID 資訊」的假設未獲證實；舊資料未保存該程序名稱，不能確定它是什麼。`6d81f5175b30e0924d59f3e22f482799dccfc0e3` 改為等待已觀察子程序，與 manager 共用原本 190 秒停止期限，另記錄程序名稱／路徑。三項契約測試及本機小型真實程序的拒絕／自然退出檢查通過；沒有強制終止或排除殘留程序。當時完整 gateway 雲端重跑尚未完成；10/28 晚間的成功結果見上方第五輪，舊失敗資料仍保留。
 
 10/28 14:45 TYO 新的隔離真實測試通過：主機可用 RAM 連續三筆為 1874.39／2138.40／2086.31 MiB，另由探針維持 1536 MiB 啟動門檻。使用全新 `D:\hermes-gateway-validation-20261028-r1` profile，沿用已準備的官方修補候選。故障注入只要求已核對 PID／開始時間的測試 gateway 自行退出 37，12.048 秒後替代程序就緒；官方 pause-for-update ACK 及第三次啟動成功。三次就緒均核對 HTTP、控制管線、runtime 的 PID／開始時間／home；manager 退出 0，67 個已觀察身分全部退出，8128 測試埠不再監聽。此輪沿用候選的 `observed_alive`／`wait_observed_exit` 函式，保存來源雜湊且另行核對相符。測試前後現行 DevSpace 與 Hermes 的真實唯讀 MCP 均成功。證據：`outputs/tray-goal-20261028-gateway-real-local.json`、`-gateway-real-verification.json`。這不回溯更改雲端失敗，也不證明未被輪詢捕捉的瞬間脫離程序、實際版本升級回復、VM 登入重開或正式部署。
 
-GitHub 的 dispatch API 回覆 HTTP 422 `Actions has been disabled for this repository`，同時 repository permissions API 的 `enabled` 為 true、workflow 為 active；未確定原因，也沒有修改帳號、計費或 repo 安全設定。新提交未產生 workflow run。當下 TYO 可用 RAM 約 1.15 GiB，低於真實隔離 gateway 的 1.5 GiB 與 Windows VM 的 6 GiB 主機門檻，未繞過門檻啟動。TYO 兩個現行 Codex connector 唯讀呼叫成功，與候選部署證明分開保存。
+10/28 上午的 dispatch API 曾回覆 HTTP 422 `Actions has been disabled for this repository`，同時 repository permissions API 的 `enabled` 為 true、workflow 為 active；當時未確定原因且未產生 workflow run。晚間已由上方 GitHub 頁面證據解除 fork 暫停。上午 TYO 可用 RAM 約 1.15 GiB，低於真實隔離 gateway 的 1.5 GiB 與 Windows VM 的 6 GiB 主機門檻，未繞過門檻啟動。TYO 兩個現行 Codex connector 唯讀呼叫成功，與候選部署證明分開保存。
 
 本輪還修正兩個 Windows 測試競態：慢速 HTTP 客戶端能記錄服務逾時關閉造成的 socket reset，且會呈現 runspace 原始錯誤；在隔離副本移除總期限後，測試仍抓到約 17 秒的阻塞與心跳延遲。來源探針收尾直接等待測試子程序自然退出，避免額外啟動 PowerShell 的冷啟動逾時，沒有增加服務期限或強制結束程序。
 

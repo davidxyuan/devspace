@@ -62,6 +62,20 @@ Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'n
     if (-not (Test-UpdateServiceAcceptable 'devspace' @{enabled=$true;healthy=$true})) { throw 'Healthy services must remain supported.' }
 }
 
+& {
+    $readyFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-UpdateRolesReady'}, $true)
+    . ([scriptblock]::Create($readyFunction.Extent.Text))
+    $StartupTimeoutSeconds = 0
+    function Start-Sleep { param($Milliseconds) }
+    function Invoke-WebRequest { param([switch]$UseBasicParsing,$Uri,$TimeoutSec) @{StatusCode=200} }
+    function Test-UpdateHeartbeat { param($Name,$Role,$MaxAgeSeconds) $Role -ne $missingRole }
+    foreach ($missingRole in @('host','tray-ui','supervisor')) {
+        if (Wait-UpdateRolesReady 18777) { throw "Missing $missingRole was accepted as ready." }
+    }
+    $missingRole = ''
+    if (-not (Wait-UpdateRolesReady 18777)) { throw 'All ready roles were rejected.' }
+}
+
 # A failed task query is not proof that the supervisor exited.
 & {
     . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
@@ -78,7 +92,7 @@ Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'n
 }
 
 # Run the real transaction block with isolated files and lifecycle doubles.
-$transaction = $ast.FindAll({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Body.Extent.Text.Contains('$lease = Enter-StackOperation $InstallDir')}, $true) | Select-Object -First 1
+$transaction = $ast.FindAll({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Body.Extent.Text.Contains('$sourceBootstrap = Join-Path $SourceDir') -and -not $node.Body.Extent.Text.Contains('$lease = Enter-StackOperation $InstallDir')}, $true) | Select-Object -First 1
 if (-not $transaction) { throw 'Runtime update transaction was not found.' }
 $transactionBlock = [scriptblock]::Create($transaction.Extent.Text)
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('watchdog-update-rollback-' + [guid]::NewGuid().ToString('N'))
@@ -115,34 +129,40 @@ switch ($Mode) {
     function Register-ScheduledTask { throw 'Unexpected task registration' }
     function Wait-UpdateRolesReady { param($Port) $global:RuntimeRollbackFixture.events.Add('readiness'); return $global:RuntimeRollbackFixture.ready }
     function Get-WatchdogControlSettings { param($Config) @{dashboardPort=18777} }
-    function Get-WatchdogFileSha256 { param($Path) 'fixture-hash' }
-    function Write-WatchdogAtomicJson { param($Path,$Value) $global:RuntimeRollbackFixture.events.Add('write-record') }
+    function Get-WatchdogFileSha256 { param($Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+    function Write-WatchdogAtomicJson { param($Path,$Value) $global:RuntimeRollbackFixture.events.Add('write-record'); [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 10)) }
     function Copy-UpdateFile {
         param($Source,$Destination)
         if ($global:RuntimeRollbackFixture.running) { throw 'attempted overwrite while fixture role was running' }
         $global:RuntimeRollbackFixture.events.Add($(if ($Source -like '*backup*') {'restore'} else {'copy-new'}))
+        [IO.File]::Copy($Source,$Destination,$true)
+        if ($global:RuntimeRollbackFixture.copyFails -and $Source -notlike '*backup*') { throw 'fixture copy failed after replacing its destination' }
     }
-    foreach ($scenario in @('healthy','readiness-failure','partial-start-failure','stop-failure','check-failure','lease-failure')) {
-        $global:RuntimeRollbackFixture = @{events=[Collections.Generic.List[string]]::new(); running=$false; ready=$scenario -eq 'healthy'; startFails=$scenario -eq 'partial-start-failure'; stopFails=$scenario -eq 'stop-failure'; checkFails=$scenario -eq 'check-failure'; leaseFails=$scenario -eq 'lease-failure'}
+    foreach ($scenario in @('healthy','readiness-failure','partial-start-failure','copy-failure','stop-failure','check-failure')) {
+        $global:RuntimeRollbackFixture = @{events=[Collections.Generic.List[string]]::new(); running=$false; ready=$scenario -eq 'healthy'; startFails=$scenario -eq 'partial-start-failure'; copyFails=$scenario -eq 'copy-failure'; stopFails=$scenario -eq 'stop-failure'; checkFails=$scenario -eq 'check-failure'}
         $configPath = Join-Path $InstallDir 'fixture.json'; $config=@{}; $record=@{}; $recordPath=Join-Path $InstallDir 'record.json'
         $payloadFiles=@('payload.ps1'); $changes=@([pscustomobject]@{name='payload.ps1'})
         $installedMap=@{'payload.ps1'=@{sha256='old'}}; $supervisorSpec=@{name='fixture-supervisor'}
-        $backupDir=Join-Path $fixtureRoot 'backup'; $backupFiles=@(@{name='payload.ps1';existed=$true;path=(Join-Path $backupDir 'payload.ps1');sha256='fixture-hash'})
-        $recordBackup=Join-Path $backupDir 'record.json'; $recordBackupHash='fixture-hash'; $supervisorActionChanged=$false
-        $lease=$null; $rolesStopped=$false; $failureMessage=''
+        $backupDir=Join-Path $fixtureRoot 'backup'
+        [void][IO.Directory]::CreateDirectory($backupDir)
+        foreach ($directory in @($InstallDir,$backupDir)) { [IO.File]::WriteAllText((Join-Path $directory 'payload.ps1'),'old payload'); [IO.File]::WriteAllText((Join-Path $directory 'record.json'),'old record') }
+        [IO.File]::WriteAllText((Join-Path $SourceDir 'payload.ps1'),'new payload')
+        $payloadBackup=Join-Path $backupDir 'payload.ps1'
+        $backupFiles=@(@{name='payload.ps1';existed=$true;path=$payloadBackup;sha256=(Get-WatchdogFileSha256 $payloadBackup)})
+        $recordBackup=Join-Path $backupDir 'record.json'; $recordBackupHash=Get-WatchdogFileSha256 $recordBackup; $supervisorActionChanged=$false
+        $lease='fixture-lease'; $rolesStopped=$false; $failureMessage=''
         try { . $transactionBlock } catch { $failureMessage=$_.Exception.Message }
         $events=$global:RuntimeRollbackFixture.events
-        if ($events[-1] -ne 'unlock') { throw "$scenario did not release its lease." }
         if ($scenario -eq 'healthy') {
             if ($failureMessage -or $events.Contains('restore')) { throw "Healthy update failed: $failureMessage" }
-        } elseif ($scenario -eq 'lease-failure') {
-            if ($failureMessage -ne 'fixture lease busy' -or $events.Count -ne 1) { throw 'Lease contention must not touch another operation.' }
+            if ([IO.File]::ReadAllText((Join-Path $InstallDir 'payload.ps1')) -ne 'new payload') { throw 'Successful update did not copy its payload.' }
         } elseif ($scenario -in @('stop-failure','check-failure')) {
             if ($failureMessage -notlike '*Rollback also needs attention*' -or $events.Contains('restore')) { throw 'Unconfirmed shutdown must preserve the files.' }
         } else {
             if ($failureMessage -notlike '*payload was restored*' -or -not $events.Contains('restore')) { throw "$scenario did not safely restore: $failureMessage" }
             $firstRestore=$events.IndexOf('restore')
             if ($events[$firstRestore-1] -ne 'CheckStopped') { throw "$scenario restored without stopped-role proof." }
+            if ([IO.File]::ReadAllText((Join-Path $InstallDir 'payload.ps1')) -ne 'old payload' -or [IO.File]::ReadAllText($recordPath) -ne 'old record') { throw "$scenario did not restore the actual files." }
         }
     }
 } finally {
@@ -150,4 +170,69 @@ switch ($Mode) {
     if ([IO.Path]::GetFullPath($fixtureRoot) -ne $fixtureRoot -or -not $fixtureRoot.StartsWith([IO.Path]::GetTempPath(),[StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture cleanup escaped its temporary directory.' }
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
 }
-Write-Host 'installed runtime updater checks passed: existing-install-only, bounded supervisor action migration, lifecycle proof, backup and router-only restart.'
+# Exercise the real shared lease with a second PowerShell process and disposable paths.
+$gateRoot = Join-Path ([IO.Path]::GetTempPath()) ('watchdog-update-lease-' + [guid]::NewGuid().ToString('N'))
+$previousToken = $env:DEVSPACE_STACK_OPERATION_TOKEN
+$previousJob = $env:DEVSPACE_STACK_JOB_ID
+$heldLease = $null
+try {
+    . (Join-Path $PSScriptRoot 'stack-operation.ps1')
+    $env:DEVSPACE_STACK_OPERATION_TOKEN = $null
+    $env:DEVSPACE_STACK_JOB_ID = $null
+    $gateInstall = Join-Path $gateRoot "installed-'fixture"
+    [void][IO.Directory]::CreateDirectory($gateInstall)
+    $gateScript = Join-Path $gateRoot 'update.ps1'
+    $securityPredicate = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-UpdateKasperskyEndpointSecurity'}, $true)
+    # The fixture changes only detection, never the host security software or a real installation.
+    [IO.File]::WriteAllText($gateScript, $source.Replace($securityPredicate.Extent.Text, 'function Test-UpdateKasperskyEndpointSecurity { return $false }'))
+    function Invoke-GateFixture {
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $psi.Arguments = "-NoProfile -File `"$gateScript`" -InstallDir `"$gateInstall`" -SourceDir `"$PSScriptRoot`" -Apply"
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = 'Hidden'
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $child = [Diagnostics.Process]::Start($psi)
+        try {
+            $stdout = $child.StandardOutput.ReadToEndAsync()
+            $stderr = $child.StandardError.ReadToEndAsync()
+            $child.WaitForExit()
+            return @{code=$child.ExitCode; text=($stdout.Result + $stderr.Result)}
+        } finally { $child.Dispose() }
+    }
+    $heldLease = Enter-StackOperation $gateInstall
+    $env:DEVSPACE_STACK_OPERATION_TOKEN = $null
+    $result = Invoke-GateFixture
+    if ($result.code -eq 0 -or $result.text -notlike '*Another stack installation*') { throw "Live shared lease was bypassed: $($result.text)" }
+    Exit-StackOperation $heldLease
+    $heldLease = $null
+    $directory = Join-Path $gateInstall 'stack-management'
+    $legacyLock = Join-Path $directory 'node-runtime-update.lock'
+    [IO.File]::WriteAllText($legacyLock, 'old updater fixture')
+    $result = Invoke-GateFixture
+    if ($result.code -eq 0 -or $result.text -notlike '*older Node runtime update*') { throw "Older updater lock was bypassed: $($result.text)" }
+    if ([IO.File]::ReadAllText($legacyLock) -ne 'old updater fixture') { throw 'Older updater lock was modified.' }
+    [IO.File]::Delete($legacyLock)
+    [void][IO.Directory]::CreateDirectory((Join-Path $directory 'jobs'))
+    $job = 'a' * 24
+    [IO.File]::WriteAllText((Join-Path $directory 'active.json'), (@{id=$job} | ConvertTo-Json))
+    [IO.File]::WriteAllText((Join-Path $directory "jobs\$job.json"), (@{id=$job;phase='rollback_failed'} | ConvertTo-Json))
+    $result = Invoke-GateFixture
+    if ($result.code -eq 0 -or $result.text -notlike '*job is still running or requires recovery*') { throw "Durable recovery reservation was bypassed: $($result.text)" }
+    [IO.File]::Delete((Join-Path $directory 'active.json'))
+    $result = Invoke-GateFixture
+    if ($result.code -eq 0 -or $result.text -notlike '*requires an existing verified Watchdog Tray installation*') { throw "Expected isolated preflight failure: $($result.text)" }
+    if (Test-StackOperationBusy $gateInstall) { throw 'Failed preflight leaked the shared lease.' }
+    if ([IO.File]::ReadAllText((Get-StackOperationPath $gateInstall))) { throw 'Failed preflight did not clear its lease record.' }
+    if ([IO.Directory]::Exists((Join-Path $gateInstall 'configuration-backups'))) { throw 'Preflight failure created a backup.' }
+    Write-Host 'PASS: live cross-process lease, durable failed-job reservation, and preflight lease release.'
+} finally {
+    Exit-StackOperation $heldLease
+    $env:DEVSPACE_STACK_OPERATION_TOKEN = $previousToken
+    $env:DEVSPACE_STACK_JOB_ID = $previousJob
+    if ([IO.Path]::GetFullPath($gateRoot) -ne $gateRoot -or [IO.Path]::GetDirectoryName($gateRoot) -ne ([IO.Path]::GetTempPath().TrimEnd('\'))) { throw 'Lease fixture cleanup escaped its temporary directory.' }
+    if ([IO.Directory]::Exists($gateRoot)) { Remove-Item -LiteralPath $gateRoot -Recurse -Force }
+}
+Write-Host 'installed runtime updater checks passed: existing-install-only, shared lease, bounded supervisor action migration, lifecycle proof, backup and router-only restart.'

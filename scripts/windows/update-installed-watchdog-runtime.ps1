@@ -84,12 +84,13 @@ function Read-UpdateHeartbeat([string]$Name) {
     if (-not [IO.File]::Exists($path)) { return $null }
     try { return Read-WatchdogJson $path } catch { return $null }
 }
-function Test-UpdateHeartbeat([string]$Name, [string]$Role) {
+function Test-UpdateHeartbeat([string]$Name, [string]$Role, [int]$MaxAgeSeconds = 15) {
     $heartbeat = Read-UpdateHeartbeat $Name
     if (-not $heartbeat -or [string]$heartbeat.role -ne $Role) { return $false }
     $stamp = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse([string]$heartbeat.timestamp, [ref]$stamp)) { return $false }
-    if (([DateTimeOffset]::UtcNow - $stamp.ToUniversalTime()).TotalSeconds -gt 15) { return $false }
+    $age = ([DateTimeOffset]::UtcNow - $stamp.ToUniversalTime()).TotalSeconds
+    if ($age -lt -5 -or $age -gt $MaxAgeSeconds) { return $false }
     return [bool](Get-Process -Id ([int]$heartbeat.pid) -ErrorAction SilentlyContinue)
 }
 function Wait-UpdateRolesReady([int]$DashboardPort) {
@@ -97,6 +98,7 @@ function Wait-UpdateRolesReady([int]$DashboardPort) {
     do {
         $hostReady = Test-UpdateHeartbeat 'watchdog-host-heartbeat.json' 'host'
         $trayReady = Test-UpdateHeartbeat 'watchdog-tray-heartbeat.json' 'tray-ui'
+        $supervisorReady = Test-UpdateHeartbeat 'watchdog-supervisor-heartbeat.json' 'supervisor' 30
         $dashboardReady = $false
         if ($hostReady) {
             try {
@@ -104,7 +106,7 @@ function Wait-UpdateRolesReady([int]$DashboardPort) {
                 $dashboardReady = [int]$response.StatusCode -eq 200
             } catch { }
         }
-        if ($hostReady -and $trayReady -and $dashboardReady) { return $true }
+        if ($hostReady -and $trayReady -and $supervisorReady -and $dashboardReady) { return $true }
         Start-Sleep -Milliseconds 300
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     return $false
@@ -150,6 +152,18 @@ function Get-UpdateStableHealth([int]$Attempts = 8, [int]$DelayMilliseconds = 75
     throw 'Watchdog services did not remain healthy for two consecutive preflight checks.'
 }
 
+$lease = $null
+try {
+if ($Apply) {
+    if (Test-UpdateKasperskyEndpointSecurity) {
+        throw 'Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes. Use verified file-by-file deployment plus the existing Bootstrap/Dashboard lifecycle, or an IT-approved allowlist for the exact reviewed artifact.'
+    }
+    if ([IO.File]::Exists((Join-Path $InstallDir 'stack-management\node-runtime-update.lock'))) {
+        throw 'An older Node runtime update is running or needs recovery; inspect its lock and backup before continuing.'
+    }
+    # Hold the shared lease while reading the plan, taking backups and recovering.
+    $lease = Enter-StackOperation $InstallDir
+}
 if (-not [IO.File]::Exists($configPath) -or -not [IO.File]::Exists($recordPath)) { throw 'This updater requires an existing verified Watchdog Tray installation.' }
 foreach ($name in $allFiles) {
     $source = Join-Path $SourceDir $name
@@ -199,10 +213,6 @@ Write-Host "Changed runtime files: $($changes.Count)"
 foreach ($change in $changes) { Write-Host " - $($change.name)" }
 if (-not $changes.Count) { Write-Host 'Installed Watchdog runtime already matches this source.' -ForegroundColor Green; return }
 if (-not $Apply) { Write-Host 'Preview only. Re-run with -Apply to update this verified installation.'; return }
-if (Test-UpdateKasperskyEndpointSecurity) {
-    throw 'Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes. Use verified file-by-file deployment plus the existing Bootstrap/Dashboard lifecycle, or an IT-approved allowlist for the exact reviewed artifact.'
-}
-
 $backupDir = Join-Path $InstallDir ('configuration-backups\runtime-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8))
 [void][IO.Directory]::CreateDirectory($backupDir)
 $backupFiles = @()
@@ -226,11 +236,9 @@ Write-WatchdogAtomicJson (Join-Path $backupDir 'runtime-update-manifest.json') (
     sourceDir=$SourceDir; installDir=$InstallDir; files=$backupFiles; installRecordSha256=$recordBackupHash
 })
 
-$lease = $null
 $rolesStopped = $false
 $routerChanged = [bool]($changes.name -contains 'mcp-router.cjs')
 try {
-    $lease = Enter-StackOperation $InstallDir
     $sourceBootstrap = Join-Path $SourceDir 'devspace-watchdog-bootstrap.ps1'
     & $sourceBootstrap -Mode Stop -ConfigPath $configPath -RuntimeDirectory $InstallDir
     Wait-InstallSupervisorTaskStopped $InstallDir
@@ -279,7 +287,7 @@ try {
         Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
     } catch { throw "Runtime update failed: $failure. Rollback also needs attention: $($_.Exception.Message). Backup: $backupDir" }
     throw "Runtime update failed and payload was restored: $failure. Backup: $backupDir"
-} finally { Exit-StackOperation $lease }
+}
 
 if ($routerChanged) {
     $liveConfig = Read-WatchdogJson $configPath
@@ -302,3 +310,4 @@ do {
 } while ([DateTimeOffset]::UtcNow -lt $deadline)
 Assert-UpdateServiceHealth $finalHealth
 Write-Host "Watchdog runtime update complete. Backup: $backupDir" -ForegroundColor Green
+} finally { Exit-StackOperation $lease }

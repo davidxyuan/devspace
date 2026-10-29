@@ -84,7 +84,10 @@ production adoption, model/chat requests and long-run stability remain unverifie
 ```
 
 The candidate preparation workflow runs this suite using the frozen prepared
-runtime. The workflow has not been published or run remotely in this task.
+runtime. The candidate workflow is published. [Run 40716862013](https://github.com/davidxyuan/devspace/actions/runs/40716862013)
+passed on 2026-10-28: preparation, 17 supervisor tests, real gateway crash recovery,
+official update handoff, and graceful stop with all 49 observed process identities
+exited. This does not validate version switching, interactive login/reboot, or production deployment.
 
 ## Carrying the Windows fix across upstream updates
 

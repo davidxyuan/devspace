@@ -33,33 +33,6 @@ function contentEqual(left, right) {
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
 }
-function writeJsonAtomic(file, value) {
-  const temp = `${file}.node-update-${process.pid}-${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(value, null, 2), "utf8");
-  for (let attempt = 0; ; attempt++) {
-    try { fs.copyFileSync(temp, file); break; }
-    catch (error) {
-      if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 24) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-    }
-  }
-  fs.rmSync(temp, { force: true });
-}
-function copyVerified(source, destination) {
-  const temp = `${destination}.node-update-${process.pid}-${crypto.randomUUID()}.tmp`;
-  fs.copyFileSync(source, temp);
-  const expected = sha256File(source);
-  if (sha256File(temp) !== expected) throw new Error(`Staged file hash mismatch: ${source}`);
-  for (let attempt = 0; ; attempt++) {
-    try { fs.copyFileSync(temp, destination); break; }
-    catch (error) {
-      if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 24) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-    }
-  }
-  fs.rmSync(temp, { force: true });
-  if (sha256File(destination) !== expected) throw new Error(`Installed file hash mismatch after copy: ${destination}`);
-}
 function supervisorTaskName(installDir) {
   const hash = crypto.createHash("sha256").update(path.resolve(installDir).toLowerCase(), "utf8").digest("hex").slice(0, 12);
   return `DevSpaceWatchdogSupervisor-${hash}`;
@@ -131,24 +104,6 @@ async function stableHealth(port, allowHermesBusy, attempts = 5) {
   }
   throw new Error(`Watchdog services did not remain healthy for two consecutive checks. Last overall=${last?.overall?.label || "unknown"}`);
 }
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: options.cwd, windowsHide: true, encoding: "utf8", timeout: options.timeout || 60000 });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${path.basename(command)} exited with code ${result.status}. ${String(result.stderr || result.stdout || "").trim()}`);
-  return result;
-}
-function stopControl(plan, powershell) {
-  const quote = value => `'${value.replace(/'/g, "''")}'`;
-  const bootstrap = quote(path.join(plan.sourceDir, "devspace-watchdog-bootstrap.ps1"));
-  const runtimeArgs = `-ConfigPath ${quote(plan.configPath)} -RuntimeDirectory ${quote(plan.installDir)}`;
-  run(powershell, ["-NoProfile", "-Command", [
-    "$ErrorActionPreference = 'Stop'",
-    `& ${bootstrap} -Mode Stop ${runtimeArgs}`,
-    `. ${quote(path.join(plan.sourceDir, "watchdog-install-transaction.ps1"))}`,
-    `Wait-InstallSupervisorTaskStopped ${quote(plan.installDir)}`,
-    `& ${bootstrap} -Mode CheckStopped ${runtimeArgs}`,
-  ].join("; ")]);
-}
 function kasperskyEndpointSecurityActive() {
   const roots = [process.env["ProgramFiles(x86)"], process.env.ProgramFiles]
     .filter(Boolean)
@@ -159,28 +114,6 @@ function kasperskyEndpointSecurityActive() {
     const result = spawnSync(tasklist, ["/FI", "IMAGENAME eq avp.exe", "/FO", "CSV", "/NH"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
     return result.status === 0 && /"avp\.exe"/i.test(String(result.stdout || ""));
   } catch { return false; }
-}
-function heartbeatFresh(file, role) {
-  try {
-    const value = readJson(file);
-    if (String(value.role) !== role || !Number.isInteger(Number(value.pid)) || Number(value.pid) <= 0) return false;
-    const age = Date.now() - Date.parse(String(value.timestamp));
-    return Number.isFinite(age) && age >= -5000 && age <= 30000;
-  } catch { return false; }
-}
-async function waitControlReady(installDir, port, timeoutMs = 45000) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    try {
-      await httpJson({ port, timeoutMs: 2500 });
-      const host = heartbeatFresh(path.join(installDir, "watchdog-host-heartbeat.json"), "host");
-      const tray = heartbeatFresh(path.join(installDir, "watchdog-tray-heartbeat.json"), "tray-ui");
-      const sup = heartbeatFresh(path.join(installDir, "watchdog-supervisor-heartbeat.json"), "supervisor");
-      if (host && tray && sup) return;
-    } catch { }
-    await new Promise(resolve => setTimeout(resolve, 500));
-  } while (Date.now() < deadline);
-  throw new Error("Updated Host/Tray/Supervisor did not become ready in time.");
 }
 function parseArgs(argv) {
   const args = { apply: false, allowHermesBusy: false };
@@ -195,6 +128,18 @@ function parseArgs(argv) {
   }
   if (!args.installDir || !args.sourceDir) throw new Error("--install-dir and --source-dir are required.");
   return args;
+}
+function applyWithPowerShell(args) {
+  const powershell = path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const parameters = ["-NoProfile", "-File", path.join(__dirname, "update-installed-watchdog-runtime.ps1"),
+    "-InstallDir", path.resolve(args.installDir), "-SourceDir", path.resolve(args.sourceDir), "-Apply"];
+  if (args.expectedMachineSlug) parameters.push("-ExpectedMachineSlug", args.expectedMachineSlug);
+  if (args.allowHermesBusy) parameters.push("-AllowHermesBusyTransport");
+  // The shared transaction owns its OS-held lease through validation and rollback.
+  // Do not kill that owner on a Node-side timeout during a file replacement.
+  const result = spawnSync(powershell, parameters, { windowsHide: true, stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`PowerShell runtime update failed (exit ${result.status}, signal ${result.signal || "none"}); inspect its diagnostics and backup.`);
 }
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -211,79 +156,11 @@ async function main(argv = process.argv.slice(2)) {
     throw new Error("Kaspersky Endpoint Security is active; batch updater Apply is disabled before any file writes. Use verified file-by-file deployment plus the existing Bootstrap/Dashboard lifecycle, or an IT-approved allowlist for the exact reviewed artifact.");
   }
 
-  const lockPath = path.join(plan.installDir, "stack-management", "node-runtime-update.lock");
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  let lock;
-  try { lock = fs.openSync(lockPath, "wx"); }
-  catch (error) { if (error.code === "EEXIST") throw new Error("Another Node runtime update is already running."); throw error; }
-  const backupDir = path.join(plan.installDir, "configuration-backups", `runtime-node-update-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${crypto.randomUUID().slice(0, 8)}`);
-  const backups = [];
-  const recordBackup = path.join(backupDir, "watchdog-tray-install.json");
-  let recordBackupHash;
-  const powershell = path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const bootstrap = path.join(plan.installDir, "devspace-watchdog-bootstrap.ps1");
-  const configPath = plan.configPath;
-  let copyStarted = false;
-  try {
-    fs.mkdirSync(backupDir, { recursive: false });
-    fs.copyFileSync(plan.recordPath, recordBackup);
-    recordBackupHash = sha256File(recordBackup);
-    for (const change of plan.changes) {
-      const src = path.join(plan.installDir, change.name);
-      const dst = path.join(backupDir, change.name);
-      fs.copyFileSync(src, dst);
-      const hash = sha256File(dst);
-      if (hash !== change.targetHash) throw new Error(`Backup hash mismatch for ${change.name}`);
-      backups.push({ name: change.name, path: dst, sha256: hash });
-    }
-    writeJsonAtomic(path.join(backupDir, "runtime-update-manifest.json"), { schemaVersion: 1, createdAt: new Date().toISOString(), machineSlug: plan.config.machineSlug,
-      sourceDir: plan.sourceDir, installDir: plan.installDir, files: backups, installRecordSha256: recordBackupHash });
-    // Recheck immediately before taking the control plane down.
-    const beforeStop = await httpJson({ port });
-    if (beforeStop.mutationInProgress || beforeStop.activeJob) throw new Error("Dashboard reports a mutation/job in progress; refusing runtime update.");
-    stopControl(plan, powershell);
-    // A copy can replace its destination and then fail verification.
-    copyStarted = true;
-    for (const change of plan.changes) copyVerified(path.join(plan.sourceDir, change.name), path.join(plan.installDir, change.name));
-    for (const name of PAYLOAD_FILES) {
-      if (!plan.changes.some(change => change.name === name)) continue;
-      const entry = plan.installedMap.get(name);
-      entry.sha256 = sha256File(path.join(plan.installDir, name));
-    }
-    writeJsonAtomic(plan.recordPath, plan.record);
-    run(powershell, ["-NoProfile", "-File", bootstrap, "-Mode", "Run", "-ConfigPath", configPath, "-RuntimeDirectory", plan.installDir], { timeout: 60000 });
-    const taskName = supervisorTaskName(plan.installDir);
-    run(path.join(process.env.WINDIR || "C:\\Windows", "System32", "schtasks.exe"), ["/Run", "/TN", taskName], { timeout: 15000 });
-    await waitControlReady(plan.installDir, port);
-  } catch (failure) {
-    if (!copyStarted) throw failure;
-    try {
-      stopControl(plan, powershell);
-      for (const item of backups) {
-        if (sha256File(item.path) !== item.sha256) throw new Error(`Rollback backup hash mismatch: ${item.name}`);
-        copyVerified(item.path, path.join(plan.installDir, item.name));
-      }
-      if (sha256File(recordBackup) !== recordBackupHash) throw new Error("Install-record rollback backup hash mismatch.");
-      copyVerified(recordBackup, plan.recordPath);
-      run(powershell, ["-NoProfile", "-File", bootstrap, "-Mode", "Run", "-ConfigPath", configPath, "-RuntimeDirectory", plan.installDir], { timeout: 60000 });
-      const taskName = supervisorTaskName(plan.installDir);
-      run(path.join(process.env.WINDIR || "C:\\Windows", "System32", "schtasks.exe"), ["/Run", "/TN", taskName], { timeout: 15000 });
-    } catch (rollback) {
-      throw new Error(`Node runtime update failed: ${failure.message}. Rollback also needs attention: ${rollback.message}. Backup: ${backupDir}`);
-    }
-    throw new Error(`Node runtime update failed and payload was restored: ${failure.message}. Backup: ${backupDir}`);
-  } finally {
-    if (lock !== undefined) fs.closeSync(lock);
-    fs.rmSync(lockPath, { force: true });
-  }
-  await stableHealth(port, args.allowHermesBusy);
-  const routerRestartRequired = plan.changes.some(change => change.name === "mcp-router.cjs");
-  console.log(`Watchdog runtime update complete. Backup: ${backupDir}`);
-  console.log(`Router restart required: ${routerRestartRequired ? "YES" : "NO"}`);
-  return { changed: plan.changes.length, routerRestartRequired, backupDir };
+  applyWithPowerShell(args);
+  return { changed: plan.changes.length, routerRestartRequired: false };
 }
 
 if (require.main === module) {
   main().catch(error => { console.error(error?.stack || String(error)); process.exitCode = 1; });
 }
-module.exports = { PAYLOAD_FILES, BACKEND_FILES, ALL_FILES, sha256File, contentEqual, supervisorTaskName, buildPlan, serviceAcceptable, parseArgs, kasperskyEndpointSecurityActive };
+module.exports = { PAYLOAD_FILES, BACKEND_FILES, ALL_FILES, sha256File, contentEqual, supervisorTaskName, buildPlan, serviceAcceptable, parseArgs, kasperskyEndpointSecurityActive, applyWithPowerShell };
