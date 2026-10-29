@@ -1,8 +1,20 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-10-29，台灣時間。**候選的來源選擇與更新前檢查已實作，保留既有 gateway 監督器的升級阻擋。更新失敗回復、備份鎖清理與服務健康資料缺失的修正已推送。GitHub fork 的 Actions 已恢復；真實本機與雲端 gateway 的恢復／交接／退出均通過。完整升級回復與 VM 生命週期仍待驗證；正式版尚未完成，也未部署。**
+更新：2026-10-30，台灣時間。**TYO 已完成 Tray／watchdog 交易修正與維護標示修補的部署及實際 MCP 驗證。已用隔離的真實 Windows 互動程序與 Limited 排程驗證 Tray 升級、啟動失敗及檔案還原，替代本輪 VM 路徑。完整 Hermes PM 版本升級／回復、重開機與跨機器 stable 推廣仍未完成；相關保護維持啟用。**
 
-基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。正式 `D:\devspace` 與目前服務未切換；現場查核限 TYO，其他四台未操作。
+基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。TYO 使用 `a26961b` 管理套件及 `bc929db` 單一 HTML 修補；既有 DevSpace、Hermes、Router、ngrok 的執行版本、端點與程序身分保留。其他四台未操作。
+
+## 10/29–30 TYO 部署結果
+
+真實 Windows 隔離測試在獨立設定、埠與原生排程依序完成：已安裝版本就緒、候選就緒、缺少 HTML 導致預期啟動失敗、恢復原檔與雜湊後就緒。測試角色全退出，唯一測試排程移除。這證明 Tray runtime 與原生排程的升級／回復，未啟動重複的正式產品後端，也不是 Hermes PM 版本切換或 Windows 登入／重開機證據。
+
+TYO 的 runtime 交易修正於 10/29 23:53 完成。第一段固定 300 秒部署後採樣共 60 筆、最大間隔 5.01572 秒、HTTP 10/10；沒有採樣 errors，各角色只有一個固定 PID＋開始時間，bootTime 與 runtime hash 未變。這是短期可用性觀察，不能排除慢速洩漏，更不能補足原 24 小時缺口。
+
+瀏覽器驗證另找到 `.chip` 的 `display:inline-flex` 蓋過 HTML hidden 屬性，造成未啟用維護模式仍顯示標示；`bc929db` 加上 `.chip[hidden] { display:none; }`。實際瀏覽器確認隱藏與顯示兩種狀態，部署後頁面顯示 Healthy 且錯誤標示消失。畫面部署輔助程序曾在複製完成後退出，原因未確認；原生 Supervisor 恢復角色後，逐檔核對並補記已部署檔案的 SHA-256，保留首次不完整紀錄。管理套件來源仍為 a26961b，沒有假稱整包已切換為 bc929db。兩個真實 Codex connector 再次通過；所有後端 PID＋開始時間均未變。
+
+交付 ZIP `DevSpace-OneClick-20261030-000310.zip` 固定來源 bc929db，521 個檔案校驗通過；SHA-256 `b6341b0dbbbb40adb330f9917696c3fd297dc264baf25cfca08b3b5f2f807b48`。新套件通過真實 CLI、healthz、OAuth discovery、MCP 未授權拒絕與獨立資料庫 smoke。原部署備份與 HTML 修補備份分別在 `.devspace/configuration-backups/tyo-reviewed-a26961b-20261029-161713`、`tyo-maintenance-bc929db-20261030-020749`。後者的 `reconciled-deployment.json` 才是完成狀態，首次 `deployment.json` 保留。
+
+完整現場證據與另一台的核對／部署／回復步驟見 [TYO 交付紀錄](C:/Users/david.yuan/Documents/Codex/2026-10-06/d/outputs/tray-tyo-deployment-20261030.md)。以下為保留的歷史驗證與尚未完成的跨版本發布門檻，不能把較早的「未部署」描述當成 TYO 的最新狀態。
 
 10/28 晚間查明 GitHub 頁面顯示 `Workflows on this fork have been disabled`；已登入的 owner 可重新啟用原有工作流程。核對沒有預設分支排程後恢復 Actions，未更改憑證、權限或計費。[雲端 Gateway 第五輪](https://github.com/davidxyuan/devspace/actions/runs/40716862013) 在 `8c7e55b` 通過：固定官方 `d923a5e` 與相同 Windows 補丁，115 個 runtime 套件、17 項監督器測試、三次不同 PID／開始時間的真實就緒；故障後 7.442 秒恢復，官方 pause-for-update ACK 成功。manager 退出時仍觀察到 `conhost.exe`，在原停止期限內自然退出；49 個已觀察身分最終全部退出。完整證據另存 `outputs/tray-goal-20261028-pm-real-cloud-green/verification.json`。仍只證明隔離 loopback Gateway 生命週期，不含版本切換、聊天模型呼叫或正式排程。
 
