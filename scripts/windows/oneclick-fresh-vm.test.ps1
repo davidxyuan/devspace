@@ -275,7 +275,10 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
 
     $hermesMcpPath = Join-Path $WorkRoot 'hermes-mcp-smoke.json'
     & ([string]$watchdog.hermesPython) -I -B (Join-Path $packageRoot 'scripts\windows\stack-hermes-mcp-smoke.py') ([string]$watchdog.hermesServer) ([string]$watchdog.hermesAgentWorkingDirectory) $hermesMcpPath
-    if ($LASTEXITCODE -ne 0) { throw 'Installed Hermes readonly MCP smoke failed.' }
+    $hermesMcpExit = $LASTEXITCODE
+    [ordered]@{ checkedAt=[DateTimeOffset]::UtcNow.ToString('o'); exitCode=$hermesMcpExit; evidenceExists=[IO.File]::Exists($hermesMcpPath) } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkRoot 'hermes-mcp-smoke-process.json') -Encoding UTF8
+    if ($hermesMcpExit -ne 0) { throw "Installed Hermes readonly MCP smoke failed (exit=$hermesMcpExit); see hermes-mcp-smoke diagnostics." }
     $hermesMcp = Get-Content -LiteralPath $hermesMcpPath -Raw | ConvertFrom-Json
     if (-not $hermesMcp.passed) { throw 'Installed Hermes MCP evidence did not confirm success.' }
 

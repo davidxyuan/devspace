@@ -8,9 +8,6 @@ from pathlib import Path
 import sys
 import tempfile
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
 
 async def main():
     server = Path(sys.argv[1]).resolve(strict=True)
@@ -20,8 +17,25 @@ async def main():
     output = Path(sys.argv[3])
     record = {"checkedAt": datetime.now(timezone.utc).isoformat(), "python": sys.executable,
               "server": str(server), "agent": str(agent), "calls": [],
+              "passed": False, "pid": os.getpid(),
               "scope": "Isolated stdio MCP; not a deployed connector or ChatGPT web"}
+
+    def checkpoint(stage):
+        # A native exit can bypass finally. Keep the last completed boundary on disk,
+        # with passed=False until calls, transport shutdown and profile cleanup finish.
+        record.update(stage=stage, updatedAt=datetime.now(timezone.utc).isoformat())
+        pending = output.with_suffix(".pending.json")
+        pending.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        pending.replace(output)
+
     try:
+        checkpoint("importing-mcp")
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        record["packages"] = sorted([{"name": d.metadata["Name"], "version": d.version}
+                                      for d in importlib.metadata.distributions()], key=lambda d: d["name"])
+        checkpoint("creating-profile")
         with tempfile.TemporaryDirectory(prefix="hermes-installed-mcp-") as temporary:
             fixture = Path(temporary) / "read-only-probe.txt"
             fixture.write_text("candidate-mcp-read-ok\nsecond-line\n", encoding="utf-8")
@@ -35,13 +49,18 @@ async def main():
                 env=env, cwd=temporary)
             async with asyncio.timeout(90):
                 with output.with_suffix(".stderr.log").open("w", encoding="utf-8") as errors:
+                    checkpoint("starting-server")
                     async with stdio_client(params, errlog=errors) as (read, write):
                         async with ClientSession(read, write) as session:
+                            checkpoint("initializing")
                             record["initialize"] = (await session.initialize()).model_dump(mode="json")
+                            checkpoint("listing-tools")
                             names = {tool.name for tool in (await session.list_tools()).tools}
+                            record["toolCount"] = len(names)
                             assert {"hermes_operator_status", "hermes_read_file"} <= names
                             for name, args in (("hermes_operator_status", {}),
                                     ("hermes_read_file", {"path": str(fixture), "offset": 1, "limit": 2})):
+                                checkpoint("calling:" + name)
                                 result = await session.call_tool(name, args)
                                 protocol_result = result.model_dump(mode="json", by_alias=True)
                                 record["calls"].append({"tool": name, "result": protocol_result})
@@ -55,15 +74,16 @@ async def main():
                                     assert status["success"] and status["level"] == "read_only" and not status["owner_active"], status
                                 else:
                                     assert "candidate-mcp-read-ok" in content and "second-line" in content, content
-                            record["toolCount"] = len(names)
-            record["packages"] = sorted([{"name": d.metadata["Name"], "version": d.version}
-                                          for d in importlib.metadata.distributions()], key=lambda d: d["name"])
-            record["passed"] = True
+                                checkpoint("verified:" + name)
+                        checkpoint("stopping-server")
+            checkpoint("removing-profile")
+        record["passed"] = True
+        checkpoint("complete")
     except BaseException as error:
         record.update(passed=False, error=repr(error))
         raise
     finally:
-        output.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        checkpoint(record.get("stage", "failed"))
 
 
 if __name__ == "__main__":
