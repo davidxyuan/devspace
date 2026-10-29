@@ -129,7 +129,9 @@ switch ($Mode) {
     function Register-ScheduledTask { throw 'Unexpected task registration' }
     function Wait-UpdateRolesReady { param($Port) $global:RuntimeRollbackFixture.events.Add('readiness'); return $global:RuntimeRollbackFixture.ready }
     function Get-WatchdogControlSettings { param($Config) @{dashboardPort=18777} }
-    function Get-WatchdogFileSha256 { param($Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+    $coreAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'watchdog-control-core.ps1'), [ref]$null, [ref]$null)
+    $hashFunction = $coreAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-WatchdogFileSha256'}, $true)
+    . ([scriptblock]::Create($hashFunction.Extent.Text))
     function Write-WatchdogAtomicJson { param($Path,$Value) $global:RuntimeRollbackFixture.events.Add('write-record'); [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 10)) }
     function Copy-UpdateFile {
         param($Source,$Destination)
