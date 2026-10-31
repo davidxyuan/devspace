@@ -259,6 +259,8 @@ function Get-ControlStatusPayload {
             listenerFound = [bool](Get-WatchdogProperty $health "listenerFound" $false)
             httpReachable = [bool](Get-WatchdogProperty $health "httpReachable" $false)
             protocolHealthy = [bool](Get-WatchdogProperty $health "protocolHealthy" $false)
+            healthEvidence = [string](Get-WatchdogProperty $health "healthEvidence" "")
+            protocolAttestedWithoutListener = [bool](Get-WatchdogProperty $health "protocolAttestedWithoutListener" $false)
             busyIndeterminate = [bool](Get-WatchdogProperty $health "busyIndeterminate" $false)
             identityConflict = [bool](Get-WatchdogProperty $health "identityConflict" $false)
             pid = Get-WatchdogProperty $health "pid" $null
@@ -274,6 +276,15 @@ function Get-ControlStatusPayload {
     return [pscustomobject][ordered]@{
         timestamp = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
         overall = $overall
+        healthDiagnostic = [pscustomobject]@{
+            snapshotUtc = [string](Get-WatchdogProperty $script:lastHealth 'timestamp' '')
+            processSnapshotCount = [int](Get-WatchdogProperty $script:lastHealth 'processSnapshotCount' -1)
+            commandLineReadableCount = [int](Get-WatchdogProperty $script:lastHealth 'commandLineReadableCount' -1)
+            healthStartedUtc = ConvertTo-WatchdogIso $script:lastHealthStarted
+            inFlight = [bool]$script:healthAsync
+            completed = [bool]($script:healthAsync -and $script:healthAsync.IsCompleted)
+            timedOut = [bool]$script:healthProbeTimedOut
+        }
         inventory = Get-CachedStackInventory
         activeJob = Get-CachedStackJob
         maintenanceMode = [bool]$script:state.maintenanceMode

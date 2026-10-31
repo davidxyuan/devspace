@@ -596,9 +596,18 @@ function Update-WatchdogRecoveryDecision($State, [string]$Service, $Health, $Set
         $record.nextRetryUtc = $null
         return [pscustomobject]@{ action="None"; reason="active_request"; record=$record }
     }
+    # A locally reachable listener with an unconfirmed PID is an observation
+    # gap, not a service outage. Never accumulate recovery failures from it.
+    if ([bool](Get-WatchdogProperty $Health "transportReachableWithoutOwner" $false)) {
+        $record.phase = "Confirming"
+        $record.consecutiveFailures = 0
+        $record.nextRetryUtc = $null
+        return [pscustomobject]@{ action="None"; reason="listener_indeterminate"; record=$record }
+    }
     $record.consecutiveFailures = [int]$record.consecutiveFailures + 1
     if ([bool](Get-WatchdogProperty $Health "busyIndeterminate" $false)) {
-        $transportUnreachable = -not [bool](Get-WatchdogProperty $Health "httpReachable" $false)
+        $transportUnreachable = -not ([bool](Get-WatchdogProperty $Health "httpReachable" $false) -or
+            [bool](Get-WatchdogProperty $Health "transportReachableWithoutOwner" $false))
         $hungTransportConfirmed = $transportUnreachable -and [int]$record.consecutiveFailures -ge [int]$Settings.busyTransportFailureThreshold
         if (-not $hungTransportConfirmed) {
             $record.phase = "Confirming"; $record.nextRetryUtc = $null
@@ -1021,11 +1030,25 @@ function Test-WatchdogLegacyHermesMcpFingerprint($Response) {
 }
 
 function Get-WatchdogListenOwners([int]$Port) {
+    # Keep the PID query bounded. A missing Windows listener snapshot is
+    # handled separately as uncertain if TCP still accepts a connection.
     return @(
         Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique |
             Where-Object { $_ -and $_ -ne 0 }
     )
+}
+
+function Test-WatchdogTcpPortReachable([int]$Port) {
+    if ($Port -le 0 -or $Port -gt 65535) { return $false }
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        return [bool]($client.ConnectAsync('127.0.0.1', $Port).Wait(350) -and $client.Connected)
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
 }
 
 function Test-WatchdogCommandContains([string]$CommandLine, [string]$Value) {
@@ -1120,13 +1143,57 @@ function Get-WatchdogServicePort([string]$Service, $Config) {
     return 0
 }
 
+function Get-WatchdogAttestedManagedProcesses([string]$Service, $Config, $Processes) {
+    # This compatibility bridge is restricted to a manually verified, exact-PID
+    # process set. Never infer management from an open port or executable name.
+    $stateDir = [string](Get-WatchdogProperty $Config 'stateDir' '')
+    $slug = [string](Get-WatchdogProperty $Config 'machineSlug' '')
+    if (-not $stateDir -or -not $slug) { return @() }
+    $path = Join-Path $stateDir 'watchdog-legacy-process-attestation.json'
+    $configPath = Join-Path $stateDir 'devspace-watchdog.config.json'
+    if (-not [IO.File]::Exists($path) -or -not [IO.File]::Exists($configPath)) { return @() }
+    try {
+        $evidence = Read-WatchdogJson $path
+        if ([int](Get-WatchdogProperty $evidence 'schemaVersion' 0) -ne 1 -or
+            [string]$evidence.machineSlug -cne $slug -or
+            [string]$evidence.configSha256 -cne (Get-WatchdogFileSha256 $configPath) -or
+            [string]$evidence.windowsUser -cne [Security.Principal.WindowsIdentity]::GetCurrent().Name) { return @() }
+        $records = @(Get-WatchdogProperty $evidence.services $Service @())
+        if ($records.Count -lt 1 -or $records.Count -gt 3) { return @() }
+        $verified = @()
+        foreach ($entry in $records) {
+            $expectedPid = [int](Get-WatchdogProperty $entry 'pid' 0)
+            $expectedTicks = [long](Get-WatchdogProperty $entry 'creationUtcTicks' 0)
+            $expectedName = [string](Get-WatchdogProperty $entry 'name' '')
+            if ($expectedPid -le 0 -or $expectedTicks -le 0 -or -not $expectedName) { return @() }
+            $matches = @($Processes | Where-Object { [int]$_.ProcessId -eq $expectedPid -and [string]$_.Name -ceq $expectedName })
+            if ($matches.Count -ne 1 -or -not $matches[0].CreationDate) { return @() }
+            $process = $matches[0]
+            if ([long]$process.CreationDate.ToUniversalTime().Ticks -ne $expectedTicks) { return @() }
+            # When the OS later makes the full process identity readable,
+            # it MUST still pass the original strict identity matcher.
+            if ($process.CommandLine -and -not (Test-WatchdogManagedProcess $process $Service $Config)) { return @() }
+            $verified += $process
+        }
+        return $verified
+    } catch { return @() }
+}
+
 function Get-WatchdogProcessLayer([string]$Service, $Config, $Processes) {
     $port = Get-WatchdogServicePort $Service $Config
-    $listeners = if ($port -gt 0) { @(Get-WatchdogListenOwners $port) } else { @() }
-    $managed = @($Processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config })
+    $listeners = @()
+    if ($port -gt 0) { $listeners = @(Get-WatchdogListenOwners $port) }
+    $strictManaged = @($Processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config })
+    $attested = @(Get-WatchdogAttestedManagedProcesses $Service $Config $Processes)
+    $managed = @($strictManaged + $attested | Sort-Object ProcessId -Unique)
     $managedPids = @($managed | ForEach-Object { [int]$_.ProcessId })
     $managedListeners = @($listeners | Where-Object { $_ -in $managedPids })
     $unknownListeners = @($listeners | Where-Object { $_ -notin $managedPids })
+    # A reachable TCP port with no identifiable listener is not healthy, but
+    # it is also not proof that the managed service exited. Fail closed:
+    # do not automatically stop/restart a potentially active MCP connection.
+    $uncertainListener = $port -gt 0 -and $listeners.Count -eq 0 -and
+        (Test-WatchdogTcpPortReachable $port)
     $primary = @($managed | Where-Object { [int]$_.ProcessId -in $managedListeners } | Select-Object -First 1)
     if ($primary.Count -eq 0) { $primary = @($managed | Select-Object -First 1) }
     $uptime = $null
@@ -1142,6 +1209,8 @@ function Get-WatchdogProcessLayer([string]$Service, $Config, $Processes) {
         managedPids = $managedPids
         listenerPids = $listeners
         unknownListenerPids = $unknownListeners
+        transportReachableWithoutOwner = [bool]$uncertainListener
+        attestationUsed = ($attested.Count -gt 0)
     }
 }
 
@@ -1149,7 +1218,7 @@ function New-WatchdogDisabledHealth([string]$Service, [int]$Port) {
     return [pscustomobject][ordered]@{
         service=$Service; enabled=$false; healthy=$true; processFound=$false; listenerFound=$false
         identityConflict=$false; busyIndeterminate=$false; pid=$null; port=$Port; uptimeSeconds=$null
-        httpReachable=$false; protocolHealthy=$false; error=""; detail="disabled"; connections=$null
+        httpReachable=$false; protocolHealthy=$false; transportReachableWithoutOwner=$false; protocolAttestedWithoutListener=$false; healthEvidence="disabled"; error=""; detail="disabled"; connections=$null
     }
 }
 
@@ -1160,9 +1229,36 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
     $httpReachable = $false
     $protocolHealthy = $false
     $detail = ""
+    if ($layer.attestationUsed) { $detail = 'manual_identity_attestation_verified' }
+    if (-not $layer.processFound) {
+        # Read-only identity diagnostics; never disclose process command lines or credentials.
+        $expectedName = switch ($Service) { 'devspace' {'node.exe'} 'hermes' {'python.exe'} 'router' {'node.exe'} 'ngrok' {'ngrok.exe'} }
+        $candidates = @($Processes | Where-Object { $_.Name -eq $expectedName })
+        $scriptPath = switch ($Service) {
+            'devspace' { [string](Get-WatchdogProperty $Config 'cliPath' '') }
+            'hermes' { [string](Get-WatchdogProperty $Config 'hermesServer' '') }
+            'router' { [string](Get-WatchdogProperty $Config 'routerPath' '') }
+            'ngrok' { [string](Get-WatchdogProperty $Config 'ngrokPath' '') }
+        }
+        $matchedArg = @($candidates | Where-Object { Test-WatchdogCommandContains ([string]$_.CommandLine) $scriptPath })
+        $processApiPathReadable = 0
+        foreach ($candidate in $candidates) {
+            try {
+                $foundProcess = Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction Stop
+                if ($foundProcess.Path) { $processApiPathReadable++ }
+            } catch { }
+        }
+        $detail = "identity_candidates=$($candidates.Count); commandlines=$(@($candidates | Where-Object { $_.CommandLine }).Count); executablepaths=$(@($candidates | Where-Object { $_.ExecutablePath }).Count); expected_argument=$($matchedArg.Count); process_api_paths=$processApiPathReadable"
+    }
     $probeError = ""
     $connectionMetrics = $null
-    if ($layer.listenerFound -and -not $layer.identityConflict) {
+    # Compatibility path for OS builds that hide listener ownership: the
+    # original process must have exact PID+creation-time attestation, the TCP
+    # socket must be reachable, and the expected application protocol must
+    # respond correctly. Unrecognized listener PIDs still fail closed.
+    $attestedTransport = [bool]$layer.attestationUsed -and [bool]$layer.transportReachableWithoutOwner -and
+        [bool]$layer.processFound -and -not [bool]$layer.identityConflict
+    if (($layer.listenerFound -or $attestedTransport) -and -not $layer.identityConflict) {
         switch ($Service) {
             "devspace" {
                 $healthProbe = Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/healthz" { param($json) [bool](Get-WatchdogProperty $json "ok" $false) -and [string](Get-WatchdogProperty $json "name" "") -eq "devspace" }
@@ -1226,13 +1322,17 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
             }
         }
     }
-    $healthy = $layer.processFound -and $layer.listenerFound -and -not $layer.identityConflict -and $protocolHealthy
-    $busy = $Service -in @("devspace", "hermes") -and $layer.processFound -and $layer.listenerFound -and -not $layer.identityConflict -and -not $healthy
-    $error = if ($layer.identityConflict) { "Configured port is owned by an unrecognized process; automatic mutation is blocked." } elseif (-not $layer.processFound) { "Managed process is missing." } elseif (-not $layer.listenerFound) { "Managed process is not listening on the configured port." } elseif (-not $protocolHealthy) { $probeError } else { "" }
+    $protocolAttested = $attestedTransport -and $protocolHealthy
+    $healthy = $layer.processFound -and ($layer.listenerFound -or $protocolAttested) -and -not $layer.identityConflict -and $protocolHealthy
+    $uncertainListener = [bool]$layer.transportReachableWithoutOwner -and -not $layer.identityConflict
+    $busy = ($Service -in @("devspace", "hermes") -and $layer.processFound -and $layer.listenerFound -and -not $layer.identityConflict -and -not $healthy) -or ($uncertainListener -and -not $protocolAttested)
+    $healthEvidence = if ($protocolAttested) { "attested_process_and_protocol" } elseif ($layer.listenerFound) { "verified_listener" } elseif ($uncertainListener) { "listener_undetermined" } else { "none" }
+    if ($protocolAttested) { $detail = "identity=attested_process_and_protocol; listener_pid=unavailable; $detail" }
+    $error = if ($layer.identityConflict) { "Configured port is owned by an unrecognized process; automatic mutation is blocked." } elseif ($protocolAttested) { "" } elseif ($uncertainListener) { "TCP reachable but ownership/protocol is not fully verified; automatic recovery deferred. $probeError" } elseif (-not $layer.processFound) { "Managed process is missing." } elseif (-not $layer.listenerFound) { "Managed process is not listening on the configured port." } elseif (-not $protocolHealthy) { $probeError } else { "" }
     return [pscustomobject][ordered]@{
         service=$Service; enabled=$true; healthy=[bool]$healthy; processFound=[bool]$layer.processFound; listenerFound=[bool]$layer.listenerFound
         identityConflict=[bool]$layer.identityConflict; busyIndeterminate=[bool]$busy; pid=$layer.pid; port=$port; uptimeSeconds=$layer.uptimeSeconds
-        httpReachable=[bool]$httpReachable; protocolHealthy=[bool]$protocolHealthy; error=(Protect-WatchdogText $error); detail=$detail; connections=$connectionMetrics
+        httpReachable=[bool]$httpReachable; protocolHealthy=[bool]$protocolHealthy; transportReachableWithoutOwner=[bool]$uncertainListener; protocolAttestedWithoutListener=[bool]$protocolAttested; healthEvidence=$healthEvidence; error=(Protect-WatchdogText $error); detail=$detail; connections=$connectionMetrics
     }
 }
 
@@ -1349,6 +1449,8 @@ function Get-WatchdogHealthSnapshot([string]$ConfigPath, [switch]$IncludePublic)
     }
     return [pscustomobject][ordered]@{
         timestamp = ConvertTo-WatchdogIso ([DateTimeOffset]::UtcNow)
+        processSnapshotCount = $processes.Count
+        commandLineReadableCount = @($processes | Where-Object { $_.CommandLine }).Count
         services = [pscustomobject]$services
         optionalTools = $optionalTools
         public = $public

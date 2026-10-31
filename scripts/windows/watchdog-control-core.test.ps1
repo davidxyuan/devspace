@@ -58,6 +58,136 @@ try {
     Write-WatchdogAtomicJson $configPath $config 30
     Write-WatchdogAtomicJson $devspaceConfigPath ([pscustomobject]@{host="127.0.0.1";port=17676;allowedRoots=@($tempRoot);publicBaseUrl=$config.publicBaseUrl}) 10
 
+    # Home regression: Windows listener PID enumeration can be empty while
+    # a real loopback TCP connection remains available. Never recover on this
+    # uncertain observation; do not call the service healthy either.
+    $testListener = [System.Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $testListener.Start()
+    $testPort = ([Net.IPEndPoint]$testListener.LocalEndpoint).Port
+    $listenerConfig = New-TestConfig $tempRoot
+    $listenerConfig.port = $testPort
+    $managedProcess = [pscustomobject]@{
+        Name='node.exe'; ExecutablePath=$listenerConfig.nodePath
+        CommandLine=('\"{0}\" \"{1}\" serve' -f $listenerConfig.nodePath, $listenerConfig.cliPath)
+        ProcessId=424242; CreationDate=(Get-Date)
+    }
+    $originalListenOwners = (Get-Item Function:Get-WatchdogListenOwners).ScriptBlock
+    try {
+        Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @() }
+        Assert-True "loopback TCP probe sees live listener" (Test-WatchdogTcpPortReachable $testPort)
+        $unknownOwner = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($managedProcess)
+        Assert-True "missing owner does not mean healthy" (-not $unknownOwner.healthy)
+        Assert-True "missing owner retained managed process" $unknownOwner.processFound
+        Assert-True "missing owner retains TCP evidence" $unknownOwner.transportReachableWithoutOwner
+        Assert-True "missing owner is indeterminate" $unknownOwner.busyIndeterminate
+        Assert-True "missing owner has no identity conflict" (-not $unknownOwner.identityConflict)
+        # A Host can be unable to read Windows process command lines/path even
+        # while the old managed backend still accepts TCP connections.
+        $blindProcess = [pscustomobject]@{
+            Name='node.exe'; ExecutablePath=$null; CommandLine=$null
+            ProcessId=424242; CreationDate=(Get-Date)
+        }
+        $blindHealth = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($blindProcess)
+        Assert-True "blind process cannot be classified as managed" (-not $blindHealth.processFound)
+        Assert-True "blind process listener is not healthy" (-not $blindHealth.healthy)
+        Assert-True "blind process retains reachable TCP evidence" $blindHealth.transportReachableWithoutOwner
+        Assert-True "blind process defers recovery" $blindHealth.busyIndeterminate
+        Assert-True "blind process does not invent identity conflict" (-not $blindHealth.identityConflict)
+        # Manual, exact-PID evidence restores identity only if the original
+        # process creation timestamp, machine, config and user still match.
+        $attestationFile = Join-Path $tempRoot 'watchdog-legacy-process-attestation.json'
+        $manifest = [pscustomobject]@{
+            schemaVersion=1; machineSlug='alpha'
+            windowsUser=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+            configSha256=(Get-WatchdogFileSha256 $configPath)
+            services=[pscustomobject]@{
+                devspace=@([pscustomobject]@{
+                    pid=424242; name='node.exe'
+                    creationUtcTicks=[string]$blindProcess.CreationDate.ToUniversalTime().Ticks
+                })
+            }
+        }
+        try {
+            Write-WatchdogAtomicJson $attestationFile $manifest 30
+            Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @(424242) }
+            $attested = Get-WatchdogProcessLayer 'devspace' $listenerConfig @($blindProcess)
+            Assert-True "attestation recognizes original blind managed PID" $attested.processFound
+            Assert-True "attestation recognizes listener PID" $attested.listenerFound
+            Assert-True "attestation is explicitly marked" $attested.attestationUsed
+            Assert-True "attestation does not trigger identity conflict" (-not $attested.identityConflict)
+            Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @() }
+            $originalJsonProbe = (Get-Item Function:Invoke-WatchdogJsonProbe).ScriptBlock
+            $originalMcpProbe = (Get-Item Function:Invoke-WatchdogMcpProbe).ScriptBlock
+            try {
+                Set-Item Function:Invoke-WatchdogJsonProbe -Value {
+                    param($Url, $SemanticCheck)
+                    [pscustomobject]@{semanticHealthy=$true;httpReachable=$true;error='';status=200}
+                }
+                Set-Item Function:Invoke-WatchdogMcpProbe -Value {
+                    param($Url, [switch]$Local)
+                    [pscustomobject]@{protocolHealthy=$true;httpReachable=$true;behavior='mock_mcp_accepted';error=''}
+                }
+                $fallbackHealth = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($blindProcess)
+                Assert-True "strictly attested identity and protocol can be healthy" $fallbackHealth.healthy
+                Assert-True "protocol health never fabricates listener PID" (-not $fallbackHealth.listenerFound)
+                Assert-True "protocol attestation evidence explicitly exposed" $fallbackHealth.protocolAttestedWithoutListener
+                Assert-Equal "protocol evidence name" $fallbackHealth.healthEvidence 'attested_process_and_protocol'
+                Assert-True "good protocol attestation is not indeterminate" (-not $fallbackHealth.busyIndeterminate)
+                Set-Item Function:Invoke-WatchdogMcpProbe -Value {
+                    param($Url, [switch]$Local)
+                    [pscustomobject]@{protocolHealthy=$false;httpReachable=$true;behavior='invalid_mcp';error='wrong protocol'}
+                }
+                $wrongProtocol = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($blindProcess)
+                Assert-True "wrong protocol cannot be healthy" (-not $wrongProtocol.healthy)
+                Assert-True "wrong protocol retains recovery guard" $wrongProtocol.busyIndeterminate
+                Assert-True "wrong protocol has no attested healthy evidence" (-not $wrongProtocol.protocolAttestedWithoutListener)
+                $wrongProtocolDecision = Update-WatchdogRecoveryDecision (New-WatchdogState $listenerConfig) 'devspace' $wrongProtocol (Get-WatchdogControlSettings $listenerConfig)
+                Assert-Equal "wrong protocol suppresses destructive recovery" $wrongProtocolDecision.reason 'listener_indeterminate'
+            } finally {
+                Set-Item Function:Invoke-WatchdogJsonProbe -Value $originalJsonProbe
+                Set-Item Function:Invoke-WatchdogMcpProbe -Value $originalMcpProbe
+            }
+            Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @(424242) }
+            $reusedPid = Copy-WatchdogObject $blindProcess
+            $reusedPid.CreationDate = $blindProcess.CreationDate.AddSeconds(1)
+            $reused = Get-WatchdogProcessLayer 'devspace' $listenerConfig @($reusedPid)
+            Assert-True "PID reuse fails closed" (-not $reused.processFound -and $reused.identityConflict)
+            $wrongCommand = Copy-WatchdogObject $blindProcess
+            $wrongCommand.CommandLine = 'node.exe malware.js'
+            $tampered = Get-WatchdogProcessLayer 'devspace' $listenerConfig @($wrongCommand)
+            Assert-True "readable malicious command cannot use attestation" (-not $tampered.processFound)
+            $manifest.configSha256='invalid'
+            Write-WatchdogAtomicJson $attestationFile $manifest 30
+            $invalid = Get-WatchdogProcessLayer 'devspace' $listenerConfig @($blindProcess)
+            Assert-True "config hash mismatch fails closed" (-not $invalid.processFound)
+        } finally { if ([IO.File]::Exists($attestationFile)) { [IO.File]::Delete($attestationFile) } }
+        Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @() }
+        $blindDecision = Update-WatchdogRecoveryDecision (New-WatchdogState $listenerConfig) 'devspace' $blindHealth (Get-WatchdogControlSettings $listenerConfig)
+        Assert-Equal "blind process never restarts on live TCP" $blindDecision.reason 'listener_indeterminate'
+        Assert-Equal "blind process does not act" $blindDecision.action 'None'
+        $uncertainSettings = Get-WatchdogControlSettings $listenerConfig
+        $uncertainState = New-WatchdogState $listenerConfig
+        for ($attempt=0; $attempt -lt ($uncertainSettings.busyTransportFailureThreshold + 3); $attempt++) {
+            $decision = Update-WatchdogRecoveryDecision $uncertainState 'devspace' $unknownOwner $uncertainSettings
+            Assert-Equal "unknown TCP owner must not restart $attempt" $decision.reason 'listener_indeterminate'
+            Assert-Equal "unknown TCP owner does not enter recovery $attempt" $decision.action 'None'
+            Assert-Equal "unknown TCP owner does not accumulate failures $attempt" $decision.record.consecutiveFailures 0
+        }
+        Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @(424243) }
+        $conflictHealth = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($managedProcess)
+        Assert-True "foreign PID still causes identity conflict" $conflictHealth.identityConflict
+        Assert-True "foreign PID does not count as uncertain missing owner" (-not $conflictHealth.transportReachableWithoutOwner)
+        $testListener.Stop()
+        Set-Item Function:Get-WatchdogListenOwners -Value { param([int]$Port) @() }
+        Assert-True "closed port fails TCP probe" (-not (Test-WatchdogTcpPortReachable $testPort))
+        $goneHealth = Get-WatchdogServiceHealth 'devspace' $listenerConfig @($managedProcess)
+        Assert-True "closed port does not block confirmed recovery" (-not $goneHealth.busyIndeterminate)
+        Assert-True "closed port does not provide TCP evidence" (-not $goneHealth.transportReachableWithoutOwner)
+    } finally {
+        $testListener.Stop()
+        Set-Item Function:Get-WatchdogListenOwners -Value $originalListenOwners
+    }
+
     $orderedConfig = [ordered]@{alpha=7; nullValue=$null}
     Assert-Equal "ordered dictionary property lookup" (Get-WatchdogProperty $orderedConfig "alpha" 99) 7
     Assert-Equal "ordered dictionary missing property uses default" (Get-WatchdogProperty $orderedConfig "missing" 99) 99
