@@ -1210,6 +1210,7 @@ function Get-WatchdogProcessLayer([string]$Service, $Config, $Processes) {
         listenerPids = $listeners
         unknownListenerPids = $unknownListeners
         transportReachableWithoutOwner = [bool]$uncertainListener
+        strictIdentityVerified = ($strictManaged.Count -gt 0)
         attestationUsed = ($attested.Count -gt 0)
     }
 }
@@ -1252,13 +1253,15 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
     }
     $probeError = ""
     $connectionMetrics = $null
-    # Compatibility path for OS builds that hide listener ownership: the
-    # original process must have exact PID+creation-time attestation, the TCP
-    # socket must be reachable, and the expected application protocol must
-    # respond correctly. Unrecognized listener PIDs still fail closed.
-    $attestedTransport = [bool]$layer.attestationUsed -and [bool]$layer.transportReachableWithoutOwner -and
-        [bool]$layer.processFound -and -not [bool]$layer.identityConflict
-    if (($layer.listenerFound -or $attestedTransport) -and -not $layer.identityConflict) {
+    # OS listener enumeration may omit a real PID. Allow a semantic probe
+    # only when the current process is independently verified by the exact
+    # executable/command matcher OR the original PID+birth-time attestation.
+    # This also covers a freshly auto-recovered process after the old attested
+    # PID was killed. Unknown listener owners always fail closed.
+    $verifiedTransport = ([bool]$layer.strictIdentityVerified -or [bool]$layer.attestationUsed) -and
+        [bool]$layer.transportReachableWithoutOwner -and [bool]$layer.processFound -and
+        -not [bool]$layer.identityConflict
+    if (($layer.listenerFound -or $verifiedTransport) -and -not $layer.identityConflict) {
         switch ($Service) {
             "devspace" {
                 $healthProbe = Invoke-WatchdogJsonProbe "http://127.0.0.1:$port/healthz" { param($json) [bool](Get-WatchdogProperty $json "ok" $false) -and [string](Get-WatchdogProperty $json "name" "") -eq "devspace" }
@@ -1322,12 +1325,12 @@ function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) {
             }
         }
     }
-    $protocolAttested = $attestedTransport -and $protocolHealthy
+    $protocolAttested = $verifiedTransport -and $protocolHealthy
     $healthy = $layer.processFound -and ($layer.listenerFound -or $protocolAttested) -and -not $layer.identityConflict -and $protocolHealthy
     $uncertainListener = [bool]$layer.transportReachableWithoutOwner -and -not $layer.identityConflict
     $busy = ($Service -in @("devspace", "hermes") -and $layer.processFound -and $layer.listenerFound -and -not $layer.identityConflict -and -not $healthy) -or ($uncertainListener -and -not $protocolAttested)
-    $healthEvidence = if ($protocolAttested) { "attested_process_and_protocol" } elseif ($layer.listenerFound) { "verified_listener" } elseif ($uncertainListener) { "listener_undetermined" } else { "none" }
-    if ($protocolAttested) { $detail = "identity=attested_process_and_protocol; listener_pid=unavailable; $detail" }
+    $healthEvidence = if ($protocolAttested -and $layer.strictIdentityVerified) { "strict_process_and_protocol" } elseif ($protocolAttested) { "attested_process_and_protocol" } elseif ($layer.listenerFound) { "verified_listener" } elseif ($uncertainListener) { "listener_undetermined" } else { "none" }
+    if ($protocolAttested) { $detail = "identity=$healthEvidence; listener_pid=unavailable; $detail" }
     $error = if ($layer.identityConflict) { "Configured port is owned by an unrecognized process; automatic mutation is blocked." } elseif ($protocolAttested) { "" } elseif ($uncertainListener) { "TCP reachable but ownership/protocol is not fully verified; automatic recovery deferred. $probeError" } elseif (-not $layer.processFound) { "Managed process is missing." } elseif (-not $layer.listenerFound) { "Managed process is not listening on the configured port." } elseif (-not $protocolHealthy) { $probeError } else { "" }
     return [pscustomobject][ordered]@{
         service=$Service; enabled=$true; healthy=[bool]$healthy; processFound=[bool]$layer.processFound; listenerFound=[bool]$layer.listenerFound
