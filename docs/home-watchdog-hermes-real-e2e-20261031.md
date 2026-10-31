@@ -14,6 +14,19 @@ Home only (DESKTOP-KT81K8N); TYO, NT1 and NT2R were not changed.
 - Implemented a compatibility refinement: when `strictIdentityVerified` (or the still-valid exact-PID attestation) is true, no unknown TCP listener PID exists, local TCP is reachable, and the expected service-specific semantic protocol is healthy, allow `healthEvidence=strict_process_and_protocol` (or `attested_process_and_protocol`) and Healthy; keep `listenerFound=false` when Windows doesn't reveal a listener owner.
 - Validated with the real newly recovered Hermes process: it became Healthy with `health_legacy_mcp=True` and `strict_process_and_protocol` evidence. The Dashboard returned Healthy/Auto and Hermes recovery `attemptCount=0`, with original other-backend PIDs unchanged.
 
+## Independent unattended repeat: PASS
+
+The completed fix was then tested **again without changing any code or manually intervening**:
+
+- 2026-10-31 14:57:47 UTC: genuinely killed the newly spawned Hermes MCP pair, child PID 1800 and parent PID 1824, after independently verifying full executable/command identity, process parent relationships, healthy Auto preflight and zero previous recovery attempts.
+- 14:57:51.615 UTC: Watchdog observed the missing Hermes process.
+- 14:59:08.881 UTC: Watchdog wrote a real recovery event `confirmed_failure`, attempt 1, result `dispatched`.
+- 14:59:12.719 UTC: Watchdog logged Hermes health restored as `healthy`, without manual restart or further patch.
+- New Hermes MCP PID 19184 passed current strict-process identity and legacy Hermes MCP protocol verification. The OS listener PID remains unobservable, but the honest health evidence is `strict_process_and_protocol`.
+- Five further Dashboard checks (14:59:53–15:00:13 UTC) showed **Auto=true, overall=Healthy** and all four services Healthy with `attemptCount=0`. DevSpace PID 31160, Router PID 33448, ngrok PID 32248, Tray PID 19896 and Hermes Gateway PID 2196 were unchanged; Supervisor stayed Running.
+
+**This repeat confirms the full real Hermes MCP fail → automatic recovery → Healthy lifecycle without manual intervention.**
+
 ## Safety assertions
 
 The protocol-backed fallback is **not** accepted merely because TCP port is reachable: strict current process command/executable matching or valid PID/birth-time attestation is required, as well as a service-specific semantic response. An explicitly unknown listener PID remains a conflict. Invalid MCP protocol does not become Healthy. Simulated PID reuse, mismatching command lines and modified config attestations are rejected.
