@@ -1,8 +1,20 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-10-30，台灣時間。**TYO 已完成 Tray／watchdog 交易修正與維護標示修補的部署及實際 MCP 驗證。已用隔離的真實 Windows 互動程序與 Limited 排程驗證 Tray 升級、啟動失敗及檔案還原，替代本輪 VM 路徑。完整 Hermes PM 版本升級／回復、重開機與跨機器 stable 推廣仍未完成；相關保護維持啟用。**
+更新：2026-11-04，台灣時間。**TYO 保留 10/29–30 已部署版本；11/4 新增的程序啟動時間核對修正已通過本機完整 Windows 回歸及雲端三平台／乾淨 Windows 安裝，但尚未部署。TYO 原生測試腳本在候選啟動前提早退出，同時有相同腳本雜湊的 Kaspersky 警告，待確認安全軟體處理動作；沒有關閉防護或重新嘗試。完整 Hermes PM 升級／回復、受控重開機與跨機器 stable 推廣仍未完成。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。TYO 使用 `a26961b` 管理套件及 `bc929db` 單一 HTML 修補；既有 DevSpace、Hermes、Router、ngrok 的執行版本、端點與程序身分保留。其他四台未操作。
+
+## 11/4 修正與目前阻礙
+
+`48e1d5468a7a2d486c95884bda8ff923d08e137e` 修正舊心跳遇到 PID 重用時可能授權停止新程序的缺口：讀取並驗證 `processStartUtc`，與 CIM 程序開始時間共同核對；再次讀取的心跳也必須屬於同一程序世代。容許小於 1 微秒的 CIM 精度差，不以 PID 單獨判斷。負向測試先重現錯誤停止，再通過修正；缺失／無效開始時間、重用 PID、讀取期間換代與精度差均有回歸。本機完整 Windows watchdog 測試退出 0。
+
+同一提交的 [Windows／Linux／macOS CI](https://github.com/davidxyuan/devspace/actions/runs/41791391173) 與 [乾淨 Windows 安裝](https://github.com/davidxyuan/devspace/actions/runs/41791420713) 均一次通過。後者核對乾淨來源與建置、521 個套件檔案、136 個 Hermes 工具與安裝後真實 MCP，smoke 退出 0。仍為 `core-installed-skip-start`，不含互動桌面／登入／重開。雲端 ZIP `DevSpace-OneClick-20261104-072519.zip` SHA-256 為 `3c37e1b314d4b90421fd08bc5e2a2a0039b80747fe5be98f27cca7b1e0309577`；下載後逐檔及來源／fingerprint 均通過。雲端與本機包的 21 個差異全部只在 CRLF/LF，已修正 bootstrap 的位元組雜湊相同；交付仍明確區分兩份產物。
+
+TYO 原生測試 `D:\devspace-tyo-native-20261104-r1` 的已安裝基準成功啟停，候選尚未就緒，主測試程序即以 exit 5 結束，未執行 finally。15:18:43 的 Kaspersky `avp` 4662 警告對應相同腳本／命令／SHA-256，但沒有列出實際處理動作，不能僅由退出碼確定因果或認定誤報。15:21 核對所有已觀察測試身分退出、任務非 Running 且 XML 相同後，只移除該測試任務；保留失敗 `result.json` 與另存 `reconciliation.json`。正式安裝檔案／收據及後端保持原樣。安全紀錄與管理員查核範圍見本機 `outputs/tray-20261104-security-review.md`。後續部署草稿已在入口阻擋，需安全處理原因明確及新的原生候選測試通過後才可啟用。
+
+11/2 16:16 的 Windows Kernel-Power 41／EventLog 6008、6005／Kernel-General 12，配合 16:23–25 的新程序身分，證明現有版本在一次非正常關機後重新啟動服務；這不是受控重開機完整測試。10/30 的 117.713 秒 Host 心跳失聯、停止 helper 逾時，以及後續 Hermes 探測間歇逾時仍保留為未解原因；不能宣稱本次 PID 修正解決它們。11/4 兩輪真實 DevSpace／Hermes connector 唯讀呼叫成功，僅代表現行 Codex connector 路徑。
+
+先前 `c29b074` 的 [跨平台 CI](https://github.com/davidxyuan/devspace/actions/runs/40930957453) 及 [乾淨 Windows 安裝](https://github.com/davidxyuan/devspace/actions/runs/40930958659) 也已通過；其診斷補強不代表已查明 `bc929db` 首次 MCP 子程序退出的原因。舊失敗證據與 10/15 七次採樣缺口保留，沒有補造樣本或把短期觀察接成無缺口 24 小時。
 
 ## 10/29–30 TYO 部署結果
 
