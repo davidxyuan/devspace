@@ -40,9 +40,11 @@ try {
         if ($fn) { Invoke-Expression $fn.Extent.Text }
     }
     $freshHeartbeatSeconds=15; $hostHeartbeatPath='fixture-host'; $hostScript='fixture.ps1'
-    $fresh=[pscustomobject]@{pid=42;timestamp=[DateTimeOffset]::UtcNow}
-    $stale=[pscustomobject]@{pid=42;timestamp=[DateTimeOffset]::UtcNow.AddMinutes(-1)}
-    $changed=[pscustomobject]@{pid=43;timestamp=[DateTimeOffset]::UtcNow}
+    $started=[DateTimeOffset][datetime]'2026-01-01'
+    $fresh=[pscustomobject]@{pid=42;processStartUtc=$started;timestamp=[DateTimeOffset]::UtcNow}
+    $stale=[pscustomobject]@{pid=42;processStartUtc=$started;timestamp=[DateTimeOffset]::UtcNow.AddMinutes(-1)}
+    $changed=[pscustomobject]@{pid=43;processStartUtc=$started;timestamp=[DateTimeOffset]::UtcNow}
+    $reused=[pscustomobject]@{pid=42;processStartUtc=$started.AddSeconds(-1);timestamp=[DateTimeOffset]::UtcNow.AddMinutes(-1)}
     function Read-RoleHeartbeat {
         $value=$script:heartbeats[[Math]::Min($script:reads,$script:heartbeats.Count-1)]
         $script:reads++; return $value
@@ -64,6 +66,8 @@ try {
     Check-Recovery 'heartbeat refreshed just before stop' @($stale,$stale,$fresh,$fresh) 0
     Check-Recovery 'unreadable evidence is not a stale role' @($null) 0
     Check-Recovery 'changed heartbeat identity is not stop authority' @($stale,$changed) 0
+    Check-Recovery 'old heartbeat cannot authorize recovery of a reused PID' @($reused) 0
+    Check-Recovery 'same PID with changed start time during discovery is retained' @($stale,$reused) 0
     Check-Recovery 'confirmed stale identity is recovered once' @($stale) 1
     Check-Recovery 'confirmed wrong interactive session is recovered' @($fresh) 1 2
     Check-Recovery 'correct interactive session is retained' @($fresh) 0 1

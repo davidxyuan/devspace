@@ -64,7 +64,7 @@ try {
     function Start-HiddenWatchdogProcess { param($ScriptPath, $ChildMode) $script:signals++; $script:childModes += $ChildMode }
     function Get-Process { param($Id) if ($Id -eq 999) { return $null }; return $script:fakeProcess }
     function Write-TestHeartbeat([bool]$Busy = $false) {
-        Write-WatchdogAtomicJson $hostHeartbeatPath ([pscustomobject]@{pid=42;timestamp=[DateTimeOffset]::UtcNow.ToString("o");sessionId=0;mutationInProgress=$Busy}) 5
+        Write-WatchdogAtomicJson $hostHeartbeatPath ([pscustomobject]@{pid=42;processStartUtc=([DateTimeOffset]$started).ToString('o');timestamp=[DateTimeOffset]::UtcNow.ToString("o");sessionId=0;mutationInProgress=$Busy}) 5
     }
     function Write-WatchdogEvent { }
 
@@ -110,6 +110,22 @@ try {
     Assert-Throws "quoted Host prevents stopped proof" { Assert-RoleStopped $hostHeartbeatPath } 'still running'
     Assert-True "fresh quoted Host needs no recovery" (Recover-StaleRole $hostHeartbeatPath)
     Assert-True "fresh Host recovery never signals stop" ($script:signals -eq 0)
+
+    foreach ($invalidStart in @($null,'not-a-date',([DateTimeOffset]$started.AddSeconds(-1)).ToString('o'))) {
+        $oldHeartbeat=Read-WatchdogJson $hostHeartbeatPath
+        $oldHeartbeat.processStartUtc=$invalidStart
+        Write-WatchdogAtomicJson $hostHeartbeatPath $oldHeartbeat 5
+        Assert-True "invalid or previous generation heartbeat is not fresh" (-not (Test-RoleHeartbeatFresh $hostHeartbeatPath))
+        $beforeKills=$script:kills
+        Assert-Throws "invalid or previous generation heartbeat cannot authorize termination" { Stop-RoleFromHeartbeat $hostHeartbeatPath } 'without a valid heartbeat|heartbeat process identity'
+        Assert-True "unproven heartbeat leaves live process and file intact" ($script:kills -eq $beforeKills -and $script:alive -and [IO.File]::Exists($hostHeartbeatPath))
+        Write-TestHeartbeat
+    }
+    $preciseHeartbeat=Read-WatchdogJson $hostHeartbeatPath
+    $preciseHeartbeat.processStartUtc=([DateTimeOffset]$started.AddTicks(1)).ToString('o')
+    Write-WatchdogAtomicJson $hostHeartbeatPath $preciseHeartbeat 5
+    Assert-True "CIM sub-microsecond precision difference is accepted" (Test-RoleHeartbeatFresh $hostHeartbeatPath)
+    Write-TestHeartbeat
 
     foreach ($parameter in @('-Mode', '"-Mode"')) {
         foreach ($quoteValue in @($false, $true)) {

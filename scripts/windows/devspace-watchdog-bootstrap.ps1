@@ -230,9 +230,11 @@ function Read-RoleHeartbeat([string]$Path) {
         if (-not [int]::TryParse([string]$value.pid, [ref]$rolePid) -or $rolePid -le 0) { return $null }
         $timestamp = [DateTimeOffset]::MinValue
         if (-not [DateTimeOffset]::TryParse([string]$value.timestamp, [ref]$timestamp)) { return $null }
+        $processStartUtc = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string]$value.processStartUtc, [ref]$processStartUtc)) { return $null }
         $sessionId = -1
         [void][int]::TryParse([string](Get-WatchdogProperty $value "sessionId" "-1"), [ref]$sessionId)
-        return [pscustomobject]@{ pid=$rolePid; timestamp=$timestamp; sessionId=$sessionId; mutationInProgress=((Get-WatchdogProperty $value "mutationInProgress" $false) -eq $true) }
+        return [pscustomobject]@{ pid=$rolePid; processStartUtc=$processStartUtc; timestamp=$timestamp; sessionId=$sessionId; mutationInProgress=((Get-WatchdogProperty $value "mutationInProgress" $false) -eq $true) }
     } catch {
         Write-WatchdogCaptureEvent $ConfigPath 'heartbeat_read_failed' @{path=$Path; hresult=$_.Exception.GetBaseException().HResult; error=(Protect-WatchdogText $_.Exception.Message)}
         return $null
@@ -248,12 +250,13 @@ function Get-RoleHeartbeatStatus([string]$Path, [int]$ExpectedSessionId = -1) {
     $heartbeat = Read-RoleHeartbeat $Path
     if (-not $heartbeat) { return $status }
     $matches = @(Get-RoleProcesses $Path | Where-Object { [int]$_.ProcessId -eq [int]$heartbeat.pid })
-    if ($matches.Count -ne 1) { $status.reason="process_identity_unavailable"; return $status }
+    # CIM has microsecond precision; PID alone can match a later process generation.
+    if ($matches.Count -ne 1 -or [Math]::Abs((([datetime]$matches[0].CreationDate).ToUniversalTime() - $heartbeat.processStartUtc.UtcDateTime).Ticks) -ge 10) { $status.reason="process_identity_unavailable"; return $status }
     $status.identity = "$($heartbeat.pid):$(([datetime]$matches[0].CreationDate).ToUniversalTime().Ticks)"
     $status.sessionId = [int]$matches[0].SessionId
     # Process discovery can be slow. Judge the latest heartbeat, not the one read before CIM.
     $latest = Read-RoleHeartbeat $Path
-    if (-not $latest -or $latest.pid -ne $heartbeat.pid) { $status.reason="heartbeat_changed_or_unreadable"; return $status }
+    if (-not $latest -or $latest.pid -ne $heartbeat.pid -or $latest.processStartUtc -ne $heartbeat.processStartUtc) { $status.reason="heartbeat_changed_or_unreadable"; return $status }
     $status.ageSeconds = ([DateTimeOffset]::UtcNow - $latest.timestamp.ToUniversalTime()).TotalSeconds
     if ($status.ageSeconds -lt -5) { $status.reason="heartbeat_clock_ahead"; return $status }
     if ($status.ageSeconds -gt $freshHeartbeatSeconds) { $status.state="stale"; $status.reason="heartbeat_expired"; return $status }
@@ -373,7 +376,7 @@ function Stop-RoleFromHeartbeat([string]$HeartbeatPath) {
     }
     if ($heartbeat.mutationInProgress) { throw "Watchdog mutation is still draining; retaining $HeartbeatPath." }
     $matches = @(Get-RoleProcesses $HeartbeatPath | Where-Object { [int]$_.ProcessId -eq [int]$heartbeat.pid })
-    if ($matches.Count -ne 1) { throw "Cannot prove watchdog heartbeat process identity: $HeartbeatPath" }
+    if ($matches.Count -ne 1 -or [Math]::Abs((([datetime]$matches[0].CreationDate).ToUniversalTime() - $heartbeat.processStartUtc.UtcDateTime).Ticks) -ge 10) { throw "Cannot prove watchdog heartbeat process identity: $HeartbeatPath" }
     $process = Get-Process -Id ([int]$heartbeat.pid) -ErrorAction Stop
     try {
         if ([Math]::Abs(($process.StartTime.ToUniversalTime() - ([datetime]$matches[0].CreationDate).ToUniversalTime()).Ticks) -ge 10) { throw "Watchdog PID was reused; refusing to stop it." }
