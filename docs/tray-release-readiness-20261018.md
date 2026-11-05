@@ -8,6 +8,8 @@
 
 `Read-WatchdogLimitedStream` 原本將已過期的剩餘時間改成 1 毫秒；當每次 `ReadAsync` 都立即完成時，仍繼續讀取到 EOF 或大小上限。隔離回歸先重現 4096 個已完成的小區塊超過 10 毫秒預算卻未報逾時，再改用單調計時器，於每次讀取前拒絕用完的預算。共用 HTTP 呼叫端、大小限制及 SSE 提早返回契約保持相同；沒有增加 timeout、重試或改動現場服務。焦點回歸通過，另外確認完整 SSE 事件不等待關閉、停住的本文會逾時。本文與 response headers 仍使用各自既有的預算，這不是整個 HTTP 請求只花一次預算的保證。
 
+修正提交 `a3b5e0b835070af26ec1f595c1ea760e1b97634c` 已推送。本機完整 Windows 回歸退出 0，同一提交的 [三平台 CI](https://github.com/davidxyuan/devspace/actions/runs/41949571901) 與 [乾淨 Windows 安裝](https://github.com/davidxyuan/devspace/actions/runs/41949573550) 都一次通過。下載 ZIP `DevSpace-OneClick-20261105-014253.zip` 的 SHA-256 為 `ca3adb8f410f3bfe5949ccbcadde8a6e361f2ddd663b859d2cb88d91b65c6203`；521 個檔案逐檔與解壓後重查均一致，來源／fingerprint 核對通過。已修正 core 與 bootstrap 的包內位元組與本機提交相同。安裝後 Hermes MCP 列出 136 個工具、兩個唯讀呼叫通過，程序 exit 0；仍為 `core-installed-skip-start`，不含 TYO 實際切換、互動桌面／登入／重開機或 ChatGPT 網頁長串流。
+
 09:25 的已安裝檔案雜湊／排程／健康核對通過，`operationBusy=false`。昨日 15:33:50 至今日 09:26 所讀紀錄有 Hermes 11 次、Router 與 ngrok 各 2 次不健康後恢復；最長兩個 Hermes 狀態事件相距 81.956 秒。這是記錄中的狀態轉換，不是服務已退出或持續中斷長度的證明，也不能認定本次本文期限缺陷造成這些事件或 10/30 心跳延遲。
 
 安全軟體詳細 Report 目錄的標準讀取被拒絕；既有 Windows 事件仍未揭露處理動作。保留原生失敗結果與部署阻擋，等待該事件的偵測名稱／元件／動作。今日證據在工作區 `outputs/tray-20261105-*.json` 及測試 log；其他四台未操作。
