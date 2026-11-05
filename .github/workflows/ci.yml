@@ -80,6 +80,31 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: python -I -B scripts/windows/prepare-hermes-pm-candidate.test.py
 
+      - name: Checkout pinned native-update baseline
+        if: matrix.os == 'windows-latest'
+        uses: actions/checkout@v4
+        with:
+          ref: a26961b72f24f5a3d3c84565a624234b4eeba603
+          path: .native-baseline
+          sparse-checkout: scripts/windows
+          persist-credentials: false
+
+      - name: Native Windows update and failed-start rollback
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          & scripts/windows/watchdog-native-update.test.ps1 -BaselineDirectory "$env:GITHUB_WORKSPACE\.native-baseline\scripts\windows" -WorkRoot "$env:RUNNER_TEMP\watchdog-native-update" *> "$env:RUNNER_TEMP\watchdog-native-update.log"
+
+      - name: Preserve native lifecycle evidence
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-native-update-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/watchdog-native-update.log
+            ${{ runner.temp }}/watchdog-native-update/**
+
       - name: Start the built CLI in isolated state
         run: node scripts/windows/stack-runtime-smoke.cjs
 
