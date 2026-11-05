@@ -49,6 +49,30 @@ function New-TestConfig([string]$Root) {
 
 function Copy-Editable($Config) { return Copy-WatchdogObject (Get-WatchdogEditableConfig $Config) }
 
+# Completed reads must still honor the total body deadline.
+$chunkedStream = [pscustomobject]@{ remaining = 4096 }
+$chunkedStream | Add-Member ScriptMethod ReadAsync {
+    param($Buffer, $Offset, $Count)
+    $read = if ($this.remaining -gt 0) { $this.remaining--; $Buffer[$Offset] = 120; 1 } else { 0 }
+    $completion = New-Object 'System.Threading.Tasks.TaskCompletionSource[int]'
+    $completion.SetResult($read)
+    return $completion.Task
+}
+Assert-Throws "continuously ready body cannot outlive its deadline" {
+    Read-WatchdogLimitedStream $chunkedStream 8192 10 | Out-Null
+} 'HTTP response body timed out'
+Assert-True "expired body stops before draining all chunks" ($chunkedStream.remaining -gt 0)
+
+$body = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+try {
+    Assert-Equal "bounded body remains intact" (Read-WatchdogLimitedStream $body 11 5000) '{"ok":true}'
+    $body.Position = 0
+    Assert-Throws "oversized body is rejected" { Read-WatchdogLimitedStream $body 10 5000 } 'exceeded 10 bytes'
+    $body.Position = 0
+    Assert-Throws "already expired body is not read" { Read-WatchdogLimitedStream $body 11 0 } 'timed out'
+    Assert-Equal "expired body leaves stream position unchanged" $body.Position 0
+} finally { $body.Dispose() }
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("devspace-watchdog-control-test-" + [Guid]::NewGuid().ToString("N"))
 try {
     [void][System.IO.Directory]::CreateDirectory($tempRoot)

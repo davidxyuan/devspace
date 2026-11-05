@@ -856,12 +856,13 @@ function Restore-WatchdogConfigurationBackup([string]$ConfigPath, [string]$Backu
 function Read-WatchdogLimitedStream($Stream, [int]$MaximumBytes = 262144, [int]$TimeoutMilliseconds = 5000, [switch]$StopAtEventMessage) {
     $buffer = New-Object byte[] 8192
     $memory = New-Object System.IO.MemoryStream
-    $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
         while ($true) {
-            $remaining = [Math]::Max(1, [int]($deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+            $remaining = $TimeoutMilliseconds - $timer.ElapsedMilliseconds
+            if ($remaining -le 0) { throw "HTTP response body timed out." }
             $readTask = $Stream.ReadAsync($buffer, 0, $buffer.Length)
-            if (-not $readTask.Wait($remaining)) { throw "HTTP response body timed out." }
+            if (-not $readTask.Wait([int]$remaining)) { throw "HTTP response body timed out." }
             $read = $readTask.Result
             if ($read -le 0) { break }
             if (($memory.Length + $read) -gt $MaximumBytes) { throw "HTTP response exceeded $MaximumBytes bytes." }
