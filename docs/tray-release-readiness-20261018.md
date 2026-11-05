@@ -1,10 +1,22 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-11-05，台灣時間。**TYO 保留 10/29–30 已部署版本，今日四個服務及兩個 Codex connector 唯讀查核通過。候選另修正 HTTP 回應持續可讀時忽略本文期限的缺陷；與 11/4 的程序啟動時間核對修正均尚未部署。已透過安全軟體內建唯讀工具取得原生測試腳本的偵測及處理碼 41（Untreatable）；仍待安全管理者判定與核准處置，沒有重試或關閉防護。完整 Hermes PM 升級／回復、受控重開機與跨機器 stable 推廣仍未完成。**
+更新：2026-11-05 18:19，台灣時間。**候選 `7759c03` 已修正 Supervisor 停止延遲，通過三平台 CI、雲端 Windows 真實原生升級／故障回復／降回基準及清理。乾淨安裝第二次通過，首次逾時保留；522 個套件檔案核對完成。TYO 四個現行服務及兩個 Codex connector 唯讀查核通過，但仍使用 10/29–30 已部署版本。使用者無法取得安全管理者判定；原生測試腳本的 Kaspersky 偵測尚未釐清，本機未重試、未部署新版。目標尚未完成，沒有發布 stable 或操作其他四台。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。TYO 使用 `a26961b` 管理套件及 `bc929db` 單一 HTML 修補；既有 DevSpace、Hermes、Router、ngrok 的執行版本、端點與程序身分保留。其他四台未操作。
 
-## 11/5 HTTP 本文期限與現況
+## 11/5 雲端原生升級／回復與 Supervisor 停止修正
+
+新增僅允許可拋棄 GitHub-hosted Windows runner 執行的原生測試，並明確拒絕 TYO。測試使用固定 `a26961b72f24f5a3d3c84565a624234b4eeba603` 基準、獨立 runtime／設定／連接埠及 Interactive/Limited 排程。產品後端在測試設定中停用；使用實際 Host／Tray／Supervisor、dashboard 與正式更新器，核對 PID 加開始時間、完整 payload、收據及設定未變。
+
+首次 [原生 CI 41966973205](https://github.com/davidxyuan/devspace/actions/runs/41966973205) 已做到候選就緒及故障啟動後自動回復，但降回基準及清理失敗。原因為 Supervisor 每輪無條件睡眠 15 秒，而更新器只等待停止 10 秒。修正 `7759c032c307313fddff6b0017bd54fe06792ac7` 保留 15 秒健康檢查週期，每 250 毫秒以既有共用讀取函式檢查停止世代；沒有延長產品期限。舊來源的真實 runspace 測試失敗，修正後通過；既有 lifecycle 與排程身分測試亦通過。這不證明已解決 10/30 的 Host 117.713 秒心跳事件。
+
+同一提交的 [三平台 CI 41991494933](https://github.com/davidxyuan/devspace/actions/runs/41991494933) 全部通過。原生 Windows 測試於 16:10:04–16:11:59 依序驗證基準、升級候選、故意損壞 Host 後更新器回復候選、降回原基準；22 個已觀察 PID／開始時間身分均退出，唯一測試排程經身分核對後移除。最後恢復的舊基準仍含原 15 秒睡眠，僅測試收尾等待其自然退出 11.249 秒；候選更新流程維持原 10 秒停止期限。首次失敗與此次成功分開保存。輪詢不能證明未被觀察到的瞬間脫離程序不存在。
+
+[乾淨 Windows 安裝 41991524422](https://github.com/davidxyuan/devspace/actions/runs/41991524422) 第二次通過。第一次在未修改的 stopped-service 元件更新 E2E 等待工作完成時逾時，尚未打包；原始 log 保留，原因未確定，未增加期限或略過測試。第二次安裝後 Hermes MCP 列出 136 工具、兩個呼叫成功。ZIP `DevSpace-OneClick-20261105-081441.zip` SHA-256 為 `7ac9e6564f6a7d2bb07a3d5fa5c79f7b878fc00ecff0c09237d5561833939de1`，522 個檔案在 ZIP 及解壓後雜湊、來源提交與 fingerprint 均核對通過。
+
+雲端原生結果在 `D:\devspace-release-artifacts-20261105\native-41991494933`；安裝包、原始診斷、`integrity.json` 與 `extraction.json` 在同層 `cloud-7759c03`。18:16 TYO 現行四服務健康、無操作占用，安裝收據一致；18:17 兩個真實 connector 成功。新版更新器預覽確認僅 core／bootstrap 兩檔內容改變，沒有套用。Kaspersky 仍存在，批次更新器的既有保護會在 Apply 寫檔前拒絕；未以其他複製／啟停路徑避開偵測。雲端功能驗證不代表 TYO 安全相容、部署、登入／重開機、ChatGPT 網頁長串流、Hermes PM 版本切換或無缺口 24 小時驗證。
+
+## 11/5 HTTP 本文期限與現況（較早紀錄）
 
 `Read-WatchdogLimitedStream` 原本將已過期的剩餘時間改成 1 毫秒；當每次 `ReadAsync` 都立即完成時，仍繼續讀取到 EOF 或大小上限。隔離回歸先重現 4096 個已完成的小區塊超過 10 毫秒預算卻未報逾時，再改用單調計時器，於每次讀取前拒絕用完的預算。共用 HTTP 呼叫端、大小限制及 SSE 提早返回契約保持相同；沒有增加 timeout、重試或改動現場服務。焦點回歸通過，另外確認完整 SSE 事件不等待關閉、停住的本文會逾時。本文與 response headers 仍使用各自既有的預算，這不是整個 HTTP 請求只花一次預算的保證。
 
@@ -218,7 +230,8 @@ bootstrap 需 Python 3.11 以上及 Git；實際 runtime 由固定來源的官�
 - [x] GPT 客製差異收斂、真正來源選擇及隔離 MCP 讀取驗證。
 - [ ] 將官方 PM 安裝／啟動／回復契約完整接入 Tray，驗證 Agent gateway 生命週期。
 - [ ] Python 依賴鎖定及整組相容性證明。
-- [ ] 在可拋棄 Windows VM／使用者執行乾淨安裝、完整啟停、登入／重開、升級及回復；不在 TYO 現有使用者上繞過 VM 測試保護。
+- [x] 在可拋棄雲端 Windows 完成乾淨安裝，以及原生 Host／Tray／Supervisor 啟停、升級、故障回復及清理；範圍與歷史失敗見 11/5 紀錄。
+- [ ] 在安全相容性問題釐清後完成 TYO 新候選部署及實際功能、登入／重開機驗證。雲端原生測試替代本機 VM 的功能測試，不替代這些實機證據。
 - [ ] ChatGPT 網頁接線、授權更新、長串流、取消和斷線恢復；完整 Codex 桌面退出再開。
 - [ ] 候選先通過上述檢查後，再建立獨立固定 24 小時觀察及資源判讀。
 - [ ] 將通過的同一產物與證據發布，再讓「建議更新」指向 stable；上游發現 workflow 必須先進入遠端預設分支才能排程執行。
