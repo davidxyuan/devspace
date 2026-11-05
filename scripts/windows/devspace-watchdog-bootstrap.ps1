@@ -457,6 +457,17 @@ function Invoke-BootstrapRun([string]$RequestedMode) {
     } finally { Exit-StackOperation $lease }
 }
 
+function Wait-SupervisorGeneration([string]$Path, [string]$Generation) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    # Keep the 15-second health cadence, but observe cross-session stop/upgrade requests promptly.
+    do {
+        Start-Sleep -Milliseconds 250
+        try { $current = [string](Read-WatchdogText $Path) }
+        catch [IO.IOException] { return } # The main loop rechecks and reports unreadable state.
+        if ($current -ne $Generation) { return }
+    } while ($timer.ElapsedMilliseconds -lt 15000)
+}
+
 $pausePath = Join-Path $stateDir 'watchdog-manual-stop.flag'
 if ($Mode -in @('Run','Watch')) { [IO.File]::Delete($pausePath) }
 if ($Mode -ne 'Watch') { Invoke-BootstrapRun $Mode; return }
@@ -481,6 +492,6 @@ try {
         } catch {
             try { Write-WatchdogEvent $stateDir $config 'supervisor' 'recovery_failed' (Protect-WatchdogText $_.Exception.Message) 'retry later' 'roles preserved' } catch { }
         }
-        Start-Sleep -Seconds 15
+        Wait-SupervisorGeneration $generationPath $generation
     }
 } finally { if ($ownsGuard) { $guard.ReleaseMutex() }; $guard.Dispose() }
