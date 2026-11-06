@@ -211,6 +211,143 @@ class SupervisorTests(unittest.TestCase):
                 manager.main()
         self.assertFalse((self.home / ".devspace-gateway-stop.json").exists())
 
+    def test_unobserved_descendant_blocks_success_and_handoff(self):
+        for exit_code in (0, 75):
+            with self.subTest(exit_code=exit_code):
+                self.state = {"phase": "stopped", "starts": []}
+                record = self.home / f"unobserved-{exit_code}.json"
+                release = self.home / f"release-{exit_code}"
+                descendant = (
+                    "import json,psutil,time; from pathlib import Path; p=psutil.Process(); "
+                    f"Path({str(record)!r}).write_text(json.dumps([p.pid,p.create_time()])); "
+                    "deadline=time.monotonic()+10\n"
+                    f"while not Path({str(release)!r}).exists() and time.monotonic()<deadline: time.sleep(.01)"
+                )
+                code = (
+                    "import subprocess,sys,time; from pathlib import Path\n"
+                    f"if Path({str(record)!r}).exists(): raise SystemExit(0)\n"
+                    f"subprocess.Popen([sys.executable,'-I','-B','-c',{descendant!r}]); "
+                    "deadline=time.monotonic()+8\n"
+                    f"while not Path({str(record)!r}).exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                    f"raise SystemExit({exit_code})"
+                )
+                try:
+                    # Deterministically model a descendant missed between process-tree polls.
+                    with patch.object(psutil.Process, "children", return_value=[]), \
+                         patch.object(manager, "STOP_SECONDS", .1), \
+                         self.assertRaisesRegex(RuntimeError, "surviving processes"):
+                        self.run_child(code)
+                    self.assertEqual(len(self.state["starts"]), 1)
+                    self.assertEqual(self.state["phase"], "attention_required")
+                    self.assertGreater(self.state["jobActiveProcesses"], 0)
+                    pid, started = json.loads(record.read_text())
+                    process = psutil.Process(pid)
+                    self.assertEqual(process.create_time(), started)
+                    self.assertTrue(process.is_running(), "Closing ownership must preserve the child")
+                finally:
+                    release.touch()
+                    if record.exists():
+                        pid, started = json.loads(record.read_text())
+                        try:
+                            process = psutil.Process(pid)
+                            if process.create_time() == started:
+                                process.wait(timeout=12)
+                        except psutil.NoSuchProcess:
+                            pass
+
+    def test_job_binding_failure_never_executes_child_code(self):
+        popen = subprocess.Popen
+        for operation, failure in (("_assign", False), ("_resume", -1)):
+            with self.subTest(operation=operation):
+                self.state = {"phase": "stopped", "starts": []}
+                processes = []
+                def spawn(*args, **kwargs):
+                    child = popen(*args, **kwargs)
+                    processes.append(child)
+                    return child
+                job = manager.ProcessJob()
+                with patch.object(manager, "ProcessJob", return_value=job), \
+                     patch.object(job, operation, return_value=failure), \
+                     patch.object(subprocess, "Popen", side_effect=spawn), self.assertRaises(OSError):
+                    self.run_child("from pathlib import Path; Path('must-not-run').touch()")
+                self.assertEqual(self.state["phase"], "attention_required")
+                self.assertEqual(len(processes), 1)
+                self.assertIsNotNone(processes[0].poll())
+                self.assertFalse((self.home / "must-not-run").exists())
+
+    def test_unobserved_descendant_finishes_before_replacement(self):
+        descendant = ("import time; from pathlib import Path; deadline=time.monotonic()+10\n"
+                      "while not Path('release').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                      "Path('finished').touch()")
+        code = ("import subprocess,sys; from pathlib import Path\n"
+                "if Path('once').exists(): raise SystemExit(0 if Path('finished').exists() else 78)\n"
+                "Path('once').touch()\n"
+                f"subprocess.Popen([sys.executable,'-I','-B','-c',{descendant!r}])\nraise SystemExit(75)")
+        observations = []
+        def release():
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if self.state["phase"] == "waiting_descendants":
+                    observations.append((len(self.state["starts"]), self.state["jobActiveProcesses"]))
+                    (self.home / "release").touch()
+                    return
+                time.sleep(.01)
+        thread = threading.Thread(target=release)
+        thread.start()
+        try:
+            with patch.object(psutil.Process, "children", return_value=[]):
+                self.assertEqual(self.run_child(code), 0)
+            self.assertEqual(len(observations), 1)
+            self.assertEqual(observations[0][0], 1)
+            self.assertGreater(observations[0][1], 0)
+            self.assertEqual(len(self.state["starts"]), 2)
+            self.assertEqual(self.state["jobActiveProcesses"], 0)
+        finally:
+            (self.home / "release").touch()
+            thread.join(timeout=10)
+
+    def test_job_query_failure_never_authorizes_replacement(self):
+        with patch.object(manager.ProcessJob, "active_count", side_effect=OSError("job query denied")), \
+             self.assertRaisesRegex(OSError, "job query denied"):
+            self.run_child("raise SystemExit(75)")
+        self.assertEqual(len(self.state["starts"]), 1)
+        self.assertEqual(self.state["phase"], "attention_required")
+        self.assertIsNone(self.state["jobActiveProcesses"])
+
+    def test_job_creation_failure_does_not_launch(self):
+        with patch.object(manager, "ProcessJob", side_effect=OSError("job creation denied")), \
+             patch.object(subprocess, "Popen") as spawn, \
+             self.assertRaisesRegex(OSError, "job creation denied"):
+            self.run_child("pass")
+        spawn.assert_not_called()
+        self.assertEqual(self.state["phase"], "attention_required")
+
+    def test_breakaway_request_cannot_escape_accounting(self):
+        descendant = ("import time; from pathlib import Path; deadline=time.monotonic()+10\n"
+                      "while not Path('release').exists() and time.monotonic()<deadline: time.sleep(.01)")
+        code = ("import json,psutil,subprocess,sys; from pathlib import Path\ntry:\n"
+                f" child=subprocess.Popen([sys.executable,'-I','-c',{descendant!r}],creationflags=0x01000000)\n"
+                "except PermissionError:\n Path('breakaway.json').write_text('null')\nelse:\n"
+                " p=psutil.Process(child.pid); Path('breakaway.json').write_text(json.dumps([p.pid,p.create_time()]))")
+        job = manager.ProcessJob()
+        try:
+            child = job.start([sys.executable, "-I", "-B", "-c", code], cwd=self.home,
+                              env=manager.isolated_environment(self.home), stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.assertEqual(child.wait(timeout=12), 0)
+            record = json.loads((self.home / "breakaway.json").read_text())
+            # Nested jobs may allow CreateProcess but must retain the child in our accounting.
+            if record is not None:
+                self.assertGreater(job.active_count(), 0)
+        finally:
+            (self.home / "release").touch()
+            deadline = time.monotonic() + 12
+            while job.active_count() and time.monotonic() < deadline:
+                time.sleep(.05)
+            active = job.active_count()
+            job.close()
+            self.assertEqual(active, 0)
+
     def test_init_never_adopts_existing_directory(self):
         sentinel = self.home / "keep"
         sentinel.write_text("user data")

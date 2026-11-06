@@ -192,6 +192,7 @@ try:
         assert worker.wait(timeout=max(0, stop_deadline - time.monotonic())) == 0
         final = manager.read(state_path)
         assert final["phase"] == "stopped" and len(final["starts"]) == 3, final
+        assert final["jobActiveProcesses"] == 0, final
         event("manager_exited", {"remaining": [observed_details.get((pid, start), {"pid": pid, "create_time": start})
                                                for pid, start in observed if observed_alive(pid, start)]})
         # Waiting for the launcher does not join its descendants; all share the original stop deadline.

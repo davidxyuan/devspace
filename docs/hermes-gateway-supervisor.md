@@ -34,24 +34,39 @@ requires observing `stopped`, the manager's exit and the gateway's exit.
   a replacement. Other nonzero exits retry, with at most four starts in 15 minutes;
   the budget persists across manager invocations.
 - Stop requests use the official PID-and-start-time-bound planned-stop marker.
-  The manager never force-kills. A stop exceeding 180 seconds is preserved for
-  inspection instead of spawning a replacement.
+  The manager never force-kills running children. A stop exceeding 180 seconds is
+  preserved for inspection instead of spawning a replacement.
 - Launch uses the official `runtime_command` so the gateway's strict identity
-  check recognizes its command line. After launcher exit, `waiting_descendants`
-  waits for already observed PID/start identities to exit naturally within the
-  existing stop budget (180 seconds, or the remainder of an ongoing stop).
-  No replacement starts while those descendants remain alive.
+  check recognizes its command line. The launcher is created suspended and bound
+  through its original process handle to an unnamed Windows Job before any code
+  executes. Assignment or resume failure discards only that never-started child
+  and enters `attention_required`; it never launches an uncontained fallback.
+- After launcher exit, `waiting_descendants` checks both observed PID/start
+  identities and the Job's active-process count within the existing stop budget
+  (180 seconds, or the remainder of an ongoing stop). Even a descendant missed
+  between process-tree polls blocks success and replacement until it exits.
+  A Job accounting failure also blocks success and replacement.
 - A gateway outside the observed child tree, ambiguous ownership or surviving
-  observed descendants causes `attention_required`. That state blocks another
-  run. The last record includes surviving PID and creation-time identities.
-- Descendant tracking is polling-based. It cannot prove the absence of a process
-  that launches and reparents between observations. A manager crash is therefore
-  not automatically recovered or adopted; production supervision still needs
-  the VM lifecycle and ownership validation.
+  descendants causes `attention_required`. That state blocks another run. The
+  last record includes observed surviving identities and `jobActiveProcesses`
+  (null when not yet measured), which can include children absent from the list.
+- The Job does not enable kill-on-close or breakaway flags. Closing its handle
+  preserves running children. Its exit accounting covers ordinary CreateProcess
+  descendants, including nested Jobs; it is not a security boundary against
+  processes launched by an outside broker or WMI. See Microsoft's
+  [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  and [Nested Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs).
+  A crashed manager's anonymous Job cannot be reopened: its nonterminal record
+  still blocks automatic adoption. Native manager-crash, login/reboot and
+  production ownership validation remain required.
 
 The Windows test script uses harmless real child processes plus a simulated
 gateway identity/stop interface. It covers exit semantics, retry limits, locks,
 stop races, surviving descendants and preservation of uncertain ownership.
+It also forces polling to miss a live descendant and verifies that exit 0 cannot
+report success and exit 75 cannot start a replacement. Binding/query failures
+fail closed; a breakaway request cannot escape accounting; closing the Job after
+an error preserves the running descendant.
 These are not real gateway crash recovery, task/login/reboot, upgrade/rollback,
 ChatGPT connection or 24-hour stability evidence.
 

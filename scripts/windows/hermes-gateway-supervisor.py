@@ -1,9 +1,11 @@
 """Foreground, bounded gateway supervision for a newly created isolated profile.
 
-Run with the prepared Agent's Python. No service/task installation or forced stop.
+Run with the prepared Agent's Python. No service/task installation or forced running-child stop.
 """
 import argparse
 from contextlib import contextmanager
+import ctypes
+from ctypes import wintypes
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -22,6 +24,68 @@ WINDOW_SECONDS = 900
 RETRY_SECONDS = 3
 STOP_SECONDS = 180
 TERMINAL = {"stopped", "fatal_configuration", "retry_exhausted"}
+
+
+class _JobAccounting(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_longlong) for name in (
+        "totalUserTime", "totalKernelTime", "periodUserTime", "periodKernelTime"
+    )] + [(name, wintypes.DWORD) for name in (
+        "pageFaults", "totalProcesses", "activeProcesses", "terminatedProcesses"
+    )]
+
+
+class ProcessJob:
+    """Kernel exit barrier, without kill-on-close or breakaway permissions."""
+
+    def __init__(self):
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._create = kernel.CreateJobObjectW
+        self._create.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        self._create.restype = wintypes.HANDLE
+        self._assign = kernel.AssignProcessToJobObject
+        self._assign.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        self._assign.restype = wintypes.BOOL
+        self._query = kernel.QueryInformationJobObject
+        self._query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                               wintypes.DWORD, ctypes.c_void_p]
+        self._query.restype = wintypes.BOOL
+        self._close = kernel.CloseHandle
+        self._close.argtypes = [wintypes.HANDLE]
+        self._close.restype = wintypes.BOOL
+        self._resume = ctypes.WinDLL("ntdll").NtResumeProcess
+        self._resume.argtypes = [wintypes.HANDLE]
+        self._resume.restype = wintypes.LONG
+        self.handle = self._create(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def start(self, command, **kwargs):
+        # Bind before any child code can spawn an unobserved descendant.
+        child = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW | 0x4, **kwargs)
+        try:
+            if not self._assign(self.handle, int(child._handle)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            status = self._resume(int(child._handle))
+            if status < 0:
+                raise OSError(f"NtResumeProcess failed: 0x{status & 0xffffffff:08x}")
+        except Exception:
+            # Only this never-started suspended child may be discarded; use its original handle.
+            child.kill()
+            child.wait(timeout=10)
+            raise
+        return child
+
+    def active_count(self):
+        info = _JobAccounting()
+        if not self._query(self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.activeProcesses
+
+    def close(self):
+        if self.handle:
+            if not self._close(self.handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.handle = None
 
 
 def read(path):
@@ -93,6 +157,7 @@ def supervise(home, state, gateway, command, env):
     control_path = home / ".devspace-gateway-stop.json"
     known = {}
     child = None
+    job = None
 
     def save(phase, **details):
         state.update(phase=phase, updatedAt=datetime.now(timezone.utc).isoformat(), **details)
@@ -110,6 +175,7 @@ def supervise(home, state, gateway, command, env):
         raise RuntimeError("An existing gateway owns this profile")
     state.update(runId=uuid.uuid4().hex, supervisor={"pid": os.getpid(), "startTime": psutil.Process().create_time()})
     try:
+        job = ProcessJob()
         control_path.unlink(missing_ok=True)
         while True:
             if control_path.exists() and read(control_path).get("runId") == state["runId"]:
@@ -121,11 +187,11 @@ def supervise(home, state, gateway, command, env):
                 return 1
             state["starts"].append(time.time())
             # Persist intent before spawn: a manager crash must never authorize a second owner.
-            save("starting", child=None, gateway=None, stopMarkerSent=False, error=None, survivingChildren=[])
+            save("starting", child=None, gateway=None, stopMarkerSent=False, error=None,
+                 survivingChildren=[], jobActiveProcesses=None)
             with (home / "supervised-gateway.log").open("a", encoding="utf-8") as log:
-                child = subprocess.Popen(command, cwd=home, env=env, stdin=subprocess.DEVNULL,
-                                         stdout=log, stderr=subprocess.STDOUT,
-                                         creationflags=subprocess.CREATE_NO_WINDOW)
+                child = job.start(command, cwd=home, env=env, stdin=subprocess.DEVNULL,
+                                  stdout=log, stderr=subprocess.STDOUT)
                 process = None
                 try:
                     process = psutil.Process(child.pid)
@@ -136,7 +202,7 @@ def supervise(home, state, gateway, command, env):
                         raise
                 stopping_at = None
                 while child.poll() is None:
-                    # shortcut: polling misses instant reparenting; require container ownership before production adoption.
+                    # Polling supplies identity diagnostics; job accounting proves ordinary descendants exited.
                     try:
                         descendants = process.children(recursive=True)
                     except psutil.NoSuchProcess:
@@ -170,14 +236,22 @@ def supervise(home, state, gateway, command, env):
                 code = child.wait()
             # The venv launcher may have exited while its worker or descendants remain alive.
             survivors = live_children()
-            if survivors:
-                save("waiting_descendants", exitCode=code)
+            active = job.active_count()
+            if survivors or active:
+                save("waiting_descendants", exitCode=code, jobActiveProcesses=active)
                 remaining = STOP_SECONDS if stopping_at is None else max(
                     0, STOP_SECONDS - (time.monotonic() - stopping_at))
-                psutil.wait_procs([known[(p["pid"], p["startTime"])] for p in survivors], timeout=remaining)
+                deadline = time.monotonic() + remaining
+                if survivors:
+                    psutil.wait_procs([known[(p["pid"], p["startTime"])] for p in survivors], timeout=remaining)
+                active = job.active_count()
+                while active and time.monotonic() < deadline:
+                    time.sleep(min(.1, max(0, deadline - time.monotonic())))
+                    active = job.active_count()
                 survivors = live_children()
-            if survivors or identity() is not None:
-                raise RuntimeError(f"Child exited with surviving processes; preserved: {survivors}")
+            state["jobActiveProcesses"] = active
+            if survivors or active or identity() is not None:
+                raise RuntimeError(f"Child exited with surviving processes; preserved: {survivors}; job active: {active}")
             known.clear()
             save("exited", exitCode=code, child=None, gateway=None)
             if stopping_at or code == 0:
@@ -197,6 +271,9 @@ def supervise(home, state, gateway, command, env):
     except Exception as exc:
         save("attention_required", error=str(exc), survivingChildren=live_children())
         raise
+    finally:
+        if job is not None:
+            job.close()
 
 
 def main():
