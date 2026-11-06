@@ -91,21 +91,10 @@ function Assert-StackServiceReady([string]$Service, $Config) {
     throw "Service $Service failed its local health check: $summary"
 }
 
-function Get-HermesGatewayServiceDirectory {
-    $hermesHome = [string]$env:HERMES_HOME
-    if ([string]::IsNullOrWhiteSpace($hermesHome)) {
-        $local = [string]$env:LOCALAPPDATA
-        if ([string]::IsNullOrWhiteSpace($local)) {
-            $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-        }
-        if ([string]::IsNullOrWhiteSpace($local)) { return $null }
-        $hermesHome = Join-Path $local 'hermes'
-    }
-    return Join-Path ([IO.Path]::GetFullPath($hermesHome)) 'gateway-service'
-}
-
-function Test-HermesGatewayLauncherInstalled {
-    $serviceDir = Get-HermesGatewayServiceDirectory
+function Test-HermesGatewayLauncherInstalled($Config) {
+    # Check the profile the service will actually use, not an unrelated shell's HERMES_HOME.
+    $environment = Get-WatchdogHermesEnvironment $Config
+    $serviceDir = Join-Path ([IO.Path]::GetFullPath([string]$environment.HERMES_HOME)) 'gateway-service'
     if ($serviceDir -and [IO.Directory]::Exists($serviceDir)) {
         if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.vbs' -File -ErrorAction Stop).Count -gt 0) { return $true }
         if (@(Get-ChildItem -LiteralPath $serviceDir -Filter 'Hermes_Gateway*.cmd' -File -ErrorAction Stop).Count -gt 0) { return $true }
@@ -140,7 +129,7 @@ try {
             }
         }
         # shortcut: the transaction owns GPT, not gateway; block until gateway quiesce/rollback is implemented.
-        if (Test-HermesGatewayLauncherInstalled) { throw 'Hermes Agent gateway lifecycle is not covered by this update transaction; blocked before stopping services. Existing gateway launchers and supervision are preserved.' }
+        if (Test-HermesGatewayLauncherInstalled $config) { throw 'Hermes Agent gateway lifecycle is not covered by this update transaction; blocked before stopping services. Existing gateway launchers and supervision are preserved.' }
     }
     if ($candidate.kind -in @('hermes-gpt','hermes-agent') -and $change.config.hermesEnabled) {
         $phase = 'verify Hermes Agent source before stopping services'

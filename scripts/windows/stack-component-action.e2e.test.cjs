@@ -93,6 +93,7 @@ const controlFixture = [
   "function Write-WatchdogAtomicJson([string]$Path, $Value, [int]$Retries = 40) { $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'; [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 40)); Move-Item -LiteralPath $temporary -Destination $Path -Force }",
   "function Test-WatchdogCommandToken([string]$CommandLine, [string]$Value) { return [bool]($Value -and $CommandLine -and $CommandLine.IndexOf($Value, [StringComparison]::OrdinalIgnoreCase) -ge 0) }",
   "function ConvertTo-WatchdogNativeArgument([string]$Value) { return $Value }",
+  "function Get-WatchdogHermesEnvironment($Config) { return @{ HERMES_HOME = (Join-Path $env:LOCALAPPDATA 'hermes') } }",
   "function Get-TestServiceRunning { if (-not [IO.File]::Exists($env:STACK_E2E_SERVICE_STATE)) { return $false }; $last = @(Get-Content -LiteralPath $env:STACK_E2E_SERVICE_STATE)[-1]; return [bool]($last -and $last.StartsWith('start|', [StringComparison]::Ordinal)) }",
   "function Get-TestServiceIdentity($Config) { if ($Config.hermesAgentExe) { return [string]$Config.hermesAgentExe }; if ($Config.hermesServer) { return [string]$Config.hermesServer }; return [string]$Config.cliPath }",
   "function Add-TestServiceEvent([string]$Action, $Config) { Add-Content -LiteralPath $env:STACK_E2E_SERVICE_STATE -Value ($Action + '|' + (Get-TestServiceIdentity $Config)) }",

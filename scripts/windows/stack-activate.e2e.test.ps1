@@ -87,9 +87,12 @@ throw 'forced activation failure'
     # Activate a stopped Agent through the real entry point. Its source directory
     # must follow the executable so the next inventory/update checks the new tree.
     $oldHermesHome = $env:HERMES_HOME
-    $env:HERMES_HOME = Join-Path $testRoot 'hermes-home'
+    $oldLocalAppData = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = Join-Path $testRoot 'local-app-data'
+    $env:HERMES_HOME = Join-Path $testRoot 'unrelated-shell-home'
     try {
         $oldAgentRoot = Join-Path $testRoot 'old-agent'
+        [void][IO.Directory]::CreateDirectory($oldAgentRoot)
         $agentExe = Join-Path $candidateRoot 'venv\Scripts\hermes.exe'
         [void][IO.Directory]::CreateDirectory((Split-Path $agentExe -Parent))
         [IO.File]::WriteAllText($agentExe, '# stopped candidate Agent')
@@ -100,8 +103,12 @@ throw 'forced activation failure'
         [IO.File]::WriteAllText($candidatePath, ($candidate | ConvertTo-Json -Depth 20))
         # Existing gateway launchers are outside the GPT service transaction. A failed
         # refresh must not stop services, overwrite their custom supervision, or enter rollback.
-        $gatewayDir = Join-Path $env:HERMES_HOME 'gateway-service'
+        # The shell's HERMES_HOME differs from the profile actually selected by Tray.
+        $gatewayDir = Join-Path (Join-Path $env:LOCALAPPDATA 'hermes') 'gateway-service'
         [void][IO.Directory]::CreateDirectory($gatewayDir)
+        $unrelatedLauncher = Join-Path $env:HERMES_HOME 'gateway-service\Hermes_Gateway.cmd'
+        [void][IO.Directory]::CreateDirectory((Split-Path $unrelatedLauncher -Parent))
+        [IO.File]::WriteAllText($unrelatedLauncher, 'unrelated shell profile; preserve')
         $beforeGatewayConfig = [IO.File]::ReadAllText($configPath)
         $beforeGatewayTasks = $global:StackE2ETaskEvents.Count
         $beforeGatewayControl = $global:StackE2EControlEvents.Count
@@ -147,6 +154,7 @@ throw 'forced activation failure'
         $afterAgent = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
         Assert-StackE2E ($afterAgent.hermesAgentExe -eq $agentExe -and $afterAgent.hermesAgentWorkingDirectory -eq $candidateRoot) 'Agent activation must update its executable and source directory together.'
         Assert-StackE2E ($afterAgent.custom.keep -eq 'yes') 'Agent activation changed unrelated settings.'
+        Assert-StackE2E ([IO.File]::ReadAllText($unrelatedLauncher) -eq 'unrelated shell profile; preserve') 'Activation touched the unrelated inherited profile.'
         # A GPT server that ignores explicit source selection must fail before any task/service stops.
         $afterAgent.hermesEnabled = $true
         $afterAgent | Add-Member NoteProperty hermesPython ((Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source)
@@ -161,7 +169,7 @@ throw 'forced activation failure'
         Assert-StackE2E ($null -ne $rejected -and $rejected.Exception.Message -match 'Hermes source/import preflight failed|source or dependencies are incompatible') "Incompatible Hermes source was not blocked in preflight: $rejected"
         Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeRejectedConfig) 'Rejected source changed configuration.'
         Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeRejectedTasks) 'Rejected source stopped or changed a scheduled task.'
-    } finally { $env:HERMES_HOME = $oldHermesHome }
+    } finally { $env:HERMES_HOME = $oldHermesHome; $env:LOCALAPPDATA = $oldLocalAppData }
     Write-Host 'stack-activate: real candidate activation failure restored config, task state and operation ownership.'
 } finally {
     Remove-Variable StackE2ETask,StackE2ETaskEvents,StackE2EControlEvents,StackE2EGatewayTask,StackE2EQueryFailure -Scope Global -ErrorAction SilentlyContinue
