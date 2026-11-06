@@ -7,6 +7,27 @@ remain in place. It requires a completed `prepare-hermes-pm-candidate.py` receip
 and that preparation's Python interpreter; dependency locks and tracked source
 are checked before launch.
 
+The preparation command also accepts `--gpt-source <checkout> --gpt-revision <full SHA>`.
+It checks the GPT repository against `stack-release-manifest.json`, snapshots only
+committed files, and keeps its data separate from the live user profile. It builds
+a separate GPT dependency environment through the official PM while retaining all
+frozen Agent dependency versions. GPT uses the explicit Agent source; the unrelated
+`hermes-agent==0.0.0` index package is never requested.
+
+Preparation resolves GPT additions once, saves every resulting version in
+`pair-requirements.txt`, then rebuilds in a new environment and rejects any missing,
+additional or changed package or a changed Python version. The rebuilt interpreter
+must pass source-import validation and real readonly stdio MCP status/file-read
+calls, including transport shutdown and disposable-profile cleanup. The receipt's
+`pair` section and `pair-mcp.json` retain the evidence; failure keeps preparation
+failed and activation ineligible. GitHub candidate validation always exercises this
+pairing with the pinned GPT component before gateway lifecycle checks.
+
+This verifies a version-pinned rebuild on the current platform, not a portable
+offline bundle: package archives are not retained or hash-locked here. GPT runs from
+the committed source snapshot rather than an installed wheel. Full PM activation,
+profile migration/rollback and TYO deployment remain separate release gates.
+
 Use a **new** profile directory. `init` refuses every existing directory, including
 empty ones. Configure only that new profile's gateway adapters and credentials.
 The manager clears inherited credentials and fixes its home paths to this profile.

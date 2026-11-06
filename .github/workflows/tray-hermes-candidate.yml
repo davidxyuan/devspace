@@ -6,6 +6,9 @@ on:
     paths:
       - .github/workflows/tray-hermes-candidate.yml
       - scripts/windows/prepare-hermes-pm-candidate*.py
+      - scripts/windows/stack-release-manifest.json
+      - scripts/windows/stack-hermes-source.py
+      - scripts/windows/stack-hermes-mcp-smoke.py
       - scripts/windows/hermes-gateway-supervisor*.py
       - scripts/windows/hermes-gateway-real.test.py
       - scripts/windows/hermes-gateway-readiness.test.py
@@ -55,10 +58,24 @@ jobs:
           if ($LASTEXITCODE) { throw 'Pinned fetch failed' }
           git -C $source checkout --detach $env:AGENT_REVISION
           if ($LASTEXITCODE) { throw 'Pinned checkout failed' }
-      - name: Prepare frozen dependencies and inspect CLI
+          $gpt = (Get-Content scripts/windows/stack-release-manifest.json -Raw | ConvertFrom-Json).components.'hermes-gpt'
+          if ($gpt.repository -cne 'davidxyuan/hermes-gpt' -or $gpt.revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid GPT release pin' }
+          $gptSource = Join-Path $env:RUNNER_TEMP 'hermes-gpt-source'
+          git init $gptSource
+          if ($LASTEXITCODE) { throw 'GPT initialization failed' }
+          git -C $gptSource config core.autocrlf false
+          if ($LASTEXITCODE) { throw 'GPT line-ending configuration failed' }
+          git -C $gptSource remote add origin "https://github.com/$($gpt.repository).git"
+          if ($LASTEXITCODE) { throw 'GPT origin setup failed' }
+          git -C $gptSource fetch --no-tags --depth=1 origin $gpt.revision
+          if ($LASTEXITCODE) { throw 'GPT pinned fetch failed' }
+          git -C $gptSource checkout --detach $gpt.revision
+          if ($LASTEXITCODE) { throw 'GPT pinned checkout failed' }
+      - name: Prepare frozen Agent and rebuild paired GPT dependencies
         shell: pwsh
         run: |
-          python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source "$env:RUNNER_TEMP/hermes-agent-source" --revision $env:AGENT_REVISION --patch scripts/windows/patches/hermes-windows-control-pipe.patch --out "$env:RUNNER_TEMP/hermes-pm-candidate"
+          $gpt = (Get-Content scripts/windows/stack-release-manifest.json -Raw | ConvertFrom-Json).components.'hermes-gpt'
+          python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source "$env:RUNNER_TEMP/hermes-agent-source" --revision $env:AGENT_REVISION --patch scripts/windows/patches/hermes-windows-control-pipe.patch --gpt-source "$env:RUNNER_TEMP/hermes-gpt-source" --gpt-revision $gpt.revision --out "$env:RUNNER_TEMP/hermes-pm-candidate"
           if ($LASTEXITCODE) { throw 'Candidate preparation failed; preserved diagnostics below' }
       - name: Verify bounded external gateway supervision with real test processes
         shell: pwsh
@@ -83,6 +100,7 @@ jobs:
           path: |
             ${{ runner.temp }}/hermes-pm-candidate/*.json
             ${{ runner.temp }}/hermes-pm-candidate/*.log
+            ${{ runner.temp }}/hermes-pm-candidate/pair-*.txt
             ${{ runner.temp }}/hermes-pm-candidate/candidate.patch
             ${{ runner.temp }}/hermes-gateway-disposable-profile/test-manager.log
             ${{ runner.temp }}/hermes-gateway-disposable-profile/supervised-gateway.log
