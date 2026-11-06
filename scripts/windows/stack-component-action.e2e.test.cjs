@@ -68,7 +68,21 @@ function cleanEnv(extra = {}) {
   delete result.DEVSPACE_STACK_OPERATION_TOKEN; delete result.DEVSPACE_STACK_JOB_ID;
   return result;
 }
-function jobDone(installDir, id) { return ["completed", "failed", "rollback_failed"].includes(jobs.readJob(installDir, id)?.phase); }
+async function waitJob(installDir, id, description) {
+  try {
+    await until(() => ["completed", "failed", "rollback_failed"].includes(jobs.readJob(installDir, id)?.phase), description);
+  } catch (error) {
+    const diagnostic = { lines: [] };
+    const secrets = ["fixture-owner", "fixture-parent-key"];
+    try {
+      const job = jobs.readJob(installDir, id);
+      jobs.appendOutput(diagnostic, "job", JSON.stringify(job && { id: job.id, phase: job.phase, step: job.step, updatedAt: job.updatedAt, exitCode: job.exitCode, error: job.error }), secrets);
+      for (const line of job?.lines?.slice(-20) || []) jobs.appendOutput(diagnostic, line.source, `${line.timestamp} ${line.text}`, secrets);
+    } catch (readError) { jobs.appendOutput(diagnostic, "error", `Cannot read worker state: ${readError.message}`, secrets); }
+    error.message += "\nLast recorded worker state: " + JSON.stringify(diagnostic.lines);
+    throw error;
+  }
+}
 
 const controlFixture = [
   "$ErrorActionPreference = 'Stop'",
@@ -119,7 +133,7 @@ const remoteFixture = [
 (async () => {
   assert.equal(process.platform, "win32", "component action E2E is Windows-only");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "devspace-component-action-e2e-"));
-  let server;
+  let server, passed = false;
   try {
     const packageRoot = path.join(root, "package"), scriptDir = path.join(packageRoot, "scripts", "windows");
     const installDir = path.join(root, "install"), activeRoot = path.join(root, "active");
@@ -239,7 +253,7 @@ const remoteFixture = [
     await until(async () => (await request(server.base, "/api/components")).data?.components?.length === 12, "initial installed inventory");
     const refresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "component-refresh-e2e" } });
     assert.equal(refresh.status, 202, refresh.text);
-    await until(() => jobDone(installDir, refresh.data.jobId), "remote inventory refresh");
+    await waitJob(installDir, refresh.data.jobId, "remote inventory refresh");
     assert.equal(jobs.readJob(installDir, refresh.data.jobId).phase, "completed", JSON.stringify(jobs.readJob(installDir, refresh.data.jobId)));
     const inventory = (await request(server.base, "/api/components")).data;
     const agent = inventory.components.find(component => component.id === "hermes-agent");
@@ -247,7 +261,7 @@ const remoteFixture = [
     assert.equal(install.enabled, true, install.reason || "valid Hermes Agent install was not offered");
     const action = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: inventory.revision, requestId: "component-action-e2e" } });
     assert.equal(action.status, 202, action.text);
-    await until(() => jobDone(installDir, action.data.jobId), "full component action worker");
+    await waitJob(installDir, action.data.jobId, "full component action worker");
     const finished = jobs.readJob(installDir, action.data.jobId);
     assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), `activation did not reach the rollback path: ${JSON.stringify(finished)}`);
     const stagedAgent = path.join(installDir, "managed", "hermes-agent");
@@ -277,11 +291,11 @@ const remoteFixture = [
     const stoppedBeforeConfig = fs.readFileSync(configPath), stoppedBeforeAuth = fs.readFileSync(path.join(installDir, "auth.json")), stoppedBeforeState = fs.readFileSync(path.join(installDir, "watchdog-tray-state.json"));
     const stoppedRefresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "component-refresh-stopped-e2e" } });
     assert.equal(stoppedRefresh.status, 202, stoppedRefresh.text);
-    await until(() => jobDone(installDir, stoppedRefresh.data.jobId), "stopped-service inventory refresh");
+    await waitJob(installDir, stoppedRefresh.data.jobId, "stopped-service inventory refresh");
     const stoppedInventory = (await request(server.base, "/api/components")).data;
     const stoppedAction = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: stoppedInventory.revision, requestId: "component-action-stopped-e2e" } });
     assert.equal(stoppedAction.status, 202, stoppedAction.text);
-    await until(() => jobDone(installDir, stoppedAction.data.jobId), "stopped-service component action worker");
+    await waitJob(installDir, stoppedAction.data.jobId, "stopped-service component action worker");
     const stoppedFinished = jobs.readJob(installDir, stoppedAction.data.jobId);
     assert.equal(stoppedFinished.phase, "failed", JSON.stringify(stoppedFinished));
     assert.deepEqual(fs.readFileSync(configPath), stoppedBeforeConfig, "stopped service failure did not restore configuration bytes");
@@ -301,13 +315,15 @@ const remoteFixture = [
     const secondInventory = (await request(server.base, "/api/components")).data;
     const secondAction = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: secondInventory.revision, requestId: "component-action-rollback-failure-e2e" } });
     assert.equal(secondAction.status, 202, secondAction.text);
-    await until(() => jobDone(installDir, secondAction.data.jobId), "rollback failure component action worker");
+    await waitJob(installDir, secondAction.data.jobId, "rollback failure component action worker");
     assert.equal(jobs.readJob(installDir, secondAction.data.jobId).phase, "rollback_failed", JSON.stringify(jobs.readJob(installDir, secondAction.data.jobId)));
+    passed = true;
     console.log("stack-component-action: /api/components/action worker staged a real candidate, failed activation, and restored service/configuration state.");
   } finally {
     if (server) await closeServer(server.child);
     const resolved = path.resolve(root), parent = path.resolve(os.tmpdir()) + path.sep;
     assert(resolved.startsWith(parent) && path.basename(resolved).startsWith("devspace-component-action-e2e-"));
-    fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    if (passed) fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    else console.error("Failed component-action fixture retained: " + resolved);
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
