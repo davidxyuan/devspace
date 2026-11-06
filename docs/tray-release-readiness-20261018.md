@@ -1,8 +1,22 @@
 # Tray／watchdog 正式版準備：執行結果
 
-更新：2026-11-05 18:19，台灣時間。**候選 `7759c03` 已修正 Supervisor 停止延遲，通過三平台 CI、雲端 Windows 真實原生升級／故障回復／降回基準及清理。乾淨安裝第二次通過，首次逾時保留；522 個套件檔案核對完成。TYO 四個現行服務及兩個 Codex connector 唯讀查核通過，但仍使用 10/29–30 已部署版本。使用者無法取得安全管理者判定；原生測試腳本的 Kaspersky 偵測尚未釐清，本機未重試、未部署新版。目標尚未完成，沒有發布 stable 或操作其他四台。**
+更新：2026-11-06，台灣時間。**候選已完成 Gateway 子程序退出判斷、Agent／GPT 固定依賴重建，以及更新前實際 Hermes 資料目錄的檢查修正；下列各項依實際提交分別列出驗證結果。TYO 仍使用 10/29–30 已部署版本，19:15 唯讀查核四個服務健康、三個 watchdog 程序身分與安裝檔案／設定未變。原生測試腳本的 Kaspersky 偵測尚未釐清；使用者拒絕原廠提交，不傳送檔案、不改防護、不重跑被偵測測試。目標尚未完成，未部署新版、發布 stable 或操作其他四台。**
 
 基準 `9c06667745470b8470b53bdbaefc88d011ad76d8`；獨立目錄 `D:\devspace-release-20261018`；候選分支 `codex/tray-release-readiness-20261018`。TYO 使用 `a26961b` 管理套件及 `bc929db` 單一 HTML 修補；既有 DevSpace、Hermes、Router、ngrok 的執行版本、端點與程序身分保留。其他四台未操作。
+
+## 11/6 Gateway、Agent／GPT 配對與更新前檢查
+
+`2e50e52` 讓 Gateway 管理器在啟動器退出後，同時等待已觀察程序身分與 Windows Job 中的全部子程序退出。輪詢漏掉的子程序仍會阻止回報停止或啟動替代程序；Job 查詢失敗也會停止後續操作。23 項隔離測試與[實際 Gateway 雲端測試 42178253012](https://github.com/davidxyuan/devspace/actions/runs/42178253012) 通過。這不是 TYO 的正式監督程序切換。
+
+`be87e8b` 將固定官方 Agent 加上已審查的 Windows 補丁，與固定 GPT 提交配對。透過官方 PM 在另一環境解析 GPT 依賴，保留 Agent 的固定套件版本，再以全部解析版本建立全新環境。兩次的 117 個依賴版本一致；來源匯入、實際 stdio MCP 的 136 工具清單與兩個唯讀呼叫通過。[配對與 Gateway 測試 42197227140](https://github.com/davidxyuan/devspace/actions/runs/42197227140) 通過，Gateway 最終 stopped、Job 活動程序 0、30 個已觀察程序身分均退出。這是同平台固定版本重建，尚非封存安裝檔與逐檔雜湊鎖定的離線套件。
+
+同一 `be87e8b` 的[三平台 CI 42197227041](https://github.com/davidxyuan/devspace/actions/runs/42197227041) 通過。雲端原生測試完成候選啟動、故障啟動後回復、降回基準及清理；22 個已觀察身分退出，測試排程移除。產品後端停用，故此結果不代表 Hermes PM 版本切換或正式使用者資料復原。
+
+`fffe89a` 修正更新前檢查讀取命令列繼承的 `HERMES_HOME`，而正式服務使用 `LOCALAPPDATA/hermes` 的落差。現在重用正式服務的環境解析函式；隔離回歸先重現漏擋，修正後確認實際目錄的 VBS／CMD launcher 會在停止服務或更改設定前擋下更新，無關的繼承目錄則保持原樣。本機 activation、資料庫回復及實際元件工作程序測試通過；[同一提交 CI 42208381848](https://github.com/davidxyuan/devspace/actions/runs/42208381848) 三平台一次通過，包含 19 項候選準備測試。19:19–19:21 的雲端原生測試完成候選啟動、故障回復、還原基準與清理，22 個已觀察程序身分退出、測試排程移除；原始結果已下載核對，沒有 cleanup error。
+
+TYO 19:07 與 19:17 的兩輪真實 Codex connector 唯讀呼叫成功，19:15 四個現行服務健康；均非候選啟用或 ChatGPT 網頁長串流證據。本機資料在 `outputs/tray-20261106-pair-reviewed.json`、`tray-20261106-home-mcp-checks.json` 與 `tray-20261106-home-production-preserved.json`；雲端產物在 `D:\devspace-release-artifacts-20261106`。先前失敗、七次採樣缺口與原生安全偵測均保留。
+
+**仍缺：** Hermes PM 完整啟用／版本切換及使用者資料復原、TYO 安全相容與候選部署、受控登入／重開機、ChatGPT 網頁長串流及另一次無缺口觀察。準備收據仍為 `activationEligible=false`，現有 PM／Gateway 更新保護保持啟用。
 
 ## 11/5 雲端原生升級／回復與 Supervisor 停止修正
 
