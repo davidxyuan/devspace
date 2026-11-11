@@ -49,6 +49,67 @@ The profile contains `.devspace-gateway.json` and `supervised-gateway.log`.
 `stop` queues a request for the same supervisor PID and creation time. Completion
 requires observing `stopped`, the manager's exit and the gateway's exit.
 
+## Offline profile switch and rollback
+
+New `init` profiles use schema 2 and a sibling `.<profile-name>.devspace-gateway`
+control directory. Keep both directories together. Existing schema 1 profiles can
+still run and stop, but cannot be switched by this transaction; there is no
+automatic adoption or migration of an existing user's profile. Prepared code and
+profile data must occupy separate directory trees on a local volume.
+
+After a managed gateway and its supervisor have **both exited**, `switch` can
+select another completed PM preparation. It requires a terminal state, no live
+recorded process, a verified empty process Job after any run, and no remaining
+gateway PID file. It does not stop a running gateway for the caller.
+
+```powershell
+# Use the candidate preparation's interpreter. The profile must already be stopped.
+& $candidatePython -I -B $manager switch --home $profile --prepared $candidatePrepared
+& $candidatePython -I -B $manager run --home $profile
+# Request stop from another terminal, then wait for the manager and gateway to exit.
+& $candidatePython -I -B $manager stop --home $profile
+# If validation failed, restore the complete original directory and version:
+& $candidatePython -I -B $manager rollback --home $profile
+# Or, after independent successful validation, retain the selected candidate:
+# & $candidatePython -I -B $manager accept --home $profile
+```
+
+The switch copies the stopped profile, checks file streams, directory entries,
+attributes, modification times and owner/group/DACL, then moves the original
+directory into the transaction before placing the candidate at the original path.
+It uses [Robocopy](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy)
+with no retries and preserves data, attributes, times and security. Unsupported
+links or metadata, copy failures and occupied files stop the exchange. Original
+and candidate fingerprints must match before any directory is moved. Links into
+external data and hard-linked files are rejected, not silently omitted.
+
+Rollback restores the original directory rather than merging files. Candidate
+changes, including new files and SQLite schema changes, remain separately in
+`failed`; they do not enter the original profile. `accept` retains the backup too
+and does not assert that health or release validation passed. No action deletes
+the stored directories. Backups contain the profile's data and credentials and
+must remain subject to its access permissions.
+
+The sibling ownership lock survives directory exchanges. A durable journal blocks
+launch while an exchange is incomplete. Explicit `rollback` can recover after
+either directory move, including a terminated worker between moves. If the copy
+worker has no recorded exit, recovery remains blocked because an orphaned copy
+could still be reading/writing; inspect it rather than assuming it stopped. This
+is not power-loss recovery or protection against unrelated external writers.
+Callers must keep external applications from writing this isolated profile.
+
+JSON readers and publishers share a short Windows mutex, including across
+processes. This prevents a status reader's open handle from denying replacement
+of the status file; lock timeouts or abandoned owners fail explicitly. It does
+not override locks held by unrelated programs.
+
+`hermes-gateway-profile.test.py` uses real disposable directories, SQLite and
+Windows metadata, with prepared-runtime validation stubbed. The supervisor suite
+also exercises concurrent status readers. These tests are not two real Hermes
+versions performing an upgrade. Tray/GPT integration, automatic lifecycle and
+health-based rollback, legacy mixed code/data adoption and TYO deployment remain
+unimplemented or unverified; the existing Tray activation gates stay in place.
+
 - One OS-held lock permits one manager per profile. A pre-existing gateway or
   incomplete previous manager run blocks a launch without changing its record.
 - Exit 0 stops. Exit 78 stops with a configuration failure. Exit 75 hands off to

@@ -12,6 +12,8 @@ import json
 import msvcrt
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 import time
@@ -24,6 +26,7 @@ WINDOW_SECONDS = 900
 RETRY_SECONDS = 3
 STOP_SECONDS = 180
 TERMINAL = {"stopped", "fatal_configuration", "retry_exhausted"}
+SETTLED_UPDATES = {"accepted", "rolled_back"}
 
 
 class _JobAccounting(ctypes.Structure):
@@ -138,9 +141,16 @@ def write(path, value):
         temp.unlink(missing_ok=True)
 
 
+def control_directory(home):
+    return home.with_name("." + home.name + ".devspace-gateway")
+
+
 @contextmanager
 def ownership(home):
-    with (home / ".devspace-gateway.lock").open("a+b") as lock:
+    control = plain_path(control_directory(home))
+    # New profiles keep the lock outside the directory that an update exchanges.
+    path = control / "owner.lock" if control.exists() else home / ".devspace-gateway.lock"
+    with path.open("a+b") as lock:
         lock.seek(0)
         try:
             msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
@@ -153,14 +163,14 @@ def ownership(home):
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def prepared_runtime(prepared):
+def prepared_runtime(prepared, *, require_interpreter=True):
     prepared = prepared.resolve(strict=True)
     receipt = read(prepared / "preparation.json")
     root = prepared / "payload"
     python = prepared / "runtime" / "Scripts" / "python.exe"
-    if receipt["state"] != "prepared" or Path(receipt["python"]).resolve() != python:
+    if receipt["state"] != "prepared" or Path(receipt["python"]).resolve() != python or not python.is_file():
         raise ValueError("A completed PM preparation receipt is required")
-    if not os.path.samefile(sys.executable, python):
+    if require_interpreter and not os.path.samefile(sys.executable, python):
         raise ValueError("Use this prepared runtime's Python interpreter")
     for name in ("pyproject.toml", "uv.lock", "pm/lock.json"):
         if hashlib.sha256((root / name).read_bytes()).hexdigest() != receipt["inputHashes"][name]:
@@ -172,6 +182,203 @@ def prepared_runtime(prepared):
     if head != receipt["revision"] or dirty:
         raise ValueError("Prepared source changed")
     return root, python
+
+
+def plain_path(path):
+    path = path.absolute()
+    if path.drive.startswith("\\\\"):
+        raise ValueError("Profile transactions require a local volume")
+    for part in (path, *path.parents):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"Reparse point is not supported: {part}")
+    return path
+
+
+def profile_inventory(home):
+    """Fingerprint all streams and security; never follow links into another profile."""
+    class StreamData(ctypes.Structure):
+        _fields_ = [("size", ctypes.c_longlong), ("name", wintypes.WCHAR * 296)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    first, following, close = kernel.FindFirstStreamW, kernel.FindNextStreamW, kernel.FindClose
+    first.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    first.restype = wintypes.HANDLE
+    following.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    following.restype = wintypes.BOOL
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    get = security.GetFileSecurityW
+    get.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                   ctypes.POINTER(wintypes.DWORD)]
+    get.restype = wintypes.BOOL
+    convert = security.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    convert.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                       ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+    convert.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+
+    result = {}
+    pending = [plain_path(home)]
+    while pending:
+        path = pending.pop()
+        info = path.lstat()
+        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT or (path.is_file() and info.st_nlink != 1):
+            raise ValueError(f"Linked profile entry is not supported: {path}")
+        size = wintypes.DWORD()
+        get(str(path), 7, None, 0, ctypes.byref(size))
+        descriptor = ctypes.create_string_buffer(size.value)
+        if not get(str(path), 7, descriptor, size, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sddl = wintypes.LPWSTR()
+        if not convert(descriptor, 1, 7, ctypes.byref(sddl), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = {"security": sddl.value, "attributes": info.st_file_attributes,
+                     "mtime": info.st_mtime_ns, "streams": {}}
+        finally:
+            kernel.LocalFree(sddl)
+        data = StreamData()
+        handle = first(str(path), 0, ctypes.byref(data), 0)
+        if handle == wintypes.HANDLE(-1).value:
+            if ctypes.get_last_error() != 38:  # ERROR_HANDLE_EOF: a directory without streams.
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            try:
+                while True:
+                    with open(str(path) + data.name, "rb") as stream:
+                        entry["streams"][data.name] = hashlib.file_digest(stream, "sha256").hexdigest()
+                    if not following(handle, ctypes.byref(data)):
+                        if ctypes.get_last_error() != 38:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        break
+            finally:
+                close(handle)
+        result[str(path.relative_to(home))] = entry
+        if path.is_dir():
+            pending.extend(path.iterdir())
+    return result
+
+
+def stopped_profile(home, owner):
+    state = read(home / ".devspace-gateway.json")
+    if state.get("schema") != 2 or state.get("profileId") != owner["profileId"] or state.get("home") != str(home):
+        raise ValueError("Profile transaction ownership mismatch")
+    if state["phase"] not in TERMINAL or state.get("survivingChildren"):
+        raise RuntimeError("Profile is not stopped; existing processes preserved")
+    if state.get("runId") and state.get("jobActiveProcesses") != 0:
+        raise RuntimeError("Previous process job has no verified empty exit barrier")
+    for key in ("supervisor", "child", "gateway"):
+        identity = state.get(key)
+        if identity:
+            try:
+                p = psutil.Process(identity["pid"])
+                if p.create_time() == identity["startTime"]:
+                    try:
+                        p.wait(timeout=0)
+                    except psutil.TimeoutExpired as exc:
+                        raise RuntimeError("Profile process is still alive; preserved") from exc
+            except psutil.NoSuchProcess:
+                pass
+    if (home / "gateway.pid").exists():
+        raise RuntimeError("Gateway PID record remains; no profile exchange authorized")
+    return state
+
+
+def profile_update(home, action, prepared):
+    """Offline switch/rollback for new managed profiles; retain every prior directory."""
+    plain_path(home)
+    control = plain_path(control_directory(home))
+    owner = read(control / "profile.json")
+    if owner.get("home") != str(home) or not re.fullmatch(r"[0-9a-f]{32}", owner.get("profileId", "")):
+        raise ValueError("Profile transaction owner is invalid")
+    path = control / "update.json"
+    with ownership(home), json_access(home / ".devspace-gateway.json"):
+        previous = read(path) if path.exists() else None
+        if action == "switch":
+            if previous and previous["phase"] not in SETTLED_UPDATES:
+                raise RuntimeError("Previous update requires accept or rollback")
+            state = stopped_profile(home, owner)
+            if prepared is None:
+                raise ValueError("switch requires --prepared")
+            prepared = prepared.resolve(strict=True)
+            for runtime in (Path(state["prepared"]).resolve(strict=True), prepared):
+                if runtime.is_relative_to(home) or home.is_relative_to(runtime):
+                    raise ValueError("Prepared code and profile data must be separate")
+                prepared_runtime(runtime, require_interpreter=False)
+            if prepared == Path(state["prepared"]):
+                raise ValueError("Candidate is already selected")
+            before = profile_inventory(home)
+            transaction = uuid.uuid4().hex
+            folder = control / transaction
+            folder.mkdir()
+            record = {"id": transaction, "profileId": owner["profileId"], "home": str(home),
+                      "phase": "copying", "oldPrepared": state["prepared"], "prepared": str(prepared)}
+            write(folder / "before.json", before)
+            write(path, record)
+            next_home = folder / "next"
+            with (folder / "copy.log").open("wb") as log:
+                result = subprocess.run([str(Path(os.environ["SYSTEMROOT"]) / "System32" / "robocopy.exe"),
+                                         str(home), str(next_home), "/E", "/COPY:DATS", "/DCOPY:DAT",
+                                         "/XJ", "/R:0", "/W:0", "/NP"], stdout=log, stderr=subprocess.STDOUT,
+                                        creationflags=subprocess.CREATE_NO_WINDOW, timeout=300)
+            record["copyExitCode"] = result.returncode
+            write(path, record)
+            if result.returncode >= 8 or result.returncode < 0:
+                raise RuntimeError(f"Profile copy failed ({result.returncode}); original retained")
+            if profile_inventory(home) != before or profile_inventory(next_home) != before:
+                raise RuntimeError("Profile copy or original metadata changed; original retained")
+            next_state = dict(state, prepared=str(prepared))
+            write(next_home / ".devspace-gateway.json", next_state)
+            record["phase"] = "exchanging"
+            write(path, record)
+            home.rename(folder / "previous")
+            next_home.rename(home)
+            record["phase"] = "trial"
+            write(path, record)
+            return record
+        if not previous or previous["phase"] in SETTLED_UPDATES:
+            raise RuntimeError("No pending profile update")
+        record = previous
+        if (record.get("profileId") != owner["profileId"] or record.get("home") != str(home)
+                or not re.fullmatch(r"[0-9a-f]{32}", record.get("id", ""))
+                or record.get("phase") not in {"copying", "exchanging", "trial", "restoring"}):
+            raise ValueError("Update journal ownership mismatch")
+        folder = plain_path(control / record["id"])
+        backup = folder / "previous"
+        before = read(folder / "before.json")
+        if action == "accept":
+            if record["phase"] != "trial":
+                raise RuntimeError("Incomplete exchange cannot be accepted")
+            state = stopped_profile(home, owner)
+            if state["prepared"] != record["prepared"] or profile_inventory(backup) != before:
+                raise ValueError("Selected candidate or backup changed")
+            record["phase"] = "accepted"
+        else:
+            if record["phase"] == "copying" and "copyExitCode" not in record:
+                raise RuntimeError("Interrupted copy has no exit proof; preserve for inspection")
+            if backup.exists():
+                if profile_inventory(backup) != before:
+                    raise ValueError("Original profile changed; rollback blocked")
+                if home.exists():
+                    state = stopped_profile(home, owner)
+                    if state["prepared"] != record["prepared"]:
+                        raise ValueError("Candidate profile changed; rollback blocked")
+                    profile_inventory(home)  # Validate links before moving the failed candidate.
+                    record["phase"] = "restoring"
+                    write(path, record)
+                    home.rename(folder / "failed")
+                backup.rename(home)
+            elif not home.exists() or profile_inventory(home) != before:
+                raise ValueError("Original profile cannot be identified; rollback blocked")
+            record["phase"] = "rolled_back"
+        write(path, record)
+        return record
 
 
 def isolated_environment(home):
@@ -312,22 +519,34 @@ def supervise(home, state, gateway, command, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("init", "run", "stop", "status"))
+    parser.add_argument("action", choices=("init", "run", "stop", "status", "switch", "rollback", "accept"))
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--prepared", type=Path)
     args = parser.parse_args()
-    home = args.home.resolve()
+    home = plain_path(args.home).resolve()
     path = home / ".devspace-gateway.json"
     if args.action == "init":
         if not args.prepared:
             parser.error("init requires --prepared")
+        if home.exists():
+            raise FileExistsError(f"Profile already exists: {home}")
         prepared_runtime(args.prepared)
+        prepared = args.prepared.resolve(strict=True)
+        if prepared.is_relative_to(home) or home.is_relative_to(prepared):
+            raise ValueError("Prepared code and profile data must be separate")
         home.mkdir()  # Never adopt an existing user profile, even an empty directory.
-        write(path, {"schema": 1, "home": str(home), "prepared": str(args.prepared.resolve()),
+        control = plain_path(control_directory(home))
+        control.mkdir()  # A previous control directory also blocks adoption.
+        owner = {"home": str(home), "profileId": uuid.uuid4().hex}
+        write(control / "profile.json", owner)
+        write(path, {"schema": 2, **owner, "prepared": str(args.prepared.resolve()),
                      "phase": "stopped", "starts": []})
         return 0
+    if args.action in ("switch", "rollback", "accept"):
+        print(json.dumps(profile_update(home, args.action, args.prepared), indent=2))
+        return 0
     state = read(path)
-    if state["schema"] != 1 or state["home"] != str(home):
+    if state["schema"] not in (1, 2) or state["home"] != str(home):
         raise ValueError("Profile ownership record mismatch")
     if args.action == "status":
         print(json.dumps(state, indent=2))
@@ -341,18 +560,27 @@ def main():
             raise RuntimeError("Supervisor identity changed; no stop request sent")
         write(home / ".devspace-gateway-stop.json", {"runId": state["runId"]})
         return 0
-    root, python = prepared_runtime(Path(state["prepared"]))
-    env = isolated_environment(home)
-    os.environ.clear()
-    os.environ.update(env)
-    sys.path.insert(0, str(root))
-    from gateway import status
-    from hermes_cli._launchers import runtime_command
-    # The official launcher also supplies the command shape used by strict identity checks.
-    command = runtime_command(root, ["gateway", "run", "--external-supervisor"],
-                              python=python, home=home)
     with ownership(home):
         # Re-read after obtaining the lock so a racing invocation cannot overwrite another owner.
+        if state["schema"] == 2:
+            owner = read(control_directory(home) / "profile.json")
+            if owner != {"home": str(home), "profileId": state["profileId"]}:
+                raise ValueError("Profile transaction ownership mismatch")
+            journal = control_directory(home) / "update.json"
+            if journal.exists() and read(journal)["phase"] not in SETTLED_UPDATES | {"trial"}:
+                raise RuntimeError("Incomplete profile exchange; rollback before starting")
+            if read(path)["prepared"] != state["prepared"]:
+                raise RuntimeError("Selected runtime changed while waiting for profile lock")
+        root, python = prepared_runtime(Path(state["prepared"]))
+        env = isolated_environment(home)
+        os.environ.clear()
+        os.environ.update(env)
+        sys.path.insert(0, str(root))
+        from gateway import status
+        from hermes_cli._launchers import runtime_command
+        # The official launcher also supplies the command shape used by strict identity checks.
+        command = runtime_command(root, ["gateway", "run", "--external-supervisor"],
+                                  python=python, home=home)
         return supervise(home, read(path), status, command, env)
 
 

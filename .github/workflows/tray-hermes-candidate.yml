@@ -12,6 +12,7 @@ on:
       - scripts/windows/hermes-gateway-supervisor*.py
       - scripts/windows/hermes-gateway-real.test.py
       - scripts/windows/hermes-gateway-readiness.test.py
+      - scripts/windows/hermes-gateway-profile.test.py
       - scripts/windows/patches/hermes-windows-control-pipe.patch
   workflow_dispatch:
     inputs:
@@ -82,6 +83,8 @@ jobs:
         run: |
           & "$env:RUNNER_TEMP/hermes-pm-candidate/runtime/Scripts/python.exe" -I -B scripts/windows/hermes-gateway-supervisor.test.py -v *> "$env:RUNNER_TEMP/hermes-pm-candidate/supervisor-tests.log"
           if ($LASTEXITCODE) { throw 'Supervisor tests failed' }
+          & "$env:RUNNER_TEMP/hermes-pm-candidate/runtime/Scripts/python.exe" -I -B scripts/windows/hermes-gateway-profile.test.py -v *> "$env:RUNNER_TEMP/hermes-pm-candidate/profile-tests.log"
+          if ($LASTEXITCODE) { throw 'Profile exchange tests failed' }
       - name: Verify real gateway crash recovery, update handoff and graceful stop
         shell: pwsh
         run: |
