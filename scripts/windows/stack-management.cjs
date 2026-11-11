@@ -304,6 +304,10 @@ async function collectInventory(options = {}) {
       const ready = Boolean(config && exists(installer) && !blockers.length);
       entry.actions = [{ id: entry.id === "legacy-watchdog" ? "migrate" : entry.installState === "installed" ? "repair" : "install", label: entry.id === "legacy-watchdog" ? "移轉至 Tray" : entry.installState === "installed" ? "修復" : "安裝", enabled: ready && (entry.id !== "legacy-watchdog" || entry.installState === "installed"), reason: !ready ? "請先使用一鍵安裝精靈完成基本設定。" : entry.id === "legacy-watchdog" && entry.installState === "missing" ? "沒有偵測到舊版檔案。" : null }];
     }
+    // shortcut: Hermes activation lacks profile rollback; enable these actions with a verified profile transaction.
+    if (["hermes-gpt", "hermes-agent"].includes(entry.id)) for (const action of entry.actions) {
+      if (action.enabled) { action.enabled = false; action.reason = "Hermes 資料回復尚未支援，暫不提供安裝、更新或移轉；目前版本與資料保持不變。"; }
+    }
     if (blockers.length) for (const action of entry.actions) { action.enabled = false; action.reason = blockers[0]; }
   }
   components.sort((a, b) => Object.keys(LABELS).indexOf(a.id) - Object.keys(LABELS).indexOf(b.id));

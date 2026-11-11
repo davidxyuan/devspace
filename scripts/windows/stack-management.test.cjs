@@ -59,6 +59,18 @@ const component = (i, id) => i.components.find((c) => c.id === id);
 const action = (i, id, name) => component(i, id).actions.find((a) => a.id === name);
 const request = (i, id, name) => ({ componentId: id, action: name, expectedRevision: i.revision });
 
+// Exercise executor staging separately; its activation callback is a fixture, not an available UI action.
+function hermesStagingPlan(inventory, id, actionId) {
+  const entry = component(inventory, id);
+  assert.equal(action(inventory, id, actionId).enabled, false);
+  assert.throws(() => planComponentAction(request(inventory, id, actionId), inventory), /資料回復/);
+  const target = actionId === "install" ? require("./stack-release-policy.cjs").installationTarget(id)
+    : { kind: "git", repository: entry.latest.repository, branch: entry.latest.branch, commit: entry.latest.commit, version: entry.latest.version, tag: entry.latest.tag, integrity: null };
+  return { schemaVersion: 1, componentId: id, action: actionId, activationKind: null,
+    expectedRevision: inventory.revision, installDir: inventory.installDir, packageRoot: inventory.packageRoot,
+    sourcePath: entry.path, sourceFingerprint: entry.source.fingerprint, target };
+}
+
 (async () => {
   write(nodePath, "node fixture"); write(pythonPath, "python fixture"); write(path.join(toolDir, "node_modules", "npm", "bin", "npm-cli.js"), "npm fixture");
   write(path.join(packageRoot, "package.json"), { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.4" });
@@ -126,7 +138,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   git(forkRoot, ["update-ref", `refs/remotes/origin/${forkBranch}`, forkHead]);
   git(forkRoot, ["branch", "--set-upstream-to", `origin/${forkBranch}`]);
 
-  // Historical Hermes GPT checkouts get the same explicit migration path and source preservation.
+  // Historical Hermes GPT provenance remains visible while migration is unavailable.
   const hermesHistoricalRoot = path.join(temp, "hermes-historical");
   const hermesHistoricalHead = makeRepo(hermesHistoricalRoot, "asimons81/hermes-gpt", "master", {
     "pyproject.toml": '[project]\nname="hermes-gpt"\nversion="0.5.0"',
@@ -139,8 +151,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   write(configPath, hermesHistoricalConfig);
   i = await collect({ packageRoot: hermesHistoricalPackageRoot, checkLatest: true });
   assert.equal(component(i, "hermes-gpt").source.historical, true);
-  assert.equal(action(i, "hermes-gpt", "migrate").enabled, true);
-  const hermesHistoricalPlan = planComponentAction(request(i, "hermes-gpt", "migrate"), i, { packageRoot: hermesHistoricalPackageRoot });
+  const hermesHistoricalPlan = hermesStagingPlan(i, "hermes-gpt", "migrate");
   const hermesHistoricalHeadBefore = git(hermesHistoricalRoot, ["rev-parse", "HEAD"]);
   const hermesHistoricalStatusBefore = git(hermesHistoricalRoot, ["status", "--porcelain"]);
   const hermesHistoricalBytesBefore = fs.readFileSync(path.join(hermesHistoricalRoot, "server.py"));
@@ -190,16 +201,17 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   });
   write(configPath, { ...config, hermesWorkingDirectory: pinnedGptRoot });
   i = await collect({ checkLatest: true });
-  assert.equal(action(i, "hermes-gpt", "update").enabled, true, "the pinned candidate branch is registered");
+  assert.equal(action(i, "hermes-gpt", "update").enabled, false, "a registered branch still needs profile rollback");
   assert.equal(component(i, "hermes-gpt").latest.repository, gptPin.repository);
-  const pinnedGptPlan = planComponentAction(request(i, "hermes-gpt", "update"), i);
-  assert.equal(pinnedGptPlan.target.branch, gptPin.updateBranch);
+  assert.equal(component(i, "hermes-gpt").latest.branch, gptPin.updateBranch);
+  assert.throws(() => planComponentAction(request(i, "hermes-gpt", "update"), i), /資料回復/);
   git(pinnedGptRoot, ["checkout", "--detach", pinnedGptHead]);
   const pinnedRead = async (command, args, options) => args[0] === "-C" && args[1] === pinnedGptRoot && args[2] === "rev-parse" && args[3] === "HEAD"
     ? { stdout: gptPin.revision } : run(command, args, options);
   i = await collect({ checkLatest: true, run: pinnedRead });
   assert.equal(component(i, "hermes-gpt").source.releasePinned, true);
-  assert.equal(action(i, "hermes-gpt", "update").enabled, true, "a clean exact detached release pin is registered");
+  assert.equal(action(i, "hermes-gpt", "update").enabled, false, "a release pin does not prove profile rollback");
+  assert.match(action(i, "hermes-gpt", "update").reason, /資料回復/);
   i = await collect({ checkLatest: true });
   assert.equal(action(i, "hermes-gpt", "update").enabled, false, "an unknown detached fork cannot adopt the candidate channel");
   git(pinnedGptRoot, ["checkout", "-b", "unregistered-branch"]);
@@ -289,8 +301,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   compareStatus = "ahead";
   clock += 16 * 60 * 1000;
   i = await collect({ checkLatest: true });
-  assert.equal(action(i, "hermes-agent", "update").enabled, true);
-  const agentPlan = planComponentAction(request(i, "hermes-agent", "update"), i);
+  const agentPlan = hermesStagingPlan(i, "hermes-agent", "update");
   let agentStageRoot, failAgentSmoke = false, agentSmokeMode = "version", agentPipInstallArgs = null;
   const agentRun = async (command, args, options = {}) => {
     if (args[0] === "clone") {
@@ -452,7 +463,7 @@ const request = (i, id, name) => ({ componentId: id, action: name, expectedRevis
   assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), beforeAuth);
 
   i = await collect({ checkLatest: true });
-  const hermesPlan = planComponentAction(request(i, "hermes-gpt", "install"), i);
+  const hermesPlan = hermesStagingPlan(i, "hermes-gpt", "install");
   assert.equal(hermesPlan.target.repository, gptPin.repository);
   assert.equal(hermesPlan.target.commit, gptPin.revision);
   let pythonRoot, failPythonTests = false, missingPythonTests = false;

@@ -260,18 +260,16 @@ const remoteFixture = [
     const inventory = (await request(server.base, "/api/components")).data;
     const agent = inventory.components.find(component => component.id === "hermes-agent");
     const install = agent.actions.find(action => action.id === "install");
-    assert.equal(install.enabled, true, install.reason || "valid Hermes Agent install was not offered");
+    assert.equal(install.enabled, false, "unavailable Hermes activation must not be offered");
+    assert.match(install.reason, /資料回復/);
+    const beforeJobs = fs.readdirSync(path.join(installDir, "stack-management", "jobs")).sort();
     const action = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: inventory.revision, requestId: "component-action-e2e" } });
-    assert.equal(action.status, 202, action.text);
-    await waitJob(installDir, action.data.jobId, "full component action worker");
-    const finished = jobs.readJob(installDir, action.data.jobId);
-    assert(finished.lines.some(line => /Hermes profile data rollback.*before stopping services/.test(line.text)), `activation did not reject unprotected Hermes data: ${JSON.stringify(finished)}`);
+    assert.equal(action.status, 400, action.text);
+    assert.match(action.data.error, /資料回復/);
+    assert.deepEqual(fs.readdirSync(path.join(installDir, "stack-management", "jobs")).sort(), beforeJobs, "rejected action started a worker");
     const stagedAgent = path.join(installDir, "managed", "hermes-agent");
-    const stagedDirs = fs.readdirSync(stagedAgent, { withFileTypes: true }).filter(entry => entry.isDirectory());
-    assert.equal(stagedDirs.length, 1);
-    assert.equal(fs.readFileSync(path.join(stagedAgent, stagedDirs[0].name, "validation-home", "fixture-test-ran"), "utf8"), "isolated");
+    assert.equal(fs.existsSync(stagedAgent), false, "unavailable action downloaded a candidate");
     assert.equal(fs.existsSync(path.join(root, "local", "hermes", "fixture-test-ran")), false);
-    assert.equal(finished.phase, "failed", JSON.stringify(finished));
     assert.deepEqual(fs.readFileSync(configPath), beforeConfig, "failed candidate did not restore configuration bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), beforeAuth, "failed candidate changed auth bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), beforeState, "failed candidate changed tray state bytes");
@@ -280,7 +278,7 @@ const remoteFixture = [
     const serviceEvents = fs.readFileSync(serviceState, "utf8").trim().split(/\r?\n/);
     assert.deepEqual(serviceEvents, ["start|" + oldHermesServer], "profile rejection touched the running service");
     assert.equal(fs.readFileSync(bootstrapState, "utf8"), "", "profile rejection reached the control host");
-    assert(!JSON.stringify(finished).includes("fixture-owner"), "worker response leaked a configured secret");
+    assert(!action.text.includes("fixture-owner"), "rejection response leaked a configured secret");
 
     // A stopped-by-user service must stay stopped when activation fails.
     fs.rmSync(forceRollbackFailure, { force: true });
@@ -293,11 +291,9 @@ const remoteFixture = [
     await waitJob(installDir, stoppedRefresh.data.jobId, "stopped-service inventory refresh");
     const stoppedInventory = (await request(server.base, "/api/components")).data;
     const stoppedAction = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: stoppedInventory.revision, requestId: "component-action-stopped-e2e" } });
-    assert.equal(stoppedAction.status, 202, stoppedAction.text);
-    await waitJob(installDir, stoppedAction.data.jobId, "stopped-service component action worker");
-    const stoppedFinished = jobs.readJob(installDir, stoppedAction.data.jobId);
-    assert.equal(stoppedFinished.phase, "failed", JSON.stringify(stoppedFinished));
-    assert(stoppedFinished.lines.some(line => /Hermes profile data rollback.*before stopping services/.test(line.text)), "stopped service did not reach the profile guard");
+    assert.equal(stoppedAction.status, 400, stoppedAction.text);
+    assert.match(stoppedAction.data.error, /資料回復/);
+    assert.equal(fs.existsSync(stagedAgent), false, "stopped service rejection downloaded a candidate");
     assert.deepEqual(fs.readFileSync(configPath), stoppedBeforeConfig, "stopped service failure did not restore configuration bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), stoppedBeforeAuth, "stopped service failure changed auth bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), stoppedBeforeState, "stopped service failure changed desired state");
@@ -341,7 +337,7 @@ const remoteFixture = [
       assert(!JSON.stringify(devFinished).includes("fixture-owner"), "worker response leaked a configured secret");
     }
     passed = true;
-    console.log("stack-component-action: Hermes profile guards preserve running/stopped services; DevSpace worker rollback and rollback-failure paths passed.");
+    console.log("stack-component-action: Hermes unavailable actions reject before worker/staging and preserve running/stopped services; DevSpace worker rollback paths passed.");
   } finally {
     if (server) await closeServer(server.child);
     const resolved = path.resolve(root), parent = path.resolve(os.tmpdir()) + path.sep;

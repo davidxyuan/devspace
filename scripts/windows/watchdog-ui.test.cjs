@@ -54,6 +54,16 @@ async function exercise(name) {
   assert.match(hermes.children[5].textContent,/Local changes present/);
   assert.match(hermes.children[3].textContent,/Tag: v2/);
   assert.match(hermes.children[4].textContent,/"version":"1"/);
+  const unavailableAction=sandbox.inventory.components[1].actions[0];
+  unavailableAction.enabled=false;unavailableAction.reason="Hermes 資料回復尚未支援";
+  run("renderComponents(inventory)");
+  const blockedHermes=query("#component-rows").children.find(row=>row.dataset.componentId==="hermes-gpt");
+  assert.equal(blockedHermes.children[6].children[0].disabled,true);
+  assert.equal(blockedHermes.children[6].children[1].textContent,unavailableAction.reason);
+  const requestsBefore=requests.length;
+  await run('requestComponentAction(inventory.components[1],inventory.components[1].actions[0])');
+  assert.equal(requests.length,requestsBefore,"unavailable action must not send a request");
+  unavailableAction.enabled=true;delete unavailableAction.reason;
   sandbox.response=(url)=>url==="/api/components/action"?{ok:true,jobId:"j1"}:{};
   await run('requestComponentAction(inventory.components[1],inventory.components[1].actions[0])');
   const posted=JSON.parse(requests.find(r=>r.url==="/api/components/action").options.body);
