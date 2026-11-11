@@ -366,6 +366,48 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(path.read_text(), "invalid")
         self.assertFalse((self.home / ".devspace-gateway-stop.json").exists())
 
+    def test_status_readers_do_not_block_atomic_publication(self):
+        path = self.home / ".devspace-gateway.json"
+        manager.write(path, {"sequence": 0, "data": "x" * 8192})
+        stop = threading.Event()
+        errors = []
+        def observe():
+            try:
+                while not stop.is_set():
+                    self.assertEqual(manager.read(path)["data"], "x" * 8192)
+            except Exception as exc:
+                errors.append(exc)
+        observer = threading.Thread(target=observe)
+        observer.start()
+        try:
+            for sequence in range(100):
+                manager.write(path, {"sequence": sequence, "data": "x" * 8192})
+        finally:
+            stop.set()
+            observer.join(timeout=10)
+        self.assertFalse(observer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(manager.read(path)["sequence"], 99)
+
+    def test_status_publication_coordinates_with_another_process(self):
+        path = self.home / ".devspace-gateway.json"
+        manager.write(path, {"sequence": 0})
+        code = """
+import importlib.util, pathlib, sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+path=pathlib.Path(sys.argv[2])
+for i in range(100): assert isinstance(m.read(path)['sequence'], int)
+"""
+        child = subprocess.Popen([sys.executable, "-I", "-B", "-c", code, manager.__file__, str(path)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            for sequence in range(100):
+                manager.write(path, {"sequence": sequence})
+        finally:
+            stdout, stderr = child.communicate(timeout=15)
+        self.assertEqual(child.returncode, 0, stderr)
+
     def test_environment_does_not_inherit_credentials(self):
         with patch.dict(os.environ, {"API_SERVER_KEY": "production", "HERMES_HOME": "production"}):
             env = manager.isolated_environment(self.home)

@@ -88,8 +88,41 @@ class ProcessJob:
             self.handle = None
 
 
+@contextmanager
+def json_access(path):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateMutexW
+    create.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    create.restype = wintypes.HANDLE
+    wait = kernel.WaitForSingleObject
+    wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait.restype = wintypes.DWORD
+    release = kernel.ReleaseMutex
+    release.argtypes = [wintypes.HANDLE]
+    release.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    # Resolving the target opens it on Windows; resolve only its parent before taking the lock.
+    name = hashlib.sha256(str(path.parent.resolve() / path.name).casefold().encode("utf-8")).hexdigest()
+    handle = create(None, False, "Global\\DevSpaceGatewayJson-" + name)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    acquired = False
+    try:
+        result = wait(handle, 5000)
+        acquired = result in (0, 0x80)
+        if result != 0:
+            raise RuntimeError(f"JSON access lock unavailable or abandoned: {result}")
+        yield
+    finally:
+        if acquired:
+            release(handle)
+        kernel.CloseHandle(handle)
+
+
 def read(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    # Serialize readers and publishers across processes; an open Windows reader can prevent rename.
+    with json_access(path):
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write(path, value):
@@ -99,7 +132,8 @@ def write(path, value):
             json.dump(value, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp, path)
+        with json_access(path):
+            os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
