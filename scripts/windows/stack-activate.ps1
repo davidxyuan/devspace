@@ -136,6 +136,10 @@ try {
         & ([string]$change.config.hermesPython) (Join-Path $PSScriptRoot 'stack-hermes-source.py') ([string]$change.config.hermesServer) ([string]$change.config.hermesAgentWorkingDirectory)
         if ($LASTEXITCODE -ne 0) { throw 'Hermes GPT/Agent source or dependencies are incompatible; update is blocked before stopping services.' }
     }
+    # shortcut: configuration rollback does not restore Hermes profile data; enable only with a verified profile transaction.
+    if ($candidate.kind -in @('hermes-gpt','hermes-agent')) {
+        throw 'Hermes profile data rollback is not supported; blocked before stopping services. Current version and user data are preserved.'
+    }
     $databasePath = $null
     if ($candidate.kind -eq 'devspace') {
         $resolver = Join-Path $PSScriptRoot 'stack-database-path.cjs'

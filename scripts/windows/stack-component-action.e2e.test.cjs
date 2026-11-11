@@ -104,7 +104,7 @@ const controlFixture = [
   "function Get-WatchdogProcessLayer([string]$Service, $Config, $Processes) { $managed = @($Processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config }); $pids = @($managed | ForEach-Object { [int]$_.ProcessId }); return [pscustomobject]@{processFound=($managed.Count -gt 0); listenerFound=($managed.Count -gt 0); identityConflict=$false; pid=if ($managed.Count) { $pids[0] } else { $null }; managedPids=$pids; listenerPids=$pids; unknownListenerPids=@()} }",
   "function Get-WatchdogServiceHealth([string]$Service, $Config, $Processes) { $running = Get-TestServiceRunning; return [pscustomobject]@{healthy=$running; protocolHealthy=$running; processFound=$running; listenerFound=$running; identityConflict=$false; error=''} }",
   "function Stop-WatchdogManagedService([string]$Service, $Config) { Add-TestServiceEvent 'stop' $Config; return [pscustomobject]@{success=$true; stopped=@(4242); error=''} }",
-  "function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) { Add-TestServiceEvent 'start' $Config; if ([IO.File]::Exists($env:STACK_E2E_FORCE_ROLLBACK_FAILURE) -and -not $Config.hermesAgentExe) { return [pscustomobject]@{success=$false; pid=$null; error='forced rollback startup failure'} }; return [pscustomobject]@{success=$true; pid=4242; error=''} }",
+  "function Start-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) { Add-TestServiceEvent 'start' $Config; if ([IO.File]::Exists($env:STACK_E2E_FORCE_ROLLBACK_FAILURE) -and [string]$Config.cliPath -eq $env:STACK_E2E_ORIGINAL_CLI) { return [pscustomobject]@{success=$false; pid=$null; error='forced rollback startup failure'} }; return [pscustomobject]@{success=$true; pid=4242; error=''} }",
 ].join("\n");
 const bootstrapFixture = [
   "[CmdletBinding()]",
@@ -169,7 +169,7 @@ const remoteFixture = [
       "scripts/windows/devspace-stack-setup.cjs": "// management",
       "scripts/windows/stack-management.cjs": "// management",
       "scripts/windows/stack-host-management.ps1": "# management",
-      "scripts/windows/install-devspace-watchdog-tray.ps1": "# management",
+      "scripts/windows/install-devspace-watchdog-tray.ps1": "param($InstallDir,$OriginalTransactionPath,[switch]$Confirm)\n& (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath (Join-Path $InstallDir 'devspace-watchdog.config.json')\n",
       "scripts/windows/devspace-watchdog-tray-ui.ps1": "# management",
     };
     for (const [file, contents] of Object.entries(sourceFiles)) write(path.join(authorRoot, file), contents);
@@ -229,7 +229,8 @@ const remoteFixture = [
     write(releaseFile, release);
     runGit(["-C", hermesAuthorRoot, "remote", "add", "origin", hermesRemoteRoot]); runGit(["-C", hermesAuthorRoot, "push", "origin", "HEAD:main"]);
     runGit(["clone", remoteRoot, activeRoot]); runGit(["-C", activeRoot, "checkout", "-B", "codex/windows-watchdog-tray-control-center", initialHead]);
-    runGit(["-C", activeRoot, "remote", "set-url", "origin", "https://github.com/davidxyuan/devspace.git"]);
+    // Keep inventory provenance canonical; only candidate HTTPS clones map to the local fixture.
+    runGit(["-C", activeRoot, "remote", "set-url", "origin", "git@github.com:davidxyuan/devspace.git"]);
     runGit(["-C", activeRoot, "update-ref", "refs/remotes/origin/codex/windows-watchdog-tray-control-center", initialHead]);
     runGit(["-C", activeRoot, "branch", "--set-upstream-to", "origin/codex/windows-watchdog-tray-control-center"]);
     assert.equal(gitRun(activeRoot, ["status", "--porcelain"]), "");
@@ -249,7 +250,7 @@ const remoteFixture = [
     const gitDir = path.dirname(git);
     const minimalPath = [gitDir, path.dirname(process.execPath), path.join(process.env.SystemRoot || "C:\\Windows", "System32"), path.join(process.env.SystemRoot || "C:\\Windows", "System32", "Wbem")].join(path.delimiter);
     const env = cleanEnv({ NODE_OPTIONS: "--require \"" + preload.replaceAll("\\", "/") + "\"", DEVSPACE_STACK_PACKAGE_ROOT: packageRoot, USERPROFILE: root, HOME: root, APPDATA: path.join(root, "roaming"), LOCALAPPDATA: path.join(root, "local"), HERMES_HOME: path.join(root, "local", "hermes"), PIP_CACHE_DIR: path.join(root, "pip-cache"), PSModuleAnalysisCachePath: path.join(root, "ps-module-cache"), PATH: minimalPath, GIT_CONFIG_GLOBAL: gitConfig, STACK_E2E_DEV_LATEST: latestHead, STACK_E2E_HERMES_LATEST: hermesLatestHead, STACK_E2E_CONFIG_PATH: configPath, STACK_E2E_SERVICE_STATE: serviceState, STACK_E2E_BOOTSTRAP_STATE: bootstrapState, STACK_E2E_FORCE_ROLLBACK_FAILURE: forceRollbackFailure });
-    Object.assign(env, { OPENAI_API_KEY: "fixture-parent-key", HERMES_GPT_OWNER_ACTIVE: "1" });
+    Object.assign(env, { OPENAI_API_KEY: "fixture-parent-key", HERMES_GPT_OWNER_ACTIVE: "1", STACK_E2E_ORIGINAL_CLI: config.cliPath });
     server = await startServer(path.join(scriptDir, "devspace-stack-setup.cjs"), installDir, env);
     await until(async () => (await request(server.base, "/api/components")).data?.components?.length === 12, "initial installed inventory");
     const refresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "component-refresh-e2e" } });
@@ -264,7 +265,7 @@ const remoteFixture = [
     assert.equal(action.status, 202, action.text);
     await waitJob(installDir, action.data.jobId, "full component action worker");
     const finished = jobs.readJob(installDir, action.data.jobId);
-    assert(finished.lines.some(line => /original configuration restored|Component activation failed/.test(line.text)), `activation did not reach the rollback path: ${JSON.stringify(finished)}`);
+    assert(finished.lines.some(line => /Hermes profile data rollback.*before stopping services/.test(line.text)), `activation did not reject unprotected Hermes data: ${JSON.stringify(finished)}`);
     const stagedAgent = path.join(installDir, "managed", "hermes-agent");
     const stagedDirs = fs.readdirSync(stagedAgent, { withFileTypes: true }).filter(entry => entry.isDirectory());
     assert.equal(stagedDirs.length, 1);
@@ -277,11 +278,8 @@ const remoteFixture = [
     assert.equal(gitRun(activeRoot, ["rev-parse", "HEAD"]), initialHead, "active checkout was changed during candidate staging");
     assert.equal(gitRun(activeRoot, ["status", "--porcelain"]), "", "active checkout was dirtied during candidate staging");
     const serviceEvents = fs.readFileSync(serviceState, "utf8").trim().split(/\r?\n/);
-    assert(serviceEvents.some(line => line === "stop|" + oldHermesServer), "previous service was not stopped");
-    assert(serviceEvents.some(line => line.toLowerCase().includes(path.join("managed", "hermes-agent").toLowerCase())), "candidate service was not exercised");
-    assert.equal(serviceEvents.at(-1), "start|" + oldHermesServer, "previous running service was not restored");
-    const bootstrapEvents = fs.readFileSync(bootstrapState, "utf8").trim().split(/\r?\n/);
-    assert.equal(bootstrapEvents.filter(line => line === "Run").length, 2, "host restart failure and rollback restart were not both exercised");
+    assert.deepEqual(serviceEvents, ["start|" + oldHermesServer], "profile rejection touched the running service");
+    assert.equal(fs.readFileSync(bootstrapState, "utf8"), "", "profile rejection reached the control host");
     assert(!JSON.stringify(finished).includes("fixture-owner"), "worker response leaked a configured secret");
 
     // A stopped-by-user service must stay stopped when activation fails.
@@ -299,27 +297,51 @@ const remoteFixture = [
     await waitJob(installDir, stoppedAction.data.jobId, "stopped-service component action worker");
     const stoppedFinished = jobs.readJob(installDir, stoppedAction.data.jobId);
     assert.equal(stoppedFinished.phase, "failed", JSON.stringify(stoppedFinished));
+    assert(stoppedFinished.lines.some(line => /Hermes profile data rollback.*before stopping services/.test(line.text)), "stopped service did not reach the profile guard");
     assert.deepEqual(fs.readFileSync(configPath), stoppedBeforeConfig, "stopped service failure did not restore configuration bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), stoppedBeforeAuth, "stopped service failure changed auth bytes");
     assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), stoppedBeforeState, "stopped service failure changed desired state");
     const stoppedEvents = fs.readFileSync(serviceState, "utf8").trim().split(/\r?\n/);
-    assert(!stoppedEvents.some(line => line.startsWith("start|")), "stopped service was started during failed activation or rollback");
-    assert(stoppedEvents.includes("stop|" + oldHermesServer), "stopped service was not inspected/stopped safely");
+    assert.deepEqual(stoppedEvents, ["stop|" + oldHermesServer], "profile rejection touched the stopped service");
     assert.equal(JSON.parse(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json"), "utf8")).desired.hermes, "stopped_by_user", "stopped_by_user intent was not preserved");
-    assert.equal(fs.readFileSync(bootstrapState, "utf8").trim().split(/\r?\n/).filter(line => line === "Run").length, 2, "stopped-service activation failure and rollback restart were not both exercised");
+    assert.equal(fs.readFileSync(bootstrapState, "utf8"), "", "stopped profile rejection reached the control host");
 
-    // Restore a running baseline before the injected rollback-failure case.
-    fs.writeFileSync(serviceState, "start|" + oldHermesServer + "\n");
-    write(path.join(installDir, "watchdog-tray-state.json"), { desired: { devspace: "running", hermes: "running" } });
-    fs.writeFileSync(forceRollbackFailure, "force rollback failure");
-    fs.writeFileSync(bootstrapState, "");
-    const secondInventory = (await request(server.base, "/api/components")).data;
-    const secondAction = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "hermes-agent", action: "install", expectedRevision: secondInventory.revision, requestId: "component-action-rollback-failure-e2e" } });
-    assert.equal(secondAction.status, 202, secondAction.text);
-    await waitJob(installDir, secondAction.data.jobId, "rollback failure component action worker");
-    assert.equal(jobs.readJob(installDir, secondAction.data.jobId).phase, "rollback_failed", JSON.stringify(jobs.readJob(installDir, secondAction.data.jobId)));
+    // Keep full worker rollback coverage on DevSpace, which has a database transaction.
+    const devConfig = { ...config, hermesEnabled: false };
+    delete devConfig.hermesServer;
+    write(configPath, devConfig);
+    for (const mode of ["running", "stopped", "rollback-failure"]) {
+      const running = mode !== "stopped";
+      if (mode === "rollback-failure") fs.writeFileSync(forceRollbackFailure, "force rollback failure");
+      fs.writeFileSync(serviceState, (running ? "start|" : "stop|") + devConfig.cliPath + "\n");
+      fs.writeFileSync(bootstrapState, "");
+      write(path.join(installDir, "watchdog-tray-state.json"), { desired: { devspace: running ? "running" : "stopped_by_user", hermes: "stopped_by_user" } });
+      const priorConfig = fs.readFileSync(configPath), priorState = fs.readFileSync(path.join(installDir, "watchdog-tray-state.json"));
+      const devRefresh = await request(server.base, "/api/components/refresh", { method: "POST", token: server.token, body: { requestId: "devspace-refresh-" + mode } });
+      assert.equal(devRefresh.status, 202, devRefresh.text);
+      await waitJob(installDir, devRefresh.data.jobId, "DevSpace inventory " + mode);
+      const devInventory = (await request(server.base, "/api/components")).data;
+      const devAction = await request(server.base, "/api/components/action", { method: "POST", token: server.token, body: { componentId: "devspace-tray-fork", action: "update", expectedRevision: devInventory.revision, requestId: "devspace-action-" + mode } });
+      assert.equal(devAction.status, 202, devAction.text);
+      await waitJob(installDir, devAction.data.jobId, "DevSpace rollback " + mode);
+      const devFinished = jobs.readJob(installDir, devAction.data.jobId);
+      assert.equal(devFinished.phase, mode === "rollback-failure" ? "rollback_failed" : "failed", JSON.stringify(devFinished));
+      assert(devFinished.lines.some(line => /original configuration restored|ROLLBACK_FAILED/.test(line.text)), "DevSpace did not reach rollback");
+      assert.deepEqual(fs.readFileSync(configPath), priorConfig);
+      assert.deepEqual(fs.readFileSync(path.join(installDir, "auth.json")), beforeAuth);
+      assert.deepEqual(fs.readFileSync(path.join(installDir, "watchdog-tray-state.json")), priorState);
+      const events = fs.readFileSync(serviceState, "utf8").trim().split(/\r?\n/);
+      assert(events.includes("stop|" + devConfig.cliPath), "DevSpace baseline was not stopped");
+      if (running) {
+        assert(events.some(line => line.startsWith("start|") && line.includes(path.join("managed", "devspace-tray-fork"))), "DevSpace candidate was not started");
+        assert.equal(events.at(-1), "start|" + devConfig.cliPath);
+      } else assert(!events.some(line => line.startsWith("start|")), "stopped DevSpace service was started");
+      const starts = fs.readFileSync(bootstrapState, "utf8").trim().split(/\r?\n/).filter(line => line === "Run").length;
+      assert.equal(starts, mode === "rollback-failure" ? 1 : 2, "host restart/rollback sequence changed");
+      assert(!JSON.stringify(devFinished).includes("fixture-owner"), "worker response leaked a configured secret");
+    }
     passed = true;
-    console.log("stack-component-action: /api/components/action worker staged a real candidate, failed activation, and restored service/configuration state.");
+    console.log("stack-component-action: Hermes profile guards preserve running/stopped services; DevSpace worker rollback and rollback-failure paths passed.");
   } finally {
     if (server) await closeServer(server.child);
     const resolved = path.resolve(root), parent = path.resolve(os.tmpdir()) + path.sep;

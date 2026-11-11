@@ -84,8 +84,7 @@ throw 'forced activation failure'
     Assert-StackE2E ([IO.File]::Exists((Join-Path $installDir 'candidate-touched.txt'))) 'Failure fixture did not run after candidate activation.'
     Assert-StackE2E (([IO.File]::ReadAllText((Join-Path $installDir 'candidate-touched.txt'))) -match 'allowLegacyQuiesce=True') 'Stack activation did not forward supported legacy-task quiesce capability to the Tray installer.'
     Assert-StackE2E (-not [IO.File]::Exists((Join-Path $installDir 'stack-management\operation.lock')) -or [IO.File]::ReadAllText((Join-Path $installDir 'stack-management\operation.lock')) -eq '') 'Operation ownership was not released after rollback.'
-    # Activate a stopped Agent through the real entry point. Its source directory
-    # must follow the executable so the next inventory/update checks the new tree.
+    # Hermes profile data is outside the configuration transaction.
     $oldHermesHome = $env:HERMES_HOME
     $oldLocalAppData = $env:LOCALAPPDATA
     $env:LOCALAPPDATA = Join-Path $testRoot 'local-app-data'
@@ -150,11 +149,40 @@ throw 'forced activation failure'
             Assert-StackE2E ($global:StackE2EControlEvents.Count -eq $beforeGatewayControl) 'PM rejection reached the control host.'
             [IO.File]::Delete($pmLock)
         }
-        & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath
-        $afterAgent = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-        Assert-StackE2E ($afterAgent.hermesAgentExe -eq $agentExe -and $afterAgent.hermesAgentWorkingDirectory -eq $candidateRoot) 'Agent activation must update its executable and source directory together.'
-        Assert-StackE2E ($afterAgent.custom.keep -eq 'yes') 'Agent activation changed unrelated settings.'
-        Assert-StackE2E ([IO.File]::ReadAllText($unrelatedLauncher) -eq 'unrelated shell profile; preserve') 'Activation touched the unrelated inherited profile.'
+        $sourceProbe = Join-Path $candidateRoot 'source-probe.ps1'
+        [IO.File]::WriteAllText($sourceProbe, 'param($Probe,$Server,$Agent); $global:StackE2ESourceProbes++; $global:LASTEXITCODE=0')
+        $profileFile = Join-Path $testRoot 'local-app-data\hermes\preserve-profile.json'
+        Assert-StackE2E ([IO.Path]::GetFullPath($profileFile).StartsWith([IO.Path]::GetFullPath($testRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) 'Profile fixture escaped the unique test directory.'
+        Assert-StackE2E (-not (Test-Path -LiteralPath $profileFile)) 'Profile fixture must be a new file.'
+        [IO.File]::WriteAllText($profileFile, '{"schema":1}')
+        $global:StackE2ESourceProbes = 0
+        foreach ($kind in @('hermes-agent','hermes-gpt')) {
+            foreach ($action in @('install','update','rollback')) {
+                foreach ($enabled in @($false,$true)) {
+                    $guardConfig = [ordered]@{}
+                    foreach ($key in $config.Keys) { $guardConfig[$key] = $config[$key] }
+                    $guardConfig['hermesEnabled'] = $enabled
+                    $guardConfig['hermesPort'] = 54321
+                    $guardConfig['hermesPython'] = $sourceProbe
+                    $guardConfig['hermesServer'] = $sourceProbe
+                    [IO.File]::WriteAllText($configPath, ($guardConfig | ConvertTo-Json -Depth 20))
+                    $guardCandidate = @{kind=$kind;componentId=$kind;action=$action;root=$candidateRoot;runtimeRoot=$candidateRoot;hermesAgentExe=$agentExe;pythonPath=$sourceProbe;hermesServer=$sourceProbe}
+                    [IO.File]::WriteAllText($candidatePath, ($guardCandidate | ConvertTo-Json -Depth 20))
+                    $beforeProfileConfig = [IO.File]::ReadAllText($configPath)
+                    $profileRejected = $null
+                    try { & (Join-Path $scriptRoot 'stack-activate.ps1') -InstallDir $installDir -CandidatePath $candidatePath } catch { $profileRejected = $_ }
+                    Assert-StackE2E ($null -ne $profileRejected -and $profileRejected.Exception.Message -match 'Hermes profile data rollback.*before stopping services') "Unprotected $kind/$action/enabled=$enabled was not rejected: $profileRejected"
+                    Assert-StackE2E ([IO.File]::ReadAllText($configPath) -eq $beforeProfileConfig) 'Profile rejection changed configuration.'
+                    Assert-StackE2E ([IO.File]::ReadAllText($profileFile) -eq '{"schema":1}') 'Profile rejection changed user data.'
+                    Assert-StackE2E ($global:StackE2ETaskEvents.Count -eq $beforeGatewayTasks) 'Profile rejection changed a scheduled task.'
+                    Assert-StackE2E ($global:StackE2EControlEvents.Count -eq $beforeGatewayControl) 'Profile rejection reached the control host.'
+                    Assert-StackE2E ([IO.File]::ReadAllText($unrelatedLauncher) -eq 'unrelated shell profile; preserve') 'Profile rejection touched the inherited shell profile.'
+                }
+            }
+        }
+        Assert-StackE2E ($global:StackE2ESourceProbes -eq 7) 'Expected the data guard after successful source preflight where Hermes is enabled.'
+        [IO.File]::WriteAllText($candidatePath, ($candidate | ConvertTo-Json -Depth 20))
+        $afterAgent = $beforeGatewayConfig | ConvertFrom-Json
         # A GPT server that ignores explicit source selection must fail before any task/service stops.
         $afterAgent.hermesEnabled = $true
         $afterAgent | Add-Member NoteProperty hermesPython ((Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source)
@@ -172,7 +200,7 @@ throw 'forced activation failure'
     } finally { $env:HERMES_HOME = $oldHermesHome; $env:LOCALAPPDATA = $oldLocalAppData }
     Write-Host 'stack-activate: real candidate activation failure restored config, task state and operation ownership.'
 } finally {
-    Remove-Variable StackE2ETask,StackE2ETaskEvents,StackE2EControlEvents,StackE2EGatewayTask,StackE2EQueryFailure -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable StackE2ETask,StackE2ETaskEvents,StackE2EControlEvents,StackE2EGatewayTask,StackE2EQueryFailure,StackE2ESourceProbes -Scope Global -ErrorAction SilentlyContinue
     foreach ($name in @('Get-ScheduledTask','Export-ScheduledTask','Disable-ScheduledTask','Enable-ScheduledTask','Stop-ScheduledTask','Start-ScheduledTask','Get-CimInstance','Get-NetTCPConnection')) { Remove-Item "function:\global:$name" -ErrorAction SilentlyContinue }
     $resolved = [IO.Path]::GetFullPath($testRoot)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase) -and [IO.Directory]::Exists($resolved)) { Remove-Item -LiteralPath $resolved -Recurse -Force }
