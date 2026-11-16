@@ -125,7 +125,8 @@ function Ensure-InstallSupervisorRecoveryPolicy([string]$InstallDir) {
 
 function Wait-InstallSupervisorTaskStopped([string]$InstallDir) {
     $spec = Get-InstallSupervisorTaskSpec $InstallDir
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+    # Already-running legacy supervisors observe generation changes only after their 15-second sleep.
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(20)
     do {
         # Distinguish an absent task from a failed scheduler query before replacing runtime files.
         $task = Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -eq $spec.name }

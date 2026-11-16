@@ -137,17 +137,6 @@ try {
         try {
             Observe-Processes
             & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode Stop -ConfigPath $configPath -RuntimeDirectory $runtime
-            if ($report.legacyBaselineRestored) {
-                # The unchanged old baseline still sleeps for 15 seconds; observe its natural exit only in teardown.
-                $legacyWait = [Diagnostics.Stopwatch]::StartNew()
-                do {
-                    $task = Get-ScheduledTask -TaskName $spec.name
-                    Assert-InstallSupervisorTask $task $spec
-                    if ([string]$task.State -notin @('Running','Queued')) { break }
-                    Start-Sleep -Milliseconds 250
-                } while ($legacyWait.ElapsedMilliseconds -lt 20000)
-                $report.legacyCleanupWaitMilliseconds = $legacyWait.ElapsedMilliseconds
-            }
             Wait-InstallSupervisorTaskStopped $runtime
             & (Join-Path $PSScriptRoot 'devspace-watchdog-bootstrap.ps1') -Mode CheckStopped -ConfigPath $configPath -RuntimeDirectory $runtime
             Observe-Processes
