@@ -55,15 +55,18 @@ class ReadinessTests(unittest.TestCase):
 
     def test_http_success_requires_same_live_fully_started_gateway(self):
         identity = {"pid": 42, "startTime": 1234.567}
-        control = {"pid": 42, "start_time": 123457, "hermes_home": str(namespace["HOME"])}
+        revision = "a" * 40
+        control = {"pid": 42, "start_time": 123457, "hermes_home": str(namespace["HOME"]), "code_sha": revision}
         runtime = dict(control, gateway_state="running", answering_pid=42)
         ready = namespace["runtime_ready"]
-        self.assertTrue(ready(identity, {"status": "ok"}, control, runtime))
+        self.assertTrue(ready(identity, {"status": "ok"}, control, runtime, revision))
         for changes in ({"gateway_state": "starting"}, {"pid": 43}, {"start_time": 123456},
-                        {"hermes_home": "production-profile"}, {"answering_pid": 43}):
-            self.assertFalse(ready(identity, {"status": "ok"}, control, dict(runtime, **changes)))
-        self.assertFalse(ready(identity, {"status": "ok"}, control, None))
-        self.assertFalse(ready(identity, {"status": "error"}, control, runtime))
+                        {"hermes_home": "production-profile"}, {"answering_pid": 43},
+                        {"code_sha": "b" * 40}, {"code_sha": None}):
+            self.assertFalse(ready(identity, {"status": "ok"}, control, dict(runtime, **changes), revision))
+        self.assertFalse(ready(identity, {"status": "ok"}, dict(control, code_sha="b" * 40), runtime, revision))
+        self.assertFalse(ready(identity, {"status": "ok"}, control, None, revision))
+        self.assertFalse(ready(identity, {"status": "error"}, control, runtime, revision))
 
 
 if __name__ == "__main__":

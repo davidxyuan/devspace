@@ -110,6 +110,20 @@ versions performing an upgrade. Tray/GPT integration, automatic lifecycle and
 health-based rollback, legacy mixed code/data adoption and TYO deployment remain
 unimplemented or unverified; the existing Tray activation gates stay in place.
 
+The ephemeral Windows candidate workflow additionally prepares two pinned official
+Agent commits (v0.22.1 as baseline and v0.22.2 as the push candidate), each with the
+same reviewed Windows patch and separately verified GPT dependencies/MCP calls.
+Its real gateway probe requires the selected commit in both live control replies,
+not just a successful HTTP response. It starts the baseline, switches the managed
+profile to the candidate, exercises crash recovery and official update handoff,
+then restores the entire original profile and starts the baseline again. A second
+trial injects startup exit 78 and verifies another rollback and baseline start.
+SQLite schema changes and alternate-stream changes are synthetic test mutations.
+The probe asserts complete metadata/data restoration and empty process jobs;
+per-stage logs and the structured report are retained. Only a completed passing
+run is evidence, and its scope remains these new disposable profiles. The test
+driver's rollback orchestration is not automatic rollback integrated into Tray.
+
 - One OS-held lock permits one manager per profile. A pre-existing gateway or
   incomplete previous manager run blocks a launch without changing its record.
 - Exit 0 stops. Exit 78 stops with a configuration failure. Exit 75 hands off to
