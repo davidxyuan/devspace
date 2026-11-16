@@ -1,5 +1,7 @@
 """Windows process tests for the external manager; not real gateway/VM evidence."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -434,6 +436,64 @@ for i in range(100): assert isinstance(m.read(path)['sequence'], int)
                                            python=python, home=home)
             self.assertEqual(supervise.call_args.args[3], command)
             self.assertEqual(supervise.call_args.args[4]["HERMES_HOME"], str(home))
+
+
+class ReadinessCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="gateway-check-")
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name).resolve() / "profile"
+        self.home.mkdir()
+        self.prepared = self.home.parent / "prepared"
+        self.prepared.mkdir()
+        self.state = {"schema": 2, "profileId": "owned", "home": str(self.home),
+                      "prepared": str(self.prepared), "phase": "stopped"}
+        manager.write(self.home / ".devspace-gateway.json", self.state)
+        control = manager.control_directory(self.home)
+        control.mkdir()
+        manager.write(control / "profile.json", {"home": str(self.home), "profileId": "owned"})
+        manager.write(self.prepared / "preparation.json", {"revision": "a" * 40})
+
+    def invoke(self, action="check", prepared=None):
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["manager", action, "--home", str(self.home),
+                                        "--prepared", str(prepared or self.prepared)]), \
+             patch.dict(os.environ, {}, clear=False), patch.object(sys, "path", list(sys.path)), \
+             patch.dict(sys.modules, {"gateway": SimpleNamespace(status=NoGateway()),
+                                      "gateway.control_socket": SimpleNamespace(query_gateway_control=Mock())}), \
+             contextlib.redirect_stdout(output):
+            code = manager.main()
+        return code, json.loads(output.getvalue())
+
+    def test_check_validates_selected_preparation_and_returns_live_result(self):
+        with patch.object(manager, "prepared_runtime", return_value=(self.prepared / "payload", Path(sys.executable))) as prepare, \
+             patch.object(manager, "check_runtime", return_value={"ready": True}) as check:
+            self.assertEqual(self.invoke(), (0, {"ready": True}))
+            prepare.assert_called_once_with(self.prepared)
+            self.assertEqual(check.call_args.args[:2], (self.home, self.state))
+            self.assertEqual(check.call_args.args[-1], "a" * 40)
+            check.return_value = {"ready": False, "reason": "starting"}
+            self.assertEqual(self.invoke()[0], 1)
+        self.assertEqual(manager.read(self.home / ".devspace-gateway.json"), self.state)
+
+    def test_wrong_expected_version_or_profile_owner_blocks_check(self):
+        other = self.home.parent / "other"
+        other.mkdir()
+        with patch.object(manager, "prepared_runtime") as prepare, patch.object(manager, "check_runtime") as check:
+            with self.assertRaisesRegex(ValueError, "expected preparation"):
+                self.invoke(prepared=other)
+            manager.write(manager.control_directory(self.home) / "profile.json",
+                          {"home": str(self.home), "profileId": "someone-else"})
+            with self.assertRaisesRegex(ValueError, "ownership mismatch"):
+                self.invoke()
+            prepare.assert_not_called()
+            check.assert_not_called()
+
+    def test_status_still_returns_persisted_state_without_querying_or_loading_runtime(self):
+        with patch.object(manager, "prepared_runtime") as prepare, patch.object(manager, "check_runtime") as check:
+            self.assertEqual(self.invoke("status"), (0, self.state))
+            prepare.assert_not_called()
+            check.assert_not_called()
 
 
 if __name__ == "__main__":

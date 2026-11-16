@@ -42,10 +42,21 @@ $manager = '.\scripts\windows\hermes-gateway-supervisor.py'
 # From another terminal, request a graceful stop:
 & $python -I -B $manager stop --home D:\hermes-gateway-new-test
 & $python -I -B $manager status --home D:\hermes-gateway-new-test
+# From the selected preparation's interpreter, check a live readiness snapshot:
+& $python -I -B $manager check --prepared D:\hermes-pm-candidate --home D:\hermes-gateway-new-test
 ```
 
 The profile contains `.devspace-gateway.json` and `supervised-gateway.log`.
 `status` prints the last persisted record; it is not a live health assertion.
+`check` requires the expected preparation and returns JSON with `ready` and exit
+code 0 only when the selected source is unchanged, the same supervisor and gateway
+PID/creation times are live, and official `identify`/`status` control replies agree
+on the profile, code revision and fully started runtime. Each control query has a
+two-second timeout. It rechecks ownership/lifecycle after querying and rejects a
+pending stop, handoff or version change. An unready runtime returns exit code 1;
+invalid ownership/preparation or a control error also fails closed. It never starts
+or stops a gateway, accepts an update, or triggers rollback. This is a point-in-time
+control-path check, not proof of adapter, HTTP, model or ChatGPT streaming health.
 `stop` queues a request for the same supervisor PID and creation time. Completion
 requires observing `stopped`, the manager's exit and the gateway's exit.
 

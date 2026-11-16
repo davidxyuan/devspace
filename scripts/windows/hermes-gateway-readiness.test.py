@@ -1,13 +1,18 @@
 """Readiness regression without launching a gateway or loading probe configuration."""
 import ast
+from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-source = Path(__file__).with_name("hermes-gateway-real.test.py").read_text(encoding="utf-8")
-functions = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name in ("runtime_ready", "observed_alive", "wait_observed_exit")]
-namespace = {"HOME": Path("isolated-profile")}
+functions = []
+for filename, names in (("hermes-gateway-supervisor.py", ("check_runtime", "process_alive")),
+                        ("hermes-gateway-real.test.py", ("wait_observed_exit",))):
+    source = Path(__file__).with_name(filename).read_text(encoding="utf-8")
+    functions.extend(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name in names)
+namespace = {"datetime": datetime, "timezone": timezone}
 exec(compile(ast.Module(body=functions, type_ignores=[]), "probe-readiness", "exec"), namespace)
 
 
@@ -40,7 +45,7 @@ class ReadinessTests(unittest.TestCase):
         process.create_time.return_value = 1234.5
         api = SimpleNamespace(Process=Mock(return_value=process), NoSuchProcess=Gone, TimeoutExpired=StillRunning)
         namespace["psutil"] = api
-        alive = namespace["observed_alive"]
+        alive = namespace["process_alive"]
         process.wait.side_effect = StillRunning
         self.assertTrue(alive(42, 1234.5))
         process.wait.assert_called_once_with(timeout=0)
@@ -53,20 +58,86 @@ class ReadinessTests(unittest.TestCase):
         api.Process.side_effect = Gone
         self.assertFalse(alive(42, 1234.5))
 
-    def test_http_success_requires_same_live_fully_started_gateway(self):
-        identity = {"pid": 42, "startTime": 1234.567}
-        revision = "a" * 40
-        control = {"pid": 42, "start_time": 123457, "hermes_home": str(namespace["HOME"]), "code_sha": revision}
-        runtime = dict(control, gateway_state="running", answering_pid=42)
-        ready = namespace["runtime_ready"]
-        self.assertTrue(ready(identity, {"status": "ok"}, control, runtime, revision))
+
+class RuntimeCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.revision = "a" * 40
+        self.identity = {"pid": 42, "startTime": 1234.567}
+        self.state = {"schema": 2, "profileId": "owned", "runId": "run-1", "home": str(self.home),
+                      "prepared": "expected-preparation", "phase": "running",
+                      "supervisor": {"pid": 41, "startTime": 1230}, "gateway": self.identity}
+        self.control = {"pid": 42, "start_time": 123457, "hermes_home": str(self.home), "code_sha": self.revision}
+        self.runtime = dict(self.control, gateway_state="running", answering_pid=42)
+        self.gateway = SimpleNamespace(get_running_pid_identity_strict=Mock(return_value=(42, 1234.567)))
+        self.query = Mock(side_effect=lambda home, verb, **kw: self.control if verb == "identify" else self.runtime)
+        self.read = Mock(return_value=self.state)
+        self.alive = Mock(return_value=True)
+        self.original_alive = namespace["process_alive"]
+        namespace.update(read=self.read, process_alive=self.alive)
+        self.addCleanup(namespace.update, process_alive=self.original_alive)
+
+    def check(self):
+        return namespace["check_runtime"](self.home, self.state, self.gateway, self.query, self.revision)["ready"]
+
+    def test_live_queries_require_same_fully_started_runtime(self):
+        self.assertTrue(self.check())
+        self.assertEqual(self.query.call_args_list[0].args, (self.home, "identify"))
+        self.assertEqual(self.query.call_args_list[1].args, (self.home, "status"))
+        self.assertTrue(all(call.kwargs == {"timeout": 2} for call in self.query.call_args_list))
+        original = self.runtime
         for changes in ({"gateway_state": "starting"}, {"pid": 43}, {"start_time": 123456},
                         {"hermes_home": "production-profile"}, {"answering_pid": 43},
                         {"code_sha": "b" * 40}, {"code_sha": None}):
-            self.assertFalse(ready(identity, {"status": "ok"}, control, dict(runtime, **changes), revision))
-        self.assertFalse(ready(identity, {"status": "ok"}, dict(control, code_sha="b" * 40), runtime, revision))
-        self.assertFalse(ready(identity, {"status": "ok"}, control, None, revision))
-        self.assertFalse(ready(identity, {"status": "error"}, control, runtime, revision))
+            with self.subTest(changes=changes):
+                self.runtime = dict(original, **changes)
+                self.assertFalse(self.check())
+        self.runtime = original
+        self.control = dict(self.control, code_sha="b" * 40)
+        self.assertFalse(self.check())
+        self.control = None
+        self.assertFalse(self.check())
+        self.runtime = None
+        self.assertFalse(self.check())
+
+    def test_dead_or_reused_process_cannot_pass_on_persisted_state(self):
+        self.alive.return_value = False
+        self.assertFalse(self.check())
+        self.query.assert_not_called()
+        self.alive.return_value = True
+        self.gateway.get_running_pid_identity_strict.return_value = (42, 9999)
+        self.assertFalse(self.check())
+        self.query.assert_not_called()
+
+    def test_exit_during_control_queries_is_rejected(self):
+        self.alive.side_effect = [True, True, False]
+        self.assertFalse(self.check())
+        self.assertEqual(self.query.call_count, 2)
+
+    def test_lifecycle_changes_are_rejected_but_regular_heartbeats_are_allowed(self):
+        self.read.return_value = dict(self.state, updatedAt="new heartbeat")
+        self.assertTrue(self.check())
+        for changes in ({"runId": "run-2"}, {"prepared": "other-version"}, {"profileId": "other"},
+                        {"phase": "stopping"}, {"gateway": dict(self.identity, pid=43)},
+                        {"supervisor": {"pid": 99, "startTime": 1230}}):
+            with self.subTest(changes=changes):
+                self.read.return_value = dict(self.state, **changes)
+                self.assertFalse(self.check())
+
+    def test_pending_stop_is_not_ready_even_before_manager_acknowledges_it(self):
+        (self.home / ".devspace-gateway-stop.json").touch()
+        self.read.side_effect = [self.state, {"runId": "run-1"}]
+        self.assertFalse(self.check())
+        self.read.side_effect = [self.state, {"runId": "previous-run"}]
+        self.assertTrue(self.check())
+
+    def test_starting_and_stopped_phases_do_not_query_gateway(self):
+        for phase in ("starting", "stopped", "stopping", "fatal_configuration"):
+            self.state["phase"] = phase
+            self.assertFalse(self.check())
+        self.query.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -399,6 +399,55 @@ def isolated_environment(home):
     return env
 
 
+def process_alive(pid, start):
+    try:
+        process = psutil.Process(pid)
+        if process.create_time() != start:
+            return False
+        # Windows may retain creation metadata after exit; check the process handle too.
+        process.wait(timeout=0)
+        return False
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.TimeoutExpired:
+        return True
+
+
+def check_runtime(home, state, gateway, query, revision):
+    result = {"ready": False, "checkedAt": datetime.now(timezone.utc).isoformat(),
+              "home": str(home), "prepared": state["prepared"], "revision": revision,
+              "runId": state.get("runId"), "gateway": state.get("gateway")}
+    if state["phase"] != "running" or not state.get("gateway") or not state.get("supervisor"):
+        return dict(result, reason="Manager has not identified a running gateway")
+    identity = state["gateway"]
+    expected = {"pid": identity["pid"], "start_time": round(identity["startTime"] * 100),
+                "hermes_home": str(home), "code_sha": revision}
+
+    def same_processes():
+        return (all(process_alive(state[k]["pid"], state[k]["startTime"]) for k in ("supervisor", "gateway"))
+                and gateway.get_running_pid_identity_strict(home / "gateway.pid")
+                == (identity["pid"], identity["startTime"]))
+
+    if not same_processes():
+        return dict(result, reason="Recorded process identity is no longer live")
+    control = query(home, "identify", timeout=2)
+    runtime = query(home, "status", timeout=2)
+    if not (control and runtime
+            and all(control.get(k) == v and runtime.get(k) == v for k, v in expected.items())
+            and runtime.get("gateway_state") == "running"
+            and runtime.get("answering_pid") == identity["pid"]):
+        return dict(result, reason="Gateway did not confirm the expected fully started runtime")
+    # A handoff, stop or version exchange during the queries invalidates the snapshot.
+    current = read(home / ".devspace-gateway.json")
+    keys = ("schema", "home", "profileId", "prepared", "runId", "phase", "supervisor", "gateway")
+    stop = home / ".devspace-gateway-stop.json"
+    if (any(current.get(k) != state.get(k) for k in keys) or not same_processes()
+            or (stop.exists() and read(stop).get("runId") == state["runId"])):
+        return dict(result, reason="Manager identity or lifecycle changed during readiness check")
+    return dict(result, ready=True, checkedAt=datetime.now(timezone.utc).isoformat(),
+                runtime={k: runtime[k] for k in (*expected, "gateway_state", "answering_pid")})
+
+
 def supervise(home, state, gateway, command, env):
     """Only own children may receive the official graceful-stop marker."""
     state_path = home / ".devspace-gateway.json"
@@ -526,7 +575,7 @@ def supervise(home, state, gateway, command, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("init", "run", "stop", "status", "switch", "rollback", "accept"))
+    parser.add_argument("action", choices=("init", "run", "stop", "status", "check", "switch", "rollback", "accept"))
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--prepared", type=Path)
     args = parser.parse_args()
@@ -558,6 +607,26 @@ def main():
     if args.action == "status":
         print(json.dumps(state, indent=2))
         return 0
+    if args.action == "check":
+        if not args.prepared:
+            parser.error("check requires --prepared for the expected runtime")
+        if args.prepared.resolve(strict=True) != Path(state["prepared"]).resolve(strict=True):
+            raise ValueError("Selected runtime differs from the expected preparation")
+        if state["schema"] == 2:
+            owner = read(plain_path(control_directory(home)) / "profile.json")
+            if owner != {"home": str(home), "profileId": state["profileId"]}:
+                raise ValueError("Profile transaction ownership mismatch")
+        root, _ = prepared_runtime(args.prepared)
+        env = isolated_environment(home)
+        os.environ.clear()
+        os.environ.update(env)
+        sys.path.insert(0, str(root))
+        from gateway import status
+        from gateway.control_socket import query_gateway_control
+        result = check_runtime(home, state, status, query_gateway_control,
+                               read(args.prepared / "preparation.json")["revision"])
+        print(json.dumps(result, indent=2))
+        return 0 if result["ready"] else 1
     if args.action == "stop":
         if state["phase"] in TERMINAL:
             return 0

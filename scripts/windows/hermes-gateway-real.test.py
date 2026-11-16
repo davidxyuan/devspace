@@ -96,7 +96,7 @@ env = manager.isolated_environment(HOME)
 os.environ.clear()
 os.environ.update(env)
 sys.path.insert(0, str(PREPARED / "payload"))
-from gateway.control_socket import identify_gateway, pause_gateway_for_update, query_gateway_control
+from gateway.control_socket import pause_gateway_for_update
 
 report = {"scope": "Two real pinned gateways with managed profile switch/rollback; isolated loopback only, no installed task or chat/model call. GPT pairing is verified separately in disposable MCP profiles. Startup failure and data migration are injected test faults.",
           "prepared": str(PREPARED), "revision": manager.read(PREPARED / "preparation.json")["revision"],
@@ -113,29 +113,6 @@ def event(kind, value):
     manager.write(REPORT, report)
     print(kind, json.dumps(value), flush=True)
 
-def runtime_ready(identity, health, control, runtime, revision):
-    expected = {"pid": identity["pid"], "start_time": round(identity["startTime"] * 100),
-                "hermes_home": str(HOME), "code_sha": revision}
-    return (health.get("status") == "ok" and bool(control) and bool(runtime)
-            and all(control.get(k) == v and runtime.get(k) == v for k, v in expected.items())
-            and runtime.get("gateway_state") == "running"
-            and runtime.get("answering_pid") == identity["pid"])
-
-
-def observed_alive(pid, start):
-    try:
-        process = psutil.Process(pid)
-        if process.create_time() != start:
-            return False
-        # Windows can retain creation metadata after exit; a signaled process handle is authoritative.
-        process.wait(timeout=0)
-        return False
-    except psutil.NoSuchProcess:
-        return False
-    except psutil.TimeoutExpired:
-        return True
-
-
 def wait_observed_exit(identities, deadline):
     for pid, start in identities:
         try:
@@ -146,8 +123,16 @@ def wait_observed_exit(identities, deadline):
             pass
 
 
+def check_command(prepared):
+    return subprocess.run([receipts[prepared]["python"], "-I", "-B", str(MANAGER),
+                           "check", "--home", str(HOME), "--prepared", str(prepared)],
+                          env=env, capture_output=True, text=True, timeout=20,
+                          creationflags=subprocess.CREATE_NO_WINDOW)
+
+
 def ready(prepared, previous=None):
     deadline = time.monotonic() + 180
+    last_check = None
     while time.monotonic() < deadline:
         if worker.poll() is not None:
             raise RuntimeError(f"Manager exited {worker.returncode}: {manager.read(state_path)}")
@@ -171,17 +156,21 @@ def ready(prepared, previous=None):
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
                     health = json.load(response)
-                control = identify_gateway(HOME)
-                runtime = query_gateway_control(HOME, "status")
-                # HTTP binds before runner.start completes; require the live runtime's serving state.
-                if runtime_ready(state["gateway"], health, control, runtime, receipts[prepared]["revision"]):
-                    event("ready", {"prepared": str(prepared), "identity": state["gateway"], "health": health, "control": control,
-                                    "runtime": {k: runtime[k] for k in ("gateway_state", "pid", "start_time", "answering_pid", "answered_at")}})
+                check = check_command(prepared)
+                last_check = {"exitCode": check.returncode, "stdout": check.stdout, "stderr": check.stderr}
+                result = json.loads(check.stdout) if check.stdout.strip() else {}
+                # The product command must attest readiness; HTTP alone binds before full startup.
+                if (check.returncode == 0 and result.get("ready") is True and health.get("status") == "ok"
+                        and result.get("gateway") == state["gateway"]
+                        and result.get("revision") == receipts[prepared]["revision"]
+                        and result.get("prepared") == str(prepared)):
+                    event("ready", {"prepared": str(prepared), "identity": state["gateway"], "health": health,
+                                    "check": result})
                     return state["gateway"]
             except (OSError, ValueError):
                 pass
         time.sleep(.25)
-    raise TimeoutError("Gateway readiness deadline expired")
+    raise TimeoutError(f"Gateway readiness deadline expired; last product check: {last_check}")
 
 def start(prepared, label, *, fail=False):
     global worker
@@ -213,7 +202,10 @@ def stopped(expected_starts, *, failed=False):
     # Waiting for the launcher does not join its descendants; all share the original stop deadline.
     wait_observed_exit(observed, stop_deadline)
     for pid, start_time in observed:
-        assert not observed_alive(pid, start_time), f"Owned process still alive: {pid}"
+        assert not manager.process_alive(pid, start_time), f"Owned process still alive: {pid}"
+    check = check_command(Path(final["prepared"]))
+    assert check.returncode == 1 and json.loads(check.stdout)["ready"] is False, check
+    event("check_rejected_stopped_gateway", json.loads(check.stdout))
     shutil.copyfile(HOME / "supervised-gateway.log", REPORT.with_name(f"gateway-{report['stage']}-runtime.log"))
     event("stopped_no_survivors", {"final": final, "observedIdentities": sorted(observed)})
 
@@ -248,6 +240,9 @@ try:
     event("selected_candidate", transaction)
     start(PREPARED, "candidate")
     first = ready(PREPARED)
+    wrong = check_command(BASELINE)
+    assert wrong.returncode == 1 and "expected preparation" in wrong.stderr, wrong
+    event("check_rejected_wrong_preparation", {"exitCode": wrong.returncode, "error": wrong.stderr})
     manager.write(HOME / "test-fault.json", first)
     event("requested_owned_child_crash_37", first)
     second = ready(PREPARED, first)
@@ -295,7 +290,7 @@ finally:
     report["observedProcesses"] = list(observed_details.values())
     survivors = []
     for pid, start in observed:
-        if observed_alive(pid, start):
+        if manager.process_alive(pid, start):
             survivors.append({"pid": pid, "startTime": start})
     report["survivingObservedIdentities"] = survivors
     report["lastState"] = manager.read(state_path)
