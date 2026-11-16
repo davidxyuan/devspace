@@ -91,6 +91,28 @@ Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'n
     Wait-InstallSupervisorTaskStopped (Join-Path ([IO.Path]::GetTempPath()) 'watchdog-query-fixture')
 }
 
+# A running legacy supervisor checks the stop generation only after its 15-second sleep.
+& {
+    . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+    $fixtureInstall = Join-Path ([IO.Path]::GetTempPath()) 'watchdog-legacy-wait-fixture'
+    $spec = Get-InstallSupervisorTaskSpec $fixtureInstall
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $observedStates = [Collections.Generic.List[string]]::new()
+    function Get-ScheduledTask {
+        [CmdletBinding()]param($TaskName,$TaskPath)
+        [pscustomobject]@{TaskName=$spec.name;State=$(if ($timer.Elapsed.TotalSeconds -lt 15) {'Running'} else {'Ready'})}
+    }
+    function Assert-InstallSupervisorTask {
+        param($Task,$Spec,[switch]$AllowLegacyAction)
+        if (-not $AllowLegacyAction) { throw 'Legacy task identity was not checked.' }
+        $observedStates.Add([string]$Task.State)
+    }
+    Wait-InstallSupervisorTaskStopped $fixtureInstall
+    if ($observedStates[0] -ne 'Running' -or $observedStates[-1] -ne 'Ready') {
+        throw 'The legacy task was not observed through graceful exit.'
+    }
+}
+
 # Run the real transaction block with isolated files and lifecycle doubles.
 $transaction = $ast.FindAll({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Body.Extent.Text.Contains('$sourceBootstrap = Join-Path $SourceDir') -and -not $node.Body.Extent.Text.Contains('$lease = Enter-StackOperation $InstallDir')}, $true) | Select-Object -First 1
 if (-not $transaction) { throw 'Runtime update transaction was not found.' }
