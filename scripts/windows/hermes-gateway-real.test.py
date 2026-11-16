@@ -219,6 +219,11 @@ def stopped(expected_starts, *, failed=False):
 
 
 def rollback(before, transaction):
+    backup = manager.profile_inventory(manager.control_directory(HOME) / transaction["id"] / "previous")
+    changes = {path: {"before": before.get(path), "backup": backup.get(path)}
+               for path in before.keys() | backup.keys() if before.get(path) != backup.get(path)}
+    if changes:
+        event("backup_changed_before_rollback", changes)
     result = manager.profile_update(HOME, "rollback", None)
     assert result["phase"] == "rolled_back" and result["id"] == transaction["id"], result
     assert manager.profile_inventory(HOME) == before, "Rollback did not restore every file, stream and metadata field"
