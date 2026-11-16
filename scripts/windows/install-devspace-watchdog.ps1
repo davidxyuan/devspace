@@ -935,49 +935,14 @@ if ($installHermes) {
     $hermesCommandPath = Join-Path $InstallDir "run-hermes-gpt.cmd"
     $hermesWorkingDirectory = $HermesDir
     $hermesFullAccessEnabled = ([string]$hermesCapabilities.filesystemScope -eq "full")
-    $hermesCapabilityEnv = @()
-    $cmdGates = [ordered]@{
-        HERMES_GPT_ENABLE_CODEX=$hermesCapabilities.bridge; HERMES_GPT_ENABLE_MCP=$hermesCapabilities.bridge
-        HERMES_GPT_ENABLE_SESSION_SEARCH=$hermesCapabilities.readOnlyTools
-        HERMES_GPT_ENABLE_VISION=$hermesCapabilities.vision; HERMES_GPT_ENABLE_WEB=$hermesCapabilities.web
-        HERMES_GPT_ENABLE_DIAGNOSTICS=$hermesCapabilities.diagnostics
-        HERMES_GPT_ENABLE_CODEX_RUNNER=$hermesCapabilities.runner
-        HERMES_GPT_ALLOW_CODEX_WRITE=$hermesCapabilities.runnerWrite
-        HERMES_GPT_ENABLE_WRITE=$hermesCapabilities.workspaceWrite
-        HERMES_GPT_ENABLE_MEMORY_WRITE=$hermesCapabilities.memoryWrite
-        HERMES_GPT_ENABLE_TERMINAL=$hermesCapabilities.terminal
-        HERMES_GPT_OPERATOR_ENABLED=$hermesCapabilities.operator; HERMES_GPT_ENABLE_CRON=$hermesCapabilities.cron
-        HERMES_GPT_ALLOW_WRITE=($hermesCapabilities.cronWrite -or $hermesCapabilities.skillWrite)
-        HERMES_GPT_ALLOW_CRON_WRITE=$hermesCapabilities.cronWrite
-        HERMES_GPT_ALLOW_SKILL_WRITE=$hermesCapabilities.skillWrite
-        HERMES_GPT_ALLOW_PRIVATE_NETWORK=$hermesCapabilities.privateNetwork
-    }
-    foreach ($entry in $cmdGates.GetEnumerator()) {
-        if ($entry.Value) { $hermesCapabilityEnv += "set `"$($entry.Key)=1`"" }
-    }
-    $hermesRoots = if ($hermesCapabilities.filesystemScope -eq "full") { @(Get-FullAccessRoots) } else { @($hermesCapabilities.allowedRoots) }
-    if ($hermesRoots.Count) {
-        $hermesCapabilityEnv += "set `"HERMES_GPT_CODEX_ALLOWED_ROOTS=$($hermesRoots -join ',')`""
-        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_ALLOWED_PATHS=$($hermesRoots -join ',')`""
-    }
-    if ($hermesCapabilities.operator) {
-        $level = if ($hermesCapabilities.ownerMode) { "owner" } elseif ($hermesCapabilities.workspaceWrite -or $hermesCapabilities.runner) { "workspace" } elseif ($hermesCapabilities.skillWrite) { "skills_config" } elseif ($hermesCapabilities.cronWrite) { "cron" } else { "read_only" }
-        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_LEVEL=$level`""
-        $hermesCapabilityEnv += "set `"HERMES_GPT_OPERATOR_APPLY_MODE=$(if ($hermesCapabilities.operatorDirect) { 'direct' } else { 'dry_run' })`""
-    }
-    if ($hermesCapabilities.ownerMode) {
-        $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACTIVE=1"'
-        $hermesCapabilityEnv += 'set "HERMES_GPT_OWNER_ACK=I_UNDERSTAND_THIS_CAN_MUTATE_MY_MACHINE"'
-    }
-    $hermesFullAccessEnv = $hermesCapabilityEnv -join [Environment]::NewLine
-    $hermesCommandContent = @"
+    $hermesCommandContent = @'
 @echo off
-set "HERMES_HOME=%LOCALAPPDATA%\hermes"
-set "HERMES_AGENT_ROOT=$hermesAgentWorkingDirectory"
-$hermesFullAccessEnv
-cd /d "$HermesDir"
-"$hermesPython" "$hermesServer" --http --host 127.0.0.1 --port $HermesPort
-"@
+setlocal DisableDelayedExpansion
+rem DevSpace Hermes config launcher v1
+set "DEVSPACE_HERMES_LAUNCH_DIR=%~dp0"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; $directory=$env:DEVSPACE_HERMES_LAUNCH_DIR; . (Join-Path $directory 'watchdog-control-core.ps1'); $settings=Read-WatchdogJson (Join-Path $directory 'devspace-watchdog.config.json'); if (-not $settings -or -not $settings.hermesEnabled) { throw 'Hermes is not enabled in this configuration.' }; $environment=Get-WatchdogHermesEnvironment $settings; Set-Location -LiteralPath $settings.hermesWorkingDirectory; Invoke-WithWatchdogEnvironment $environment { & $settings.hermesPython $settings.hermesServer --http --host 127.0.0.1 --port ([string]$settings.hermesPort); exit $LASTEXITCODE }"
+exit /b %ERRORLEVEL%
+'@
 }
 
 $routerPath = ""
@@ -1100,6 +1065,13 @@ if ($existingWatchdogConfig) {
     $watchdogConfig['capabilities'] = $preservedCapabilities
 }
 $ManagementPackageRoot = if ($ManagementPackageRoot) { [IO.Path]::GetFullPath($ManagementPackageRoot) } elseif ($existingWatchdogConfig.managementPackageRoot) { [IO.Path]::GetFullPath([string]$existingWatchdogConfig.managementPackageRoot) } else { $repoRoot }
+if ($installHermes -and $watchdogConfig.hermesHome) {
+    [void](Get-WatchdogHermesEnvironment $watchdogConfig)
+    if ([IO.File]::Exists([string]$watchdogConfig.hermesCommand) -and
+        [IO.File]::ReadAllText([string]$watchdogConfig.hermesCommand).Replace("`r`n","`n").Trim() -ne $hermesCommandContent.Replace("`r`n","`n").Trim()) {
+        Fail 'Configured Hermes home requires the configuration-aware launcher; the existing wrapper is preserved. Migrate it before reinstalling.'
+    }
+}
 if (-not [IO.File]::Exists((Join-Path $ManagementPackageRoot 'scripts\windows\devspace-stack-setup.cjs'))) { throw 'ManagementPackageRoot does not contain the Setup manager.' }
 $watchdogConfig['managementPackageRoot'] = $ManagementPackageRoot
 

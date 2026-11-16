@@ -145,7 +145,7 @@ $global:LASTEXITCODE = 0
         if (Test-Path (Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent\venv')) { throw 'Fast installer created a legacy venv for PM-owned source.' }
     } finally { $env:LOCALAPPDATA = $originalLocalAppData }
     if ($source.IndexOf('stack-hermes-source.py') -lt 0 -or $source.IndexOf('stack-hermes-source.py') -gt $source.IndexOf('$installTransaction = Start-InstallTransaction')) { throw 'Hermes source preflight must happen before installation starts its transaction.' }
-    if (-not $source.Contains('set "HERMES_AGENT_ROOT=$hermesAgentWorkingDirectory"')) { throw 'Generated Hermes launcher omits the selected Agent source.' }
+    if (-not $source.Contains('Get-WatchdogHermesEnvironment $settings')) { throw 'Generated Hermes launcher must read the shared profile/source/capability configuration.' }
     if ($source -notmatch 'Install-WingetPackage\s+"Python\.Python\.3\.12"\s+"Python 3"') {
         throw 'Python 3.12 winget fallback is missing.'
     }

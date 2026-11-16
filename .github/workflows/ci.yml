@@ -105,6 +105,12 @@ jobs:
         run: |
           & scripts/windows/watchdog-managed-stop.test.ps1 -Native *> "$env:RUNNER_TEMP\watchdog-managed-stop.log"
 
+      - name: Native Windows Hermes profile launcher
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          & scripts/windows/watchdog-hermes-home.test.ps1 -Native *> "$env:RUNNER_TEMP\watchdog-hermes-home.log"
+
       - name: Native Windows update and failed-start rollback
         if: matrix.os == 'windows-latest'
         shell: powershell
@@ -120,6 +126,8 @@ jobs:
           path: |
             ${{ runner.temp }}/watchdog-managed-stop.log
             ${{ runner.temp }}/watchdog-managed-stop.json
+            ${{ runner.temp }}/watchdog-hermes-home.log
+            ${{ runner.temp }}/watchdog-hermes-home.json
             ${{ runner.temp }}/watchdog-native-update.log
             ${{ runner.temp }}/watchdog-native-update/**
 

@@ -101,6 +101,21 @@ creation time, and confirms each child has exited before stopping its parent.
 Unreadable or changed identities and unconfirmed exits fail the operation;
 restart and recovery cannot start a replacement after that failure.
 
+Hermes may select an existing absolute data directory through `hermesHome` in
+the watchdog configuration. An omitted/empty value retains `%LOCALAPPDATA%\hermes`;
+an invalid explicit path fails instead of falling back. Tray, the legacy direct
+Python launcher and gateway update preflight use the same selection. This setting
+does not copy, migrate or authorize an update of profile data.
+
+Newly generated `run-hermes-gpt.cmd` launchers read the current configuration and
+shared source/capability environment at each invocation, including whether Hermes
+is enabled. They do not embed a profile path or capability snapshot. An existing
+unknown wrapper is preserved: reinstalling with `hermesHome` requires the new
+configuration-aware wrapper, and legacy wrapper fallback refuses an explicit home
+when the direct Python entry is unavailable. The legacy in-place upgrader also
+refuses explicit homes because it cannot restore their data. Managed profile
+activation/migration remains gated until its complete transaction is integrated.
+
 ## 3. Optional tools and multi-machine behavior
 
 The Watchdog core manages DevSpace, Hermes, MCP Router, and ngrok as the base stack. Codex, OpenCodex, and C2C are optional local capabilities and are auto-detected instead of required by configuration.

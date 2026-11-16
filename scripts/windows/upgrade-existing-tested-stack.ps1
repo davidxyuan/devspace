@@ -299,6 +299,7 @@ $config = Read-Json (Join-Path $InstallDir "config.json")
 $auth = Read-Json (Join-Path $InstallDir "auth.json")
 $watchdogPath = Join-Path $InstallDir "devspace-watchdog.config.json"
 $watchdog = Read-Json $watchdogPath
+if ($watchdog.hermesHome) { Fail 'This legacy upgrader cannot restore a configured Hermes home; use the managed profile transaction. No services were stopped.' }
 if (-not $auth.ownerToken) { Fail "auth.json has no ownerToken; credentials will not be regenerated." }
 if (-not $config.allowedRoots -or -not $watchdog.publicBaseUrl -or -not $watchdog.machineSlug) { Fail "Machine identity/settings cannot be identified." }
 if (-not $watchdog.ngrokPath -or -not (Test-Path -LiteralPath $watchdog.ngrokPath)) { Fail "Configured ngrok binary cannot be identified." }

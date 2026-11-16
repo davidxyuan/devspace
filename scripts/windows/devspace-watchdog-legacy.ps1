@@ -384,8 +384,8 @@ function Start-Hermes {
         $previousHermesEnv = @{}
         foreach ($name in $hermesEnvNames) { $previousHermesEnv[$name] = [Environment]::GetEnvironmentVariable($name, "Process") }
         try {
-            $env:HERMES_HOME = Join-Path $env:LOCALAPPDATA "hermes"
             $sourceEnvironment = Get-WatchdogHermesEnvironment $config
+            $env:HERMES_HOME = $sourceEnvironment['HERMES_HOME']
             $env:HERMES_AGENT_ROOT = $sourceEnvironment['HERMES_AGENT_ROOT']
             if ($sourceEnvironment.ContainsKey('PATH')) { $env:PATH = $sourceEnvironment['PATH'] }
             $caps = $config.capabilities.hermes
@@ -459,6 +459,9 @@ function Start-Hermes {
         return
     }
 
+    if ([string](Get-WatchdogProperty $config 'hermesHome' '')) {
+        throw 'Configured Hermes home requires the direct Python launch; refusing an unverified legacy wrapper.'
+    }
     if (-not $hermesCommand -or -not (Test-Path -LiteralPath $hermesCommand)) {
         Write-WatchdogLog "Hermes command missing: $hermesCommand"
         return
