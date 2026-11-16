@@ -254,7 +254,7 @@ function Invoke-Rollback($manifest, [string]$backupPath, $taskSnapshot) {
         $currentPlan = Get-ManagedListenerPlan $live
         Assert-CanStopManagedListeners $currentPlan
         Stop-ManagedListeners $currentPlan
-    } catch { Write-Warning "Rollback stop phase warning: $($_.Exception.Message)" }
+    } catch { throw "Rollback blocked before restoring data: $($_.Exception.Message)" }
     if ($manifest.upgradeDevSpace) {
         & git -C $manifest.devspaceDir checkout --detach $manifest.devspaceHead | Out-Null
         Push-Location $manifest.devspaceDir
