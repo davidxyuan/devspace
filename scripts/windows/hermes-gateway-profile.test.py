@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -228,6 +229,41 @@ with m.ownership(pathlib.Path(sys.argv[2])): pass
         with self.assertRaisesRegex(ValueError, "Original profile changed"):
             self.call("rollback")
         self.assertEqual(manager.read(self.home / ".devspace-gateway.json")["prepared"], str(self.new))
+
+    def test_ntfs_internal_directory_bit_does_not_change_inventory(self):
+        original = Path.lstat
+
+        def ntfs_stat(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if not info.st_file_attributes & 16:
+                return info
+            return SimpleNamespace(st_file_attributes=info.st_file_attributes | 0x10000000,
+                                   st_mode=info.st_mode, st_nlink=info.st_nlink,
+                                   st_mtime_ns=info.st_mtime_ns)
+
+        with patch.object(Path, "lstat", ntfs_stat):
+            self.assertEqual(manager.profile_inventory(self.home), self.before)
+
+    def test_changed_backup_attributes_block_rollback(self):
+        record = self.switch()
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        get, set_attributes = kernel.GetFileAttributesW, kernel.SetFileAttributesW
+        get.argtypes = [ctypes.c_wchar_p]
+        get.restype = ctypes.c_ulong
+        set_attributes.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
+        set_attributes.restype = ctypes.c_int
+        for name, bit in (("empty", 2), ("config.yaml", 1)):  # Hidden directory and read-only file.
+            path = str(self.control / record["id"] / "previous" / name)
+            before = get(path)
+            with self.subTest(name=name):
+                self.assertTrue(set_attributes(path, before | bit))
+                try:
+                    with self.assertRaisesRegex(ValueError, "Original profile changed"):
+                        self.call("rollback")
+                finally:
+                    self.assertTrue(set_attributes(path, before))
+        self.call("rollback")
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
 
     def test_open_nonsharing_file_blocks_exchange_and_preserves_original(self):
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)

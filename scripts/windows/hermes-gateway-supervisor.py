@@ -204,6 +204,9 @@ def profile_inventory(home):
         _fields_ = [("size", ctypes.c_longlong), ("name", wintypes.WCHAR * 296)]
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    attributes = kernel.GetFileAttributesW
+    attributes.argtypes = [wintypes.LPCWSTR]
+    attributes.restype = wintypes.DWORD
     first, following, close = kernel.FindFirstStreamW, kernel.FindNextStreamW, kernel.FindClose
     first.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     first.restype = wintypes.HANDLE
@@ -228,7 +231,11 @@ def profile_inventory(home):
     while pending:
         path = pending.pop()
         info = path.lstat()
-        if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT or (path.is_file() and info.st_nlink != 1):
+        # lstat can expose transient NTFS-internal bits (CPython #126253); compare Win32 attributes.
+        file_attributes = attributes(str(path))
+        if file_attributes == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if (info.st_file_attributes | file_attributes) & stat.FILE_ATTRIBUTE_REPARSE_POINT or (path.is_file() and info.st_nlink != 1):
             raise ValueError(f"Linked profile entry is not supported: {path}")
         size = wintypes.DWORD()
         get(str(path), 7, None, 0, ctypes.byref(size))
@@ -239,7 +246,7 @@ def profile_inventory(home):
         if not convert(descriptor, 1, 7, ctypes.byref(sddl), None):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            entry = {"security": sddl.value, "attributes": info.st_file_attributes,
+            entry = {"security": sddl.value, "attributes": file_attributes,
                      "mtime": info.st_mtime_ns, "streams": {}}
         finally:
             kernel.LocalFree(sddl)
