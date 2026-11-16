@@ -95,6 +95,11 @@ The context menu provides:
 `Exit Tray` closes only monitoring and UI. `Stop All` first persists
 `stopped_by_user`, then stops only identity-matched DevSpace, Hermes, Router, and
 ngrok processes. An unknown process is never killed to free a configured port.
+The shared service stop validates the complete observed process tree before
+terminating anything, retains each Windows process handle while checking its
+creation time, and confirms each child has exited before stopping its parent.
+Unreadable or changed identities and unconfirmed exits fail the operation;
+restart and recovery cannot start a replacement after that failure.
 
 ## 3. Optional tools and multi-machine behavior
 

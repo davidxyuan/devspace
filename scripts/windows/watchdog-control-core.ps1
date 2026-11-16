@@ -2151,37 +2151,63 @@ function Get-WatchdogProcessTreeOrder([int[]]$RootPids, $Processes) {
     function Add-WatchdogChildren([int]$Parent) {
         if ($script:WatchdogTreeSeen[$Parent]) { return }
         $script:WatchdogTreeSeen[$Parent] = $true
-        foreach ($child in @($script:WatchdogTreeProcesses | Where-Object { [int]$_.ParentProcessId -eq $Parent })) { Add-WatchdogChildren ([int]$child.ProcessId) }
+        $parentProcess = @($script:WatchdogTreeProcesses | Where-Object { [int]$_.ProcessId -eq $Parent })
+        if ($parentProcess.Count -ne 1 -or -not $parentProcess[0].CreationDate) { throw "Cannot verify process identity $Parent." }
+        foreach ($child in @($script:WatchdogTreeProcesses | Where-Object { [int]$_.ParentProcessId -eq $Parent })) {
+            if (-not $child.CreationDate -or ([datetime]$child.CreationDate) -lt ([datetime]$parentProcess[0].CreationDate)) {
+                throw "Cannot verify parent identity for child $($child.ProcessId)."
+            }
+            Add-WatchdogChildren ([int]$child.ProcessId)
+        }
         $script:WatchdogTreeOrder.Add($Parent)
     }
     $script:WatchdogTreeSeen = $seen
     $script:WatchdogTreeProcesses = $Processes
     $script:WatchdogTreeOrder = $ordered
-    foreach ($root in $RootPids) { Add-WatchdogChildren $root }
-    $result = @($ordered)
-    Remove-Variable WatchdogTreeSeen,WatchdogTreeProcesses,WatchdogTreeOrder -Scope Script -ErrorAction SilentlyContinue
-    return $result
+    try {
+        foreach ($root in $RootPids) { Add-WatchdogChildren $root }
+        return @($ordered)
+    } finally { Remove-Variable WatchdogTreeSeen,WatchdogTreeProcesses,WatchdogTreeOrder -Scope Script -ErrorAction SilentlyContinue }
 }
 
 function Stop-WatchdogManagedService([string]$Service, $Config) {
     $serviceLease = $null
+    $stopProcesses = New-Object System.Collections.Generic.List[object]
     try {
         $serviceInstallDir = if ([string](Get-WatchdogProperty $Config 'configPath' '')) { Split-Path ([string]$Config.configPath) -Parent } else { [string]$Config.stateDir }
         $serviceLease = Enter-StackOperation -InstallDir $serviceInstallDir
-        $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
         $layer = Get-WatchdogProcessLayer $Service $Config $processes
         if ($layer.identityConflict) { throw "Configured port is owned by an unrecognized process; refusing to stop it." }
         $roots = @($processes | Where-Object { Test-WatchdogManagedProcess $_ $Service $Config } | ForEach-Object { [int]$_.ProcessId })
         foreach ($processId in Get-WatchdogProcessTreeOrder $roots $processes) {
-            if ($processId -gt 0 -and $processId -ne $PID) {
-                try { Stop-Process -Id $processId -Force -ErrorAction Stop }
-                catch { if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { throw } }
+            if ($processId -le 0 -or $processId -eq $PID) { throw "Refusing to stop invalid or current process $processId." }
+            $observed = @($processes | Where-Object { [int]$_.ProcessId -eq $processId })[0]
+            try { $process = Get-Process -Id $processId -ErrorAction Stop }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { continue }
+                throw
             }
+            if (-not $process) { throw "Cannot open process $processId." }
+            $stopProcesses.Add($process)
+            # Retain the same kernel handle for identity, termination and exit proof.
+            if ($process.Handle -eq [IntPtr]::Zero -or
+                [Math]::Abs(($process.StartTime.ToUniversalTime() - ([datetime]$observed.CreationDate).ToUniversalTime()).Ticks) -ge 10) {
+                throw "Process identity changed for PID $processId; refusing to stop it."
+            }
+        }
+        foreach ($process in $stopProcesses) {
+            try { if (-not $process.HasExited) { $process.Kill() } }
+            catch { if (-not $process.HasExited) { throw } }
+            if (-not $process.WaitForExit(3000)) { throw "Process $($process.Id) did not exit; service stop is incomplete." }
         }
         return [pscustomobject]@{ success=$true; stopped=$roots; error="" }
     } catch {
         return [pscustomobject]@{ success=$false; stopped=@(); error=(Protect-WatchdogText $_.Exception.Message) }
-    } finally { Exit-StackOperation $serviceLease }
+    } finally {
+        foreach ($process in $stopProcesses) { $process.Dispose() }
+        Exit-StackOperation $serviceLease
+    }
 }
 
 function Restart-WatchdogManagedService([string]$Service, [string]$ConfigPath, $Config) {
