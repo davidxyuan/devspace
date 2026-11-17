@@ -78,6 +78,25 @@ class ProfileTests(unittest.TestCase):
         self.call("rollback")
         self.assertEqual(manager.read(self.home / ".devspace-gateway.json")["prepared"], str(self.new))
 
+    @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true' and
+                         os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
+                         'Distinct file-owner fixture requires the disposable elevated Windows runner')
+    def test_nondefault_file_owner_survives_switch_and_rollback(self):
+        path = self.home / 'config.yaml'
+        original = manager.profile_inventory(self.home)['config.yaml']['security']
+        command = "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:DEVSPACE_OWNER_FIXTURE; $a.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User); Set-Acl -LiteralPath $env:DEVSPACE_OWNER_FIXTURE -AclObject $a"
+        subprocess.run([str(Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+                        '-NoLogo', '-NoProfile', '-Command', command], check=True, timeout=20,
+                       env={**os.environ, 'DEVSPACE_OWNER_FIXTURE': str(path)},
+                       creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, text=True)
+        self.before = manager.profile_inventory(self.home)
+        changed = self.before['config.yaml']['security']
+        self.assertNotEqual(changed, original, 'Fixture must use an owner different from new files')
+        self.switch()
+        self.assertEqual(manager.profile_inventory(self.home)['config.yaml']['security'], changed)
+        self.call('rollback')
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+
     def test_second_switch_is_rejected_without_overwriting_pending_record(self):
         record = self.switch()
         with self.assertRaisesRegex(RuntimeError, "requires accept or rollback"):

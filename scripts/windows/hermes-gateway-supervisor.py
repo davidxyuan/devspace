@@ -331,7 +331,7 @@ def profile_update(home, action, prepared):
             next_home = folder / "next"
             with (folder / "copy.log").open("wb") as log:
                 result = subprocess.run([str(Path(os.environ["SYSTEMROOT"]) / "System32" / "robocopy.exe"),
-                                         str(home), str(next_home), "/E", "/COPY:DATS", "/DCOPY:DAT",
+                                         str(home), str(next_home), "/E", "/COPY:DATSO", "/DCOPY:DAT",
                                          "/XJ", "/R:0", "/W:0", "/NP"], stdout=log, stderr=subprocess.STDOUT,
                                         creationflags=subprocess.CREATE_NO_WINDOW, timeout=300)
             record["copyExitCode"] = result.returncode

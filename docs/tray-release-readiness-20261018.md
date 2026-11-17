@@ -252,6 +252,8 @@ bootstrap 需 Python 3.11 以上及 Git；實際 runtime 由固定來源的官�
 
 每一階段保留獨立 JSON／log；GPT 必須先經 Tray 的身分核對停止，確認已觀察的程序退出、監聽埠釋放、Gateway 身分不變，才能繼續 profile 備份或交換。這補足先前 GPT 與 Gateway 分開測試的證據缺口；**不等於 `stack-activate.ps1` 已完成 PM 配對版本的自動切換交易**，也不解除既有安裝／啟用阻擋。實際執行結果應以同一提交的 workflow 產物為準。
 
+聯合測試前兩輪 `44013066635`／`44013795560` 於原版本 GPT 真實 HTTP MCP 通過後，在 profile 複製階段中止。第二輪差異確認：原資料未變，副本唯一差異為 GPT 產生的 terminal snapshot 檔案 owner 從 `LA` 變成 `BA`，內容、ACL、時間戳皆相同。複製旗標由 `/COPY:DATS` 修正為 `/COPY:DATSO`，按 [Microsoft Robocopy 文件](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy) 明確保留 owner；新增雲端 Windows 的非預設 owner 實際交換／回復案例。完整 metadata 比對仍保留；權限不足或複製不一致時，仍保留原資料並拒絕交換，沒有自動提權或放寬資料權限。
+
 ## 觀察器與原七次缺口
 
 原 10/15–16 觀察已結案，15 分鐘 heartbeat 維持 `PAUSED`。七次缺口無法補寫；本次沒有重開、延長或合併舊輪。
