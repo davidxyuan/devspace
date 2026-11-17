@@ -16,6 +16,7 @@ on:
       - scripts/windows/hermes-gateway-real.test.py
       - scripts/windows/hermes-gateway-readiness.test.py
       - scripts/windows/hermes-gateway-profile.test.py
+      - scripts/windows/hermes-gateway-pair.test.py
       - scripts/windows/patches/hermes-windows-control-pipe.patch
   workflow_dispatch:
     inputs:
@@ -47,6 +48,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Preparation boundary tests failed' }
           python -I -B scripts/windows/hermes-gateway-readiness.test.py
           if ($LASTEXITCODE) { throw 'Gateway readiness tests failed' }
+          python -I -B scripts/windows/hermes-gateway-pair.test.py
+          if ($LASTEXITCODE) { throw 'Prepared pair checks failed' }
       - name: Fetch two immutable official releases and paired GPT source
         shell: pwsh
         run: |

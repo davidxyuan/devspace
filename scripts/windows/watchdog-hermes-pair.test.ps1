@@ -15,6 +15,9 @@ $preparation = Read-WatchdogJson (Join-Path $Prepared 'preparation.json')
 $state = Read-WatchdogJson (Join-Path $ProfileHome '.devspace-gateway.json')
 Assert-Pair ($preparation.state -eq 'prepared' -and $preparation.pair.state -eq 'verified') 'Pair preparation did not pass.'
 Assert-Pair ($state.phase -eq 'running' -and [IO.Path]::GetFullPath($state.prepared) -eq [IO.Path]::GetFullPath($Prepared)) 'Gateway must be running the same prepared version.'
+$verifiedOutput = & $preparation.python -I -B -X utf8 (Join-Path $PSScriptRoot 'hermes-gateway-supervisor.py') pair-config --prepared $Prepared --home $ProfileHome
+Assert-Pair ($LASTEXITCODE -eq 0) 'Prepared pair changed; no GPT service may be started.'
+$verifiedConfig = $verifiedOutput | ConvertFrom-Json
 $work = Join-Path $env:RUNNER_TEMP ('watchdog-hermes-pair-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($work)
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
@@ -22,12 +25,10 @@ $listener.Start()
 $port = $listener.LocalEndpoint.Port
 $listener.Stop()
 $config = @{
-    stateDir=$work; hermesEnabled=$true; hermesPort=$port; hermesHome=$ProfileHome
-    hermesPython=[string]$preparation.pair.python; hermesServer=(Join-Path $preparation.pair.root 'server.py')
-    hermesWorkingDirectory=[string]$preparation.pair.root; hermesAgentWorkingDirectory=(Join-Path $Prepared 'payload')
-    hermesAgentExe=(Join-Path (Split-Path $preparation.python -Parent) 'hermes.exe')
+    stateDir=$work; hermesEnabled=$true; hermesPort=$port
     capabilities=@{hermes=@{filesystemScope='restricted';allowedRoots=@($ProfileHome);ownerMode=$false}}
 }
+foreach ($entry in $verifiedConfig.PSObject.Properties) { $config[$entry.Name] = $entry.Value }
 $configPath = Join-Path $work 'devspace-watchdog.config.json'
 Write-WatchdogAtomicJson $configPath $config 20
 $observed = @{}

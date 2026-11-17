@@ -8,6 +8,7 @@ import ctypes
 from ctypes import wintypes
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import msvcrt
 import os
@@ -163,6 +164,16 @@ def ownership(home):
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def prepared_source(root, revision):
+    plain_path(root)
+    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                   text=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30).strip()
+    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+                                    text=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30).strip()
+    if head != revision or dirty:
+        raise ValueError("Prepared source changed")
+
+
 def prepared_runtime(prepared, *, require_interpreter=True):
     prepared = prepared.resolve(strict=True)
     receipt = read(prepared / "preparation.json")
@@ -175,13 +186,43 @@ def prepared_runtime(prepared, *, require_interpreter=True):
     for name in ("pyproject.toml", "uv.lock", "pm/lock.json"):
         if hashlib.sha256((root / name).read_bytes()).hexdigest() != receipt["inputHashes"][name]:
             raise ValueError("Prepared dependency inputs changed")
-    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"],
-                                   text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
-                                    text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-    if head != receipt["revision"] or dirty:
-        raise ValueError("Prepared source changed")
+    prepared_source(root, receipt["revision"])
     return root, python
+
+
+def prepared_pair(prepared):
+    """Recheck the prepared pair before supplying paths to Tray; never start a service."""
+    prepared = plain_path(prepared).resolve(strict=True)
+    root, python = prepared_runtime(prepared, require_interpreter=False)
+    receipt = read(prepared / "preparation.json")
+    pair = receipt.get("pair", {})
+    gpt = plain_path(prepared / "gpt-payload")
+    executable = plain_path(prepared / "pair-runtime" / "Scripts" / "python.exe")
+    agent_exe = plain_path(python.with_name("hermes.exe"))
+    if (pair.get("state") != "verified" or pair.get("root") != str(gpt)
+            or pair.get("python") != str(executable)
+            or not executable.is_file() or not agent_exe.is_file() or not (gpt / "server.py").is_file()):
+        raise ValueError("A verified pair with its original entry points is required")
+    for path, expected in ((gpt / "pyproject.toml", pair["pyprojectSha256"]),
+                           (prepared / "pair-input.txt", pair["inputSha256"]),
+                           (prepared / "pair-requirements.txt", pair["requirementsSha256"])):
+        if hashlib.sha256(plain_path(path).read_bytes()).hexdigest() != expected:
+            raise ValueError("Paired dependency inputs changed")
+    prepared_source(gpt, pair["revision"])
+    # Use the preparation's package identity rules, including normalized-name duplicate rejection.
+    spec = importlib.util.spec_from_file_location("preparation", Path(__file__).with_name("prepare-hermes-pm-candidate.py"))
+    preparation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(preparation)
+    for interpreter, expected in ((python, receipt["runtime"]), (executable, pair["runtime"])):
+        actual = json.loads(subprocess.check_output(
+            [str(plain_path(interpreter)), "-I", "-B", "-X", "utf8", "-c", preparation.INVENTORY],
+            text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW, timeout=30))
+        if (actual["python"] != expected["python"]
+                or preparation.package_pins(actual) != preparation.package_pins(expected)):
+            raise ValueError("Prepared runtime changed since verification")
+    return {"hermesPython": str(executable), "hermesServer": str(gpt / "server.py"),
+            "hermesWorkingDirectory": str(gpt), "hermesAgentWorkingDirectory": str(root),
+            "hermesAgentExe": str(agent_exe)}
 
 
 def plain_path(path):
@@ -575,12 +616,20 @@ def supervise(home, state, gateway, command, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("init", "run", "stop", "status", "check", "switch", "rollback", "accept"))
+    parser.add_argument("action", choices=("init", "run", "stop", "status", "check", "switch", "rollback", "accept", "pair-config"))
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--prepared", type=Path)
     args = parser.parse_args()
     home = plain_path(args.home).resolve()
     path = home / ".devspace-gateway.json"
+    if args.action == "pair-config":
+        if not args.prepared:
+            parser.error("pair-config requires --prepared")
+        prepared = plain_path(args.prepared).resolve(strict=True)
+        if prepared.is_relative_to(home) or home.is_relative_to(prepared):
+            raise ValueError("Prepared code and profile data must be separate")
+        print(json.dumps(dict(prepared_pair(prepared), hermesHome=str(home)), indent=2))
+        return 0
     if args.action == "init":
         if not args.prepared:
             parser.error("init requires --prepared")

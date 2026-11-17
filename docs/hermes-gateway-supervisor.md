@@ -28,6 +28,17 @@ offline bundle: package archives are not retained or hash-locked here. GPT runs 
 the committed source snapshot rather than an installed wheel. Full PM activation,
 profile migration/rollback and TYO deployment remain separate release gates.
 
+Before Tray launches a prepared pair, `pair-config --prepared <directory> --home
+<profile>` rechecks both tracked source commits, dependency-input hashes and the
+installed Python/package inventories against the preparation receipt. It rejects
+missing or redirected entry points and overlapping code/data paths, then returns
+the exact GPT/Agent configuration paths. The package comparison uses the same
+normalized-name rules as preparation. Inventory errors or timeouts stop the check;
+it neither creates the profile nor starts/stops a service. The paired Windows
+probe consumes these checked paths before calling Tray's launcher. This catches
+changes since preparation, not concurrent tampering or replacement of the receipt,
+and does not authorize installation or implement the complete update transaction.
+
 Use a **new** profile directory. `init` refuses every existing directory, including
 empty ones. Configure only that new profile's gateway adapters and credentials.
 The manager clears inherited credentials and fixes its home paths to this profile.
