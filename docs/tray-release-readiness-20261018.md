@@ -132,10 +132,10 @@ TYO 的 runtime 交易修正於 10/29 23:53 完成。第一段固定 300 秒部�
 | 元件 | 乾淨安裝候選 |
 |---|---|
 | DevSpace official | 1.0.8／`fe712e2b6c07231d2a76503bf2a674b165850616`，npm integrity 固定 |
-| Hermes GPT candidate fork | 0.14.0／`c42890888957acdd75d070d9056f2298a8fbeb3b`，`davidxyuan/hermes-gpt` 的來源契約及明確資料目錄修正版 |
+| Hermes GPT candidate fork | 0.14.0／`36444229430bdf6d5993078d25aef8d8990d5540`，`davidxyuan/hermes-gpt` 的來源契約及明確資料目錄修正版 |
 | Hermes Agent fork | 0.21.1／`601d98c2709f766290cc3627b035ab73cfd54232`，沿用原快速安裝的固定基準 |
 
-這不是 TYO 現在的安裝組合；既有安裝不會被這份清單直接降版。10/27 candidate.2 固定的 GPT 為 `535d928`，11/17 candidate.1 改為上表的 audit 路徑修正提交。安裝器預設使用清單來源，管理器僅登錄該分支與完全相符的乾淨固定提交。另保留官方 `asimons81/hermes-gpt` 的更新發現，不能因採用 fork 就漏看官方新版。先前整組乾淨 Windows 安裝及隔離 MCP 的通過只對應當時提交，不自動涵蓋新清單；Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是先前本機驗證版本，非所有受支援 Node／OS 組合均已測過。
+這不是 TYO 現在的安裝組合；既有安裝不會被這份清單直接降版。10/27 candidate.2 固定的 GPT 為 `535d928`，11/17 candidate.2 改為上表的 audit 路徑與測試隔離修正提交。安裝器預設使用清單來源，管理器僅登錄該分支與完全相符的乾淨固定提交。另保留官方 `asimons81/hermes-gpt` 的更新發現，不能因採用 fork 就漏看官方新版。先前整組乾淨 Windows 安裝及隔離 MCP 的通過只對應當時提交，不自動涵蓋新清單；Python 遞移依賴尚未完整鎖定至正式清單，仍不足以宣稱正式安裝完全可重現。Node 24.14.0 是先前本機驗證版本，非所有受支援 Node／OS 組合均已測過。
 
 ## 實際通過的驗證
 
@@ -257,6 +257,8 @@ bootstrap 需 Python 3.11 以上及 Git；實際 runtime 由固定來源的官�
 提交 `ca75fc6` 的 [雲端聯合驗證 44050072532](https://github.com/davidxyuan/devspace/actions/runs/44050072532) 通過：28 項監督器、19 項資料交換案例（包含非預設 owner），四階段共 8 次真實唯讀 HTTP MCP 呼叫成功。兩次回復各核對 534 筆檔案／目錄資料及 SQLite integrity；71 組已觀察的 Gateway 相關 PID＋開始時間均退出，最後 Job 程序數為 0。四輪 GPT 均經 Tray 啟停核對退出，Gateway 身分未被 GPT 探針更換。同提交一般 CI 的 Windows／macOS／Ubuntu 24.04 通過，Ubuntu latest 仍失敗，不能宣稱整個 CI 全綠。
 
 聯合驗證另發現 GPT 回報的操作紀錄位置落在 `gpt-payload/logs`，沒有跟隨指定的 `HERMES_HOME`。候選 `tray-20261117-candidate.1` 將 GPT 固定至 `c428908`，共用 audit 讀寫路徑改為明確資料目錄；未設定 `HERMES_HOME` 時保留舊位置選擇，既有紀錄不自動搬移或合併。新增本機 9 項 audit 測試通過；MCP 探針也核對回報位置，整組新候選結果以後續同一提交雲端證據為準，不能沿用上一提交的通過結論。
+
+GPT 完整 CI `44051663399` 的首輪另發現既有測試問題：固定 8/15 事件資料已超過實際時鐘的 90 天期限，及模擬 Windows 的全域 `os.fstat` 影響 pytest 自身。`370cc71` 為事件測試固定時鐘並確認隱私檢查確實包含事件；`3644422` 將模擬限制在被測模組。本機分別 16／32 項通過，未修改正式保留期限或檔案驗證。candidate.2 固定至含這兩項測試修正的提交，完整 CI 另行驗證；首輪失敗仍保留。
 
 ## 觀察器與原七次缺口
 

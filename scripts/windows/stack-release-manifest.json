@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "tray-20261117-candidate.1",
+  "id": "tray-20261117-candidate.2",
   "channel": "candidate",
   "description": "Pinned candidate inputs, not a tested stable combination. Preserve existing installations; stage upgrades separately.",
   "components": {
@@ -13,7 +13,7 @@
     "hermes-gpt": {
       "repository": "davidxyuan/hermes-gpt",
       "version": "0.14.0",
-      "revision": "c42890888957acdd75d070d9056f2298a8fbeb3b",
+      "revision": "36444229430bdf6d5993078d25aef8d8990d5540",
       "ref": "codex/explicit-agent-source-20261019",
       "updateBranch": "codex/explicit-agent-source-20261019"
     },
