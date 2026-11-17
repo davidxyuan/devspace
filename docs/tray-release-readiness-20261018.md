@@ -246,6 +246,12 @@ python -I -B scripts/windows/prepare-hermes-pm-candidate.py `
 
 bootstrap 需 Python 3.11 以上及 Git；實際 runtime 由固定來源的官方 PM 鎖檔決定。手動 workflow 從官方 repository 取得指定提交後呼叫同一入口，只上傳 JSON／log 證據；每週上游發現維持只查詢，不自動執行來源程式或提升版本。
 
+## 11/17 同一 profile 的 Tray／GPT／Gateway 聯合驗證
+
+`hermes-gateway-real.test.py` 現在於原版本、候選版本、資料回復後、啟動失敗回復後，呼叫 `watchdog-hermes-pair.test.ps1`，由真正 `Start-WatchdogManagedService` 啟動該版本配對的 GPT，並使用同一個 `HERMES_HOME`。除了 Tray 的程序／監聽埠／健康檢查，也透過 loopback HTTP MCP 呼叫 `hermes_operator_status`、`hermes_read_file`，核對 Agent 來源、GPT 來源、資料根目錄及唯讀權限。測試只允許 GitHub-hosted Windows；沒有在 TYO 啟動新候選。
+
+每一階段保留獨立 JSON／log；GPT 必須先經 Tray 的身分核對停止，確認已觀察的程序退出、監聽埠釋放、Gateway 身分不變，才能繼續 profile 備份或交換。這補足先前 GPT 與 Gateway 分開測試的證據缺口；**不等於 `stack-activate.ps1` 已完成 PM 配對版本的自動切換交易**，也不解除既有安裝／啟用阻擋。實際執行結果應以同一提交的 workflow 產物為準。
+
 ## 觀察器與原七次缺口
 
 原 10/15–16 觀察已結案，15 分鐘 heartbeat 維持 `PAUSED`。七次缺口無法補寫；本次沒有重開、延長或合併舊輪。

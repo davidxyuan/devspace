@@ -1,5 +1,6 @@
 """Verify installed GPT/Agent sources through readonly MCP in a disposable profile."""
 import asyncio
+import argparse
 from datetime import datetime, timezone
 import importlib.metadata
 import json
@@ -7,14 +8,29 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 
 async def main():
-    server = Path(sys.argv[1]).resolve(strict=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('server', type=Path)
+    parser.add_argument('agent', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--url')
+    parser.add_argument('--home', type=Path)
+    args = parser.parse_args()
+    if bool(args.url) != bool(args.home):
+        parser.error('--url and --home must be supplied together')
+    if args.url:
+        url = urlsplit(args.url)
+        if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port or
+                url.path != '/mcp' or url.username or url.password or url.query or url.fragment):
+            raise ValueError('Only an explicit loopback MCP test endpoint is supported')
+    server = args.server.resolve(strict=True)
     if server.name != "server.py":
         raise ValueError("Expected the installed server.py entry point")
-    agent = Path(sys.argv[2]).resolve(strict=True)
-    output = Path(sys.argv[3])
+    agent = args.agent.resolve(strict=True)
+    output = args.output
     record = {"checkedAt": datetime.now(timezone.utc).isoformat(), "python": sys.executable,
               "server": str(server), "agent": str(agent), "calls": [],
               "passed": False, "pid": os.getpid(),
@@ -28,6 +44,32 @@ async def main():
         pending.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         pending.replace(output)
 
+    async def verify(session, fixture, expected_home):
+        checkpoint('initializing')
+        record['initialize'] = (await session.initialize()).model_dump(mode='json')
+        checkpoint('listing-tools')
+        names = {tool.name for tool in (await session.list_tools()).tools}
+        record['toolCount'] = len(names)
+        assert {'hermes_operator_status', 'hermes_read_file'} <= names
+        for name, arguments in (('hermes_operator_status', {}),
+                ('hermes_read_file', {'path': str(fixture), 'offset': 1, 'limit': 2})):
+            checkpoint('calling:' + name)
+            result = await session.call_tool(name, arguments)
+            protocol_result = result.model_dump(mode='json', by_alias=True)
+            record['calls'].append({'tool': name, 'result': protocol_result})
+            assert not protocol_result.get('isError'), f'{name} MCP error'
+            content = '\n'.join(c.text for c in result.content if c.type == 'text')
+            if name == 'hermes_operator_status':
+                status = json.loads(content)
+                assert Path(status['hermes_agent_root']).resolve() == agent, status
+                assert Path(status['hermes_gpt_project_path']).resolve() == server.parent, status
+                assert Path(status['default_hermes_root']).resolve() == expected_home, status
+                assert not status.get('import_error'), status
+                assert status['success'] and status['level'] == 'read_only' and not status['owner_active'], status
+            else:
+                assert 'candidate-mcp-read-ok' in content and 'second-line' in content, content
+            checkpoint('verified:' + name)
+
     try:
         checkpoint("importing-mcp")
         from mcp import ClientSession, StdioServerParameters
@@ -39,6 +81,17 @@ async def main():
         with tempfile.TemporaryDirectory(prefix="hermes-installed-mcp-") as temporary:
             fixture = Path(temporary) / "read-only-probe.txt"
             fixture.write_text("candidate-mcp-read-ok\nsecond-line\n", encoding="utf-8")
+            if args.url:
+                from mcp.client.streamable_http import streamable_http_client
+                record.update(scope='Readonly loopback HTTP MCP against an already running test server; not a deployed connector or ChatGPT web',
+                              url=args.url, home=str(args.home.resolve(strict=True)))
+                async with asyncio.timeout(90):
+                    async with streamable_http_client(args.url) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await verify(session, fixture, args.home.resolve(strict=True))
+                record['passed'] = True
+                checkpoint('complete')
+                return
             env = {k: v for k, v in os.environ.items() if k.upper() in
                    ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")}
             env.update({k: temporary for k in ("HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
@@ -52,29 +105,7 @@ async def main():
                     checkpoint("starting-server")
                     async with stdio_client(params, errlog=errors) as (read, write):
                         async with ClientSession(read, write) as session:
-                            checkpoint("initializing")
-                            record["initialize"] = (await session.initialize()).model_dump(mode="json")
-                            checkpoint("listing-tools")
-                            names = {tool.name for tool in (await session.list_tools()).tools}
-                            record["toolCount"] = len(names)
-                            assert {"hermes_operator_status", "hermes_read_file"} <= names
-                            for name, args in (("hermes_operator_status", {}),
-                                    ("hermes_read_file", {"path": str(fixture), "offset": 1, "limit": 2})):
-                                checkpoint("calling:" + name)
-                                result = await session.call_tool(name, args)
-                                protocol_result = result.model_dump(mode="json", by_alias=True)
-                                record["calls"].append({"tool": name, "result": protocol_result})
-                                assert not protocol_result.get("isError"), f"{name} MCP error"
-                                content = "\n".join(c.text for c in result.content if c.type == "text")
-                                if name == "hermes_operator_status":
-                                    status = json.loads(content)
-                                    assert Path(status["hermes_agent_root"]).resolve() == agent, status
-                                    assert Path(status["hermes_gpt_project_path"]).resolve() == server.parent, status
-                                    assert not status.get("import_error"), status
-                                    assert status["success"] and status["level"] == "read_only" and not status["owner_active"], status
-                                else:
-                                    assert "candidate-mcp-read-ok" in content and "second-line" in content, content
-                                checkpoint("verified:" + name)
+                            await verify(session, fixture, Path(temporary).resolve())
                         checkpoint("stopping-server")
             checkpoint("removing-profile")
         record["passed"] = True

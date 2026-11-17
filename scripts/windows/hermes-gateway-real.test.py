@@ -93,12 +93,14 @@ with socket.socket() as s:
     port = s.getsockname()[1]
 (HOME / ".env").write_text(f"API_SERVER_KEY={secrets.token_hex(32)}\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT={port}\nGATEWAY_MULTIPLEX_PROFILES=false\n", encoding="utf-8")
 env = manager.isolated_environment(HOME)
+probe_env = {**env, **{key: os.environ[key] for key in
+    ('GITHUB_ACTIONS', 'GITHUB_SHA', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_TEMP', 'COMPUTERNAME')}}
 os.environ.clear()
 os.environ.update(env)
 sys.path.insert(0, str(PREPARED / "payload"))
 from gateway.control_socket import pause_gateway_for_update
 
-report = {"scope": "Two real pinned gateways with managed profile switch/rollback; isolated loopback only, no installed task or chat/model call. GPT pairing is verified separately in disposable MCP profiles. Startup failure and data migration are injected test faults.",
+report = {"scope": "Two real pinned gateways with managed profile switch/rollback and Tray-launched paired GPT on the same profile; isolated loopback only, no installed task or chat/model call. Startup failure and data migration are injected test faults. The full Tray update transaction is not exercised.",
           "prepared": str(PREPARED), "revision": manager.read(PREPARED / "preparation.json")["revision"],
           "versions": [{"prepared": str(path), "upstreamRevision": receipt["upstreamRevision"],
                         "revision": receipt["revision"], "gptRevision": receipt["pair"]["revision"]}
@@ -190,6 +192,23 @@ def start(prepared, label, *, fail=False):
                               "startTime": process.create_time(), "injectedStartupFailure": fail})
 
 
+def verify_pair(prepared):
+    evidence = REPORT.with_name(f"paired-{report['stage']}.json")
+    powershell = Path(env['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    command = [str(powershell), '-NoLogo', '-NoProfile', '-File',
+               str(MANAGER.with_name('watchdog-hermes-pair.test.ps1')),
+               '-Prepared', str(prepared), '-ProfileHome', str(HOME), '-ReportPath', str(evidence)]
+    with evidence.with_suffix('.log').open('x', encoding='utf-8') as log:
+        result = subprocess.run(command, env=probe_env, stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=180)
+    pair_result = manager.read(evidence) if evidence.exists() else None
+    event('tray_paired_mcp', {'exitCode': result.returncode, 'report': str(evidence), 'result': pair_result})
+    assert result.returncode == 0 and pair_result and pair_result['passed'], 'Tray paired MCP validation failed'
+    assert pair_result['processes'] and pair_result['observedProcessesExited'] and pair_result['gatewayUnchanged'], pair_result
+    # GPT exited before any profile snapshot; the selected gateway remains live and ready.
+    ready(prepared)
+
+
 def stopped(expected_starts, *, failed=False):
     stop_deadline = time.monotonic() + 190
     if not failed:
@@ -229,6 +248,7 @@ def rollback(before, transaction):
 try:
     start(BASELINE, "baseline")
     ready(BASELINE)
+    verify_pair(BASELINE)
     stopped(1)
     with contextlib.closing(sqlite3.connect(HOME / "rollback-proof.sqlite3")) as db, db:
         db.execute("create table history(message text)")
@@ -253,6 +273,7 @@ try:
     third = ready(PREPARED, second)
     assert third != second
     event("replacement_after_official_handoff", third)
+    verify_pair(PREPARED)
     stopped(4)
     with contextlib.closing(sqlite3.connect(HOME / "rollback-proof.sqlite3")) as db, db:
         db.execute("alter table history add column migration integer")
@@ -263,6 +284,7 @@ try:
     assert (manager.control_directory(HOME) / transaction["id"] / "failed" / "candidate-only").exists()
     start(BASELINE, "restored-baseline")
     ready(BASELINE)
+    verify_pair(BASELINE)
     stopped(2)
 
     before = manager.profile_inventory(HOME)
@@ -273,6 +295,7 @@ try:
     rollback(before, transaction)
     start(BASELINE, "restored-after-failed-start")
     ready(BASELINE)
+    verify_pair(BASELINE)
     stopped(3)
     report["passed"] = True
 except Exception as exc:

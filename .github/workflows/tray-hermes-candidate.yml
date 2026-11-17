@@ -9,6 +9,9 @@ on:
       - scripts/windows/stack-release-manifest.json
       - scripts/windows/stack-hermes-source.py
       - scripts/windows/stack-hermes-mcp-smoke.py
+      - scripts/windows/watchdog-hermes-pair.test.ps1
+      - scripts/windows/watchdog-control-core.ps1
+      - scripts/windows/stack-operation.ps1
       - scripts/windows/hermes-gateway-supervisor*.py
       - scripts/windows/hermes-gateway-real.test.py
       - scripts/windows/hermes-gateway-readiness.test.py
