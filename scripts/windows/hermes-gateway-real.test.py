@@ -300,6 +300,21 @@ try:
     report["passed"] = True
 except Exception as exc:
     report["error"] = repr(exc)
+    try:
+        control = manager.control_directory(HOME)
+        transaction = manager.read(control / 'update.json')
+        if transaction['phase'] == 'copying':
+            folder = control / transaction['id']
+            before = manager.read(folder / 'before.json')
+            differences = {}
+            for name, directory in (('original', HOME), ('copy', folder / 'next')):
+                actual = manager.profile_inventory(directory)
+                differences[name] = {path: {'before': before.get(path), 'actual': actual.get(path)}
+                                     for path in before.keys() | actual.keys() if before.get(path) != actual.get(path)}
+            event('profile_copy_differences', differences)
+            shutil.copyfile(folder / 'copy.log', REPORT.with_name('profile-copy.log'))
+    except Exception as diagnostic_error:
+        report['copyDiagnosticError'] = repr(diagnostic_error)
     if worker and worker.poll() is None:
         state = manager.read(state_path)
         manager.write(HOME / ".devspace-gateway-stop.json", {"runId": state["runId"]})
