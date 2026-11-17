@@ -130,6 +130,8 @@ raise SystemExit(37)
         function Invoke-NativeWrapper {
             $child=Start-Process -FilePath $env:ComSpec -ArgumentList @('/d','/s','/c',('""' + $wrapper + '""')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $root 'wrapper.out') -RedirectStandardError (Join-Path $root 'wrapper.err')
             try {
+                # Windows PowerShell otherwise loses ExitCode for redirected Start-Process children.
+                Assert-Home ($child.Handle -ne [IntPtr]::Zero) 'Wrapper process handle is unavailable.'
                 Assert-Home ($child.WaitForExit(15000)) 'Wrapper did not exit within its test deadline.'
                 return $child.ExitCode
             } finally { $child.Dispose() }
@@ -141,12 +143,12 @@ raise SystemExit(37)
                 $config.capabilities.hermes.ownerMode=($selected -ne $profileHome)
                 Write-WatchdogAtomicJson $settingsPath $config 10
                 $code=Invoke-NativeWrapper
-                Assert-Home ($code -eq 37) "Wrapper did not preserve Python exit code: $code"
                 $result=Read-WatchdogJson (Join-Path $selected 'launch.json')
+                $report.launches+=@{expectedHome=$selected;exitCode=$code;probe=$result}
+                Assert-Home ($code -eq 37) "Wrapper did not preserve Python exit code: $code"
                 Assert-Home ($result.home -eq $selected -and $result.agent -eq $agent) 'Wrapper ignored the configured home or source.'
                 Assert-Home ($result.owner -eq $(if($config.capabilities.hermes.ownerMode){'1'}else{$null})) 'Wrapper ignored the current Owner gate.'
                 Assert-Home (($result.args -join ',') -eq '--http,--host,127.0.0.1,--port,14750') 'Wrapper changed the server arguments.'
-                $report.launches+=@{home=$result.home;exitCode=$code;owner=$result.owner}
             }
             $config.hermesEnabled=$false
             Write-WatchdogAtomicJson $settingsPath $config 10
