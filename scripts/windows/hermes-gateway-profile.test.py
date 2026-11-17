@@ -85,10 +85,13 @@ class ProfileTests(unittest.TestCase):
         path = self.home / 'config.yaml'
         original = manager.profile_inventory(self.home)['config.yaml']['security']
         command = "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:DEVSPACE_OWNER_FIXTURE; $a.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User); Set-Acl -LiteralPath $env:DEVSPACE_OWNER_FIXTURE -AclObject $a"
-        subprocess.run([str(Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-                        '-NoLogo', '-NoProfile', '-Command', command], check=True, timeout=20,
-                       env={**os.environ, 'DEVSPACE_OWNER_FIXTURE': str(path)},
-                       creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, text=True)
+        # Windows PowerShell must load its own modules, not pwsh's inherited module path.
+        env = {key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}
+        result = subprocess.run([str(Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+                                 '-NoLogo', '-NoProfile', '-Command', command], timeout=20,
+                                env={**env, 'DEVSPACE_OWNER_FIXTURE': str(path)},
+                                creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.before = manager.profile_inventory(self.home)
         changed = self.before['config.yaml']['security']
         self.assertNotEqual(changed, original, 'Fixture must use an owner different from new files')
