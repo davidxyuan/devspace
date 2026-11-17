@@ -64,6 +64,7 @@ async def main():
                 assert Path(status['hermes_agent_root']).resolve() == agent, status
                 assert Path(status['hermes_gpt_project_path']).resolve() == server.parent, status
                 assert Path(status['default_hermes_root']).resolve() == expected_home, status
+                assert Path(status['audit_log_path']).resolve() == expected_home / 'logs' / 'hermes_gpt_operator_audit.jsonl', status
                 assert not status.get('import_error'), status
                 assert status['success'] and status['level'] == 'read_only' and not status['owner_active'], status
             else:
