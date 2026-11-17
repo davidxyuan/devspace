@@ -88,7 +88,7 @@ if ($Native) {
     $node = (Get-Command node.exe).Source
     $children = [Collections.Generic.List[object]]::new()
     $report = @{head=$env:GITHUB_SHA; startedAt=[DateTimeOffset]::UtcNow.ToString('o'); passed=$false; processes=@();
-        scope='Disposable Windows runner, two inert Node processes; one injected identity mismatch. No TYO or real backend data.'}
+        scope='Disposable Windows runner, inert Node processes and a loopback listener; injected identity mismatches. No TYO or real backend data.'}
     try {
         foreach ($name in @('router.cjs','unrelated.cjs')) {
             $path = Join-Path $work $name
@@ -115,6 +115,37 @@ if ($Native) {
         Assert-Stop (-not $children[1].HasExited) 'The unrelated native process was stopped.'
         $report.managedExited=$true
         $report.unrelatedPreserved=$true
+        & {
+            $tokens=$null; $errors=$null
+            $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'upgrade-existing-tested-stack.ps1'),[ref]$tokens,[ref]$errors)
+            if ($errors.Count) { throw 'Cannot parse the legacy upgrade entry.' }
+            foreach ($name in @('Get-PortOwners','Test-ManagedProcessForPort','Get-ManagedListenerPlan','Stop-ManagedListeners')) {
+                $definition=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+                Invoke-Expression $definition.Extent.Text
+            }
+            function Fail([string]$Message) { throw $Message }
+            $path=Join-Path $work 'legacy-router.cjs'; $portFile=Join-Path $work 'legacy-port.txt'
+            [IO.File]::WriteAllText($path,'const s=require("node:net").createServer(); s.listen(0,"127.0.0.1",()=>require("node:fs").writeFileSync(process.argv[2],String(s.address().port)));')
+            $child=Start-Process -FilePath $node -ArgumentList ('"' + $path + '" "' + $portFile + '"') -WindowStyle Hidden -PassThru
+            $children.Add($child)
+            [void]$child.Handle
+            $report.processes+=@{pid=$child.Id;startedUtc=$child.StartTime.ToUniversalTime().ToString('o');name='legacy-router.cjs'}
+            $deadline=[DateTimeOffset]::UtcNow.AddSeconds(10)
+            while (-not [IO.File]::Exists($portFile) -and -not $child.HasExited -and [DateTimeOffset]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+            $legacyConfig=@{nodePath=$node;routerPath=$path;routerPort=[int][IO.File]::ReadAllText($portFile)}
+            $plan=@(Get-ManagedListenerPlan $legacyConfig)
+            Assert-Stop ($plan.Count -eq 1 -and $plan[0].ProcessId -eq $child.Id) 'Legacy listener plan did not identify the native listener.'
+            $started=$plan[0].CreationDate
+            $plan[0].CreationDate=$started.AddSeconds(-1)
+            $failed=$false
+            try { Stop-ManagedListeners $plan } catch { $failed=$_.Exception.Message -like 'Planned process identity changed*' }
+            Assert-Stop ($failed -and -not $child.HasExited -and -not $children[1].HasExited) 'Stale legacy plan did not preserve the native processes.'
+            $report.legacyMismatchRejected=$true
+            $plan[0].CreationDate=$started
+            Stop-ManagedListeners $plan
+            Assert-Stop ($child.WaitForExit(0) -and -not $children[1].HasExited) 'Legacy listener stop or unrelated-process preservation failed.'
+            $report.legacyListenerExited=$true
+        }
         $report.passed=$true
     } catch { $report.error=$_.Exception.Message; throw }
     finally {

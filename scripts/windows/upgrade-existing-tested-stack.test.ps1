@@ -49,6 +49,59 @@ if (-not $runner.Contains("request.json") -and -not $runner.Contains("RequestPat
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+. (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
+& {
+    foreach ($name in @('Get-PortOwners','Test-ManagedProcessForPort','Get-ManagedListenerPlan','Stop-ManagedListeners')) {
+        $definition=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+        Invoke-Expression $definition.Extent.Text
+    }
+    function Fail([string]$Message) { throw $Message }
+    $fixture=@{deny=$false;actions=[Collections.Generic.List[string]]::new();handles=@{}}
+    $born=[datetime]'2026-11-17T00:00:00Z'
+    $fixture.processes=@(
+        [pscustomobject]@{ProcessId=42011;ParentProcessId=0;CreationDate=$born;Name='python.exe';ExecutablePath='C:\test\python.exe';CommandLine='python.exe C:\test\server.py --http --port 14750'},
+        [pscustomobject]@{ProcessId=42012;ParentProcessId=42011;CreationDate=$born.AddSeconds(1)}
+    )
+    function Get-NetTCPConnection { if ($fixture.deny) { throw 'listener query denied' }; return [pscustomobject]@{State='Listen';LocalPort=14750;OwningProcess=42011} }
+    function Get-CimInstance { param($ClassName,$Filter) if($Filter){return $fixture.processes[0]}; return $fixture.processes }
+    function Stop-Process { throw 'PID-only termination is forbidden' }
+    function Get-Process { param($Id) return $fixture.handles[[int]$Id] }
+    $settings=@{hermesPort=14750;hermesPython='C:\test\python.exe';hermesServer='C:\test\server.py';ngrokInspectorPort=4040}
+    $plan=@(Get-ManagedListenerPlan $settings)
+    if ($plan.Count -ne 1 -or $plan[0].CreationDate -ne $born) { throw 'Legacy plan must retain the observed creation time.' }
+    $fixture.deny=$true
+    $failed=$false
+    try { Get-ManagedListenerPlan $settings | Out-Null } catch { $failed=$true }
+    if (-not $failed) { throw 'An unreadable listener inventory must not authorize a stop.' }
+    $fixture.deny=$false
+    $unrelated=[pscustomobject]@{Name='python.exe';ExecutablePath=$settings.hermesPython;CommandLine='python.exe C:\unrelated.py --port 14750'}
+    if (Test-ManagedProcessForPort $settings 14750 $unrelated 4040) { throw 'A shared interpreter does not identify Hermes.' }
+    $missing=@{port=7676;hermesPort=14750;routerPort=14780}
+    foreach ($port in @(7676,14750,14780)) {
+        if (Test-ManagedProcessForPort $missing $port $unrelated 4040) { throw 'Missing script path matched an unrelated listener.' }
+    }
+    foreach ($item in $fixture.processes) {
+        $handle=[pscustomobject]@{Id=$item.ProcessId;StartTime=$item.CreationDate;Handle=[IntPtr]1;HasExited=$false;Disposed=$false}
+        $handle | Add-Member ScriptMethod Kill { $fixture.actions.Add("kill:$($this.Id)"); $this.HasExited=$true }
+        $handle | Add-Member ScriptMethod WaitForExit { param($Timeout) $fixture.actions.Add("wait:$($this.Id)"); return $this.HasExited }
+        $handle | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+        $fixture.handles[[int]$item.ProcessId]=$handle
+    }
+    $fixture.processes[0].CreationDate=$born.AddTicks(20)
+    $failed=$false
+    try { Stop-ManagedListeners $plan } catch { $failed=$true }
+    if (-not $failed -or $fixture.actions.Count) { throw 'Stale listener plan must preserve every process.' }
+    $fixture.processes[0].CreationDate=$born
+    $original=$fixture.processes
+    $fixture.processes=@($original[1])
+    $failed=$false
+    try { Stop-ManagedListeners $plan } catch { $failed=$true }
+    if (-not $failed -or $fixture.actions.Count) { throw 'A missing listener parent must not hide surviving descendants.' }
+    $fixture.processes=$original
+    Stop-ManagedListeners $plan
+    if (($fixture.actions -join ',') -ne 'kill:42012,wait:42012,kill:42011,wait:42011') { throw 'Legacy children must exit before their listener parent.' }
+    if (@($fixture.handles.Values | Where-Object { -not $_.Disposed }).Count) { throw 'Legacy stop leaked a retained handle.' }
+}
 $rollback = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Rollback' }, $true)
 if (-not $rollback) { throw 'Rollback function missing.' }
 & {

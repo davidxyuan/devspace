@@ -27,6 +27,7 @@ $MigrationSource = Join-Path (Split-Path $PSScriptRoot -Parent) "migrate-oauth-j
 $WatchdogSource = Join-Path $PSScriptRoot "devspace-watchdog.ps1"
 $WatchdogLegacySource = Join-Path $PSScriptRoot "devspace-watchdog-legacy.ps1"
 $CapabilityHelper = Join-Path $PSScriptRoot "capability-config.ps1"
+. (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 
 function Fail([string]$message) { throw "SAFE EXISTING-MACHINE ACTION REFUSED: $message" }
 function Read-Json([string]$path) {
@@ -90,9 +91,13 @@ function Get-TaskSnapshot {
 }
 function Get-PortOwners([int]$port) {
     @(
-        Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+        Get-NetTCPConnection -ErrorAction Stop | Where-Object { $_.State -eq 'Listen' -and $_.LocalPort -eq $port } |
             Select-Object -ExpandProperty OwningProcess -Unique |
-            ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId=$_" -ErrorAction SilentlyContinue }
+            ForEach-Object {
+                $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$_" -ErrorAction Stop
+                if (-not $owner -or -not $owner.CreationDate) { Fail "Cannot identify listener PID $_ on port $port." }
+                $owner
+            }
     )
 }
 function Find-NgrokInspectorPort($watchdog) {
@@ -129,17 +134,10 @@ function Test-CanTerminateProcess([int]$ProcessId) {
     return $true
 }
 function Test-ManagedProcessForPort($watchdog, [int]$port, $process, [int]$inspectorPort) {
-    $command = [string]$process.CommandLine
-    $executable = [string]$process.ExecutablePath
-    if ($port -eq [int]$watchdog.port) { return $command -like "*$($watchdog.cliPath)*" }
-    if ($port -eq [int]$watchdog.hermesPort) {
-        return ($command -like "*$($watchdog.hermesServer)*") -or ($watchdog.hermesPython -and $executable -eq [string]$watchdog.hermesPython)
-    }
-    if ($watchdog.routerPort -and $port -eq [int]$watchdog.routerPort) { return $command -like "*$($watchdog.routerPath)*" }
-    if ($port -eq $inspectorPort) {
-        return ($watchdog.ngrokPath -and $executable -eq [string]$watchdog.ngrokPath) -or
-            ($watchdog.ngrokAgentBaseUrl -and $command -like "*$($watchdog.ngrokAgentBaseUrl)*")
-    }
+    if ($port -eq [int]$watchdog.port) { return Test-WatchdogManagedProcess $process 'devspace' $watchdog }
+    if ($port -eq [int]$watchdog.hermesPort) { return Test-WatchdogManagedProcess $process 'hermes' $watchdog }
+    if ($watchdog.routerPort -and $port -eq [int]$watchdog.routerPort) { return Test-WatchdogManagedProcess $process 'router' $watchdog }
+    if ($port -eq $inspectorPort) { return Test-WatchdogManagedProcess $process 'ngrok' $watchdog }
     return $false
 }
 function Get-ManagedListenerPlan($watchdog) {
@@ -155,7 +153,7 @@ function Get-ManagedListenerPlan($watchdog) {
                 if ($port -eq $inspectorPort) { continue }
                 Fail "FIXED PORT CONFLICT: 127.0.0.1:$port is owned by PID $($process.ProcessId) ($($process.Name)), command=$($process.CommandLine). Stop or reconfigure that process and rerun; no service port will be moved or unknown owner stopped."
             }
-            $items += [pscustomobject]@{ Port=$port; ProcessId=[int]$process.ProcessId; Name=[string]$process.Name; CommandLine=[string]$process.CommandLine }
+            $items += [pscustomobject]@{ Port=$port; ProcessId=[int]$process.ProcessId; CreationDate=$process.CreationDate; Name=[string]$process.Name; CommandLine=[string]$process.CommandLine }
         }
     }
     return @($items | Sort-Object ProcessId -Unique)
@@ -169,9 +167,7 @@ function Assert-CanStopManagedListeners([object[]]$plan) {
     }
 }
 function Stop-ManagedListeners([object[]]$plan) {
-    foreach ($item in $plan) {
-        Stop-Process -Id ([int]$item.ProcessId) -Force -ErrorAction Stop
-    }
+    Stop-WatchdogProcessTree $plan @(Get-CimInstance Win32_Process -ErrorAction Stop)
 }
 function Get-HttpStatusHeadersOnly([string]$url, [int]$timeoutSeconds = 15) {
     Add-Type -AssemblyName System.Net.Http

@@ -100,6 +100,10 @@ terminating anything, retains each Windows process handle while checking its
 creation time, and confirms each child has exited before stopping its parent.
 Unreadable or changed identities and unconfirmed exits fail the operation;
 restart and recovery cannot start a replacement after that failure.
+The legacy existing-stack upgrader uses the same stop boundary. Its listener plan
+retains creation times and rejects a changed/missing parent or unreadable inventory
+before stopping any observed process tree. A shared Python executable or missing
+script path no longer identifies a listener as Hermes.
 
 Hermes may select an existing absolute data directory through `hermesHome` in
 the watchdog configuration. An omitted/empty value retains `%LOCALAPPDATA%\hermes`;
