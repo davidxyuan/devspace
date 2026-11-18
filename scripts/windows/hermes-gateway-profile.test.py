@@ -3,6 +3,7 @@ import contextlib
 import ctypes
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -77,6 +78,147 @@ class ProfileTests(unittest.TestCase):
         self.call("switch", "--prepared", str(self.old))
         self.call("rollback")
         self.assertEqual(manager.read(self.home / ".devspace-gateway.json")["prepared"], str(self.new))
+
+    def pair_config(self, prepared):
+        return {"hermesPython": str(prepared / "python.exe"), "hermesServer": str(prepared / "server.py"),
+                "hermesWorkingDirectory": str(prepared), "hermesAgentWorkingDirectory": str(prepared / "agent"),
+                "hermesAgentExe": str(prepared / "agent.exe")}
+
+    def configuration(self):
+        install = self.base / "installation"
+        install.mkdir()
+        self.config = install / "devspace-watchdog.config.json"
+        self.original_config = json.dumps(dict(self.pair_config(self.old), stateDir=str(install),
+                                             hermesHome=str(self.home), custom={"keep": "資料"}), indent=4).encode("utf-8")
+        self.config.write_bytes(self.original_config)
+        Path(str(self.config) + ":notes").write_text("config stream")
+        self.addCleanup(patch.stopall)
+        patch.object(manager, "prepared_pair", side_effect=self.pair_config).start()
+
+    def test_configuration_and_profile_switch_and_restore_together(self):
+        self.configuration()
+        security = manager.profile_inventory(self.config.parent)[self.config.name]["security"]
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.assertEqual(manager.read(self.config)["hermesWorkingDirectory"], str(self.new))
+        self.assertEqual(manager.read(self.config)["custom"], {"keep": "資料"})
+        self.assertEqual(manager.profile_inventory(self.config.parent)[self.config.name]["security"], security)
+        self.call("rollback")
+        self.assertEqual(self.config.read_bytes(), self.original_config)
+        self.assertEqual(Path(str(self.config) + ":notes").read_text(), "config stream")
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+        self.assertTrue(list(self.config.parent.glob("*.previous")))
+        # Subsequent updates must retain the recorded configuration binding.
+        self.switch()
+        self.assertEqual(manager.read(self.config)["hermesWorkingDirectory"], str(self.new))
+        self.call("accept")
+
+    def test_wrong_configuration_is_rejected_before_profile_copy(self):
+        self.configuration()
+        config = json.loads(self.original_config)
+        for key, value in (("hermesHome", str(self.base)), ("hermesPython", "unrelated"), ("stateDir", str(self.base))):
+            with self.subTest(key=key):
+                self.config.write_text(json.dumps(dict(config, **{key: value})))
+                with self.assertRaises(ValueError):
+                    self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+                self.assertEqual(manager.profile_inventory(self.home), self.before)
+                self.assertFalse((self.control / "update.json").exists())
+
+    def test_configuration_publish_failure_can_restore_both(self):
+        self.configuration()
+        with patch.object(manager, "replace_configuration", side_effect=OSError("configuration locked")):
+            with self.assertRaisesRegex(OSError, "configuration locked"):
+                self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.assertEqual(manager.read(self.control / "update.json")["phase"], "exchanging")
+        with self.assertRaisesRegex(RuntimeError, "Incomplete profile exchange"):
+            self.call("run")
+        self.call("rollback")
+        self.assertEqual(self.config.read_bytes(), self.original_config)
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+
+    def test_exit_after_configuration_publish_stays_blocked_until_rollback(self):
+        self.configuration()
+        original = manager.replace_configuration
+        def interrupt(path, content):
+            original(path, content)
+            raise SystemExit("after configuration publish")
+        with patch.object(manager, "replace_configuration", side_effect=interrupt):
+            with self.assertRaises(SystemExit):
+                self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.assertEqual(manager.read(self.config)["hermesWorkingDirectory"], str(self.new))
+        with self.assertRaisesRegex(RuntimeError, "Incomplete profile exchange"):
+            self.call("run")
+        self.call("rollback")
+        self.assertEqual(self.config.read_bytes(), self.original_config)
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+
+    def test_exit_between_profile_moves_restores_bound_configuration(self):
+        self.configuration()
+        original = Path.rename
+        def interrupt(path, target):
+            original(path, target)
+            raise SystemExit("after profile move")
+        with patch.object(Path, "rename", interrupt):
+            with self.assertRaises(SystemExit):
+                self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.assertFalse(self.home.exists())
+        self.call("rollback")
+        self.assertEqual(self.config.read_bytes(), self.original_config)
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+
+    def test_configuration_restore_failure_never_releases_launch_barrier(self):
+        self.configuration()
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        with patch.object(manager, "replace_configuration", side_effect=OSError("restore locked")):
+            with self.assertRaisesRegex(OSError, "restore locked"):
+                self.call("rollback")
+        self.assertEqual(manager.read(self.control / "update.json")["phase"], "restoring")
+        with self.assertRaisesRegex(RuntimeError, "Incomplete profile exchange"):
+            self.call("run")
+        self.call("rollback")
+        self.assertEqual(self.config.read_bytes(), self.original_config)
+        self.assertEqual(manager.profile_inventory(self.home), self.before)
+
+    def test_external_configuration_change_blocks_rollback_without_overwriting_it(self):
+        self.configuration()
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.config.write_text('{"unknown":"preserve"}')
+        before = manager.profile_inventory(self.home)
+        with self.assertRaisesRegex(ValueError, "changed outside"):
+            self.call("rollback")
+        self.assertEqual(self.config.read_text(), '{"unknown":"preserve"}')
+        self.assertEqual(manager.profile_inventory(self.home), before)
+
+    def test_configuration_backup_corruption_blocks_profile_restore(self):
+        self.configuration()
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        record = manager.read(self.control / "update.json")
+        (self.control / record["id"] / "config-original.json").write_text("corrupt")
+        before = manager.profile_inventory(self.home)
+        with self.assertRaisesRegex(ValueError, "backup changed"):
+            self.call("rollback")
+        self.assertEqual(manager.profile_inventory(self.home), before)
+
+    def test_trial_configuration_must_match_before_accept_or_start(self):
+        self.configuration()
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.config.write_bytes(self.original_config)
+        with self.assertRaisesRegex(ValueError, "does not select the trial"):
+            self.call("accept")
+        self.validate_runtime.reset_mock()
+        with self.assertRaisesRegex(ValueError, "selected profile disagree"):
+            self.call("run")
+        self.validate_runtime.assert_not_called()
+
+    def test_bound_configuration_cannot_be_redirected_on_next_switch(self):
+        self.configuration()
+        self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
+        self.call("accept")
+        with self.assertRaisesRegex(ValueError, "bound to another"):
+            self.call("switch", "--prepared", str(self.old), "--config", str(self.base / "other.json"))
+        record = manager.read(self.control / "update.json")
+        manager.write(self.control / "update.json", dict(record, id="../outside"))
+        with self.assertRaisesRegex(ValueError, "ownership mismatch"):
+            self.call("run")
 
     @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true' and
                          os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',

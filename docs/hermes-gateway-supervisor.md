@@ -84,6 +84,32 @@ select another completed PM preparation. It requires a terminal state, no live
 recorded process, a verified empty process Job after any run, and no remaining
 gateway PID file. It does not stop a running gateway for the caller.
 
+For a paired Tray configuration, `switch --config <installation>/devspace-watchdog.config.json`
+also binds that existing file to the profile transaction. Before using this offline
+primitive, the caller must quiesce **all** profile/configuration writers, including
+GPT, Tray's control host and their launchers; the gateway exit check alone is not
+that barrier. This command does not implement that lifecycle orchestration or
+enable the production activation entry point.
+
+The configuration must identify its own installation, this separate managed home,
+and the currently verified Agent/GPT paths. The transaction verifies both prepared
+pairs, saves the exact original configuration bytes, changes only their five path
+fields, and publishes the configuration before entering `trial`. Subsequent
+switches retain the binding. Rollback uses the recorded path and restores both the
+complete profile and the original configuration before releasing the launch
+barrier. An unknown configuration edit or damaged backup blocks rollback rather
+than overwriting it; a failed configuration restore leaves launch blocked.
+
+Configuration publication uses Windows
+[ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+without ignore-ACL/merge flags, retaining destination DACLs and named streams. A
+`.previous` file remains beside each replaced configuration, in addition to the
+transaction's JSON copies. Preserve these private backups. OS replacement errors
+can require manual recovery from the retained files; this is not a power-loss
+atomic transaction, concurrent-writer protection, or a claim to preserve every
+configuration metadata field. The disposable four-stage integration probe now
+launches GPT from this same configuration after each switch and rollback.
+
 ```powershell
 # Use the candidate preparation's interpreter. The profile must already be stopped.
 & $candidatePython -I -B $manager switch --home $profile --prepared $candidatePrepared

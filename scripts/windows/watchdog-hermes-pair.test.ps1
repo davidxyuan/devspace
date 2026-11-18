@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Prepared, [Parameter(Mandatory)][string]$ProfileHome,
-      [Parameter(Mandatory)][string]$ReportPath)
+      [Parameter(Mandatory)][string]$ReportPath, [Parameter(Mandatory)][string]$ConfigPath)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
     $env:RUNNER_OS -cne 'Windows' -or $env:COMPUTERNAME -eq 'C02250073') {
@@ -7,7 +7,7 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hos
 }
 . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 function Assert-Pair([bool]$Value, [string]$Message) { if (-not $Value) { throw $Message } }
-foreach ($path in @($Prepared,$ProfileHome,$ReportPath)) {
+foreach ($path in @($Prepared,$ProfileHome,$ReportPath,$ConfigPath)) {
     Assert-Pair ([IO.Path]::GetFullPath($path).StartsWith([IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) 'Probe paths must stay inside the disposable runner directory.'
 }
 Assert-Pair (-not [IO.File]::Exists($ReportPath)) 'Previous probe evidence must be preserved.'
@@ -18,19 +18,14 @@ Assert-Pair ($state.phase -eq 'running' -and [IO.Path]::GetFullPath($state.prepa
 $verifiedOutput = & $preparation.python -I -B -X utf8 (Join-Path $PSScriptRoot 'hermes-gateway-supervisor.py') pair-config --prepared $Prepared --home $ProfileHome
 Assert-Pair ($LASTEXITCODE -eq 0) 'Prepared pair changed; no GPT service may be started.'
 $verifiedConfig = $verifiedOutput | ConvertFrom-Json
-$work = Join-Path $env:RUNNER_TEMP ('watchdog-hermes-pair-' + [guid]::NewGuid().ToString('N'))
-[void][IO.Directory]::CreateDirectory($work)
-$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
-$listener.Start()
-$port = $listener.LocalEndpoint.Port
-$listener.Stop()
-$config = @{
-    stateDir=$work; hermesEnabled=$true; hermesPort=$port
-    capabilities=@{hermes=@{filesystemScope='restricted';allowedRoots=@($ProfileHome);ownerMode=$false}}
+$config = Read-WatchdogJson $ConfigPath
+$work = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ConfigPath))
+Assert-Pair ($config.stateDir -eq $work) 'Probe configuration installation identity changed.'
+foreach ($entry in $verifiedConfig.PSObject.Properties) {
+    Assert-Pair ($config.($entry.Name) -ceq $entry.Value) "Configuration does not select the verified pair: $($entry.Name)"
 }
-foreach ($entry in $verifiedConfig.PSObject.Properties) { $config[$entry.Name] = $entry.Value }
-$configPath = Join-Path $work 'devspace-watchdog.config.json'
-Write-WatchdogAtomicJson $configPath $config 20
+$port = [int]$config.hermesPort
+Assert-Pair ($port -gt 0 -and $port -le 65535 -and $config.hermesEnabled) 'Invalid paired probe endpoint.'
 $observed = @{}
 $report = @{head=$env:GITHUB_SHA;startedAt=[DateTimeOffset]::UtcNow.ToString('o');passed=$false;
     prepared=$Prepared;home=$ProfileHome;config=$config;gatewayBefore=$state.gateway;processes=@();

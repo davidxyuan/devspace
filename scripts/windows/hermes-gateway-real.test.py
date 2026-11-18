@@ -91,6 +91,16 @@ assert not (HOME / ".env").exists(), "Never overwrite an existing profile config
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    gpt_port = s.getsockname()[1]
+config_dir = HOME.with_name(HOME.name + "-tray")
+config_dir.mkdir()
+CONFIG = config_dir / "devspace-watchdog.config.json"
+manager.write(CONFIG, dict(manager.prepared_pair(BASELINE), stateDir=str(config_dir), hermesHome=str(HOME),
+                           hermesEnabled=True, hermesPort=gpt_port,
+                           capabilities={"hermes": {"filesystemScope": "restricted", "allowedRoots": [str(HOME)], "ownerMode": False}}))
+original_config = CONFIG.read_bytes()
 (HOME / ".env").write_text(f"API_SERVER_KEY={secrets.token_hex(32)}\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT={port}\nGATEWAY_MULTIPLEX_PROFILES=false\n", encoding="utf-8")
 env = manager.isolated_environment(HOME)
 probe_env = {**env, **{key: os.environ[key] for key in
@@ -100,7 +110,7 @@ os.environ.update(env)
 sys.path.insert(0, str(PREPARED / "payload"))
 from gateway.control_socket import pause_gateway_for_update
 
-report = {"scope": "Two real pinned gateways with managed profile switch/rollback and Tray-launched paired GPT on the same profile; isolated loopback only, no installed task or chat/model call. Startup failure and data migration are injected test faults. The full Tray update transaction is not exercised.",
+report = {"scope": "Two real pinned gateways with coordinated offline profile/configuration switch/rollback and Tray-launched paired GPT using that configuration; isolated loopback only, no installed task or chat/model call. Startup failure and data migration are injected test faults. Automatic Tray lifecycle orchestration is not exercised.",
           "prepared": str(PREPARED), "revision": manager.read(PREPARED / "preparation.json")["revision"],
           "versions": [{"prepared": str(path), "upstreamRevision": receipt["upstreamRevision"],
                         "revision": receipt["revision"], "gptRevision": receipt["pair"]["revision"]}
@@ -197,7 +207,7 @@ def verify_pair(prepared):
     powershell = Path(env['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     command = [str(powershell), '-NoLogo', '-NoProfile', '-File',
                str(MANAGER.with_name('watchdog-hermes-pair.test.ps1')),
-               '-Prepared', str(prepared), '-ProfileHome', str(HOME), '-ReportPath', str(evidence)]
+               '-Prepared', str(prepared), '-ProfileHome', str(HOME), '-ReportPath', str(evidence), '-ConfigPath', str(CONFIG)]
     with evidence.with_suffix('.log').open('x', encoding='utf-8') as log:
         result = subprocess.run(command, env=probe_env, stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=subprocess.CREATE_NO_WINDOW, timeout=180)
@@ -238,11 +248,13 @@ def rollback(before, transaction):
     result = manager.profile_update(HOME, "rollback", None)
     assert result["phase"] == "rolled_back" and result["id"] == transaction["id"], result
     assert manager.profile_inventory(HOME) == before, "Rollback did not restore every file, stream and metadata field"
+    assert CONFIG.read_bytes() == original_config, "Rollback did not restore original configuration bytes"
     assert Path(manager.read(state_path)["prepared"]) == BASELINE
     with contextlib.closing(sqlite3.connect(HOME / "rollback-proof.sqlite3")) as db:
         assert db.execute("pragma integrity_check").fetchone() == ("ok",)
         assert db.execute("select * from history").fetchall() == [("baseline data",)]
-    event("full_profile_restored", {"transaction": result, "entries": len(before), "sqliteIntegrity": "ok"})
+    event("full_profile_restored", {"transaction": result, "entries": len(before), "sqliteIntegrity": "ok",
+                                    "originalConfigurationRestored": True})
 
 
 try:
@@ -256,7 +268,7 @@ try:
     (HOME / "rollback-proof.txt").write_text("baseline data", encoding="utf-8")
     (HOME / "rollback-proof.txt:notes").write_text("baseline stream", encoding="utf-8")
     before = manager.profile_inventory(HOME)
-    transaction = manager.profile_update(HOME, "switch", PREPARED)
+    transaction = manager.profile_update(HOME, "switch", PREPARED, CONFIG)
     event("selected_candidate", transaction)
     start(PREPARED, "candidate")
     first = ready(PREPARED)

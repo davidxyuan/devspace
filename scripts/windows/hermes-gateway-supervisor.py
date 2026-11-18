@@ -338,7 +338,69 @@ def stopped_profile(home, owner):
     return state
 
 
-def profile_update(home, action, prepared):
+def replace_configuration(path, content):
+    """Keep the destination's DACL/streams and retain both files on an OS error."""
+    path = plain_path(path)
+    if not path.is_file() or path.stat().st_nlink != 1:
+        raise ValueError("Configuration must be an existing unlinked file")
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    backup = temporary.with_suffix(".previous")
+    with temporary.open("xb") as output:
+        output.write(content)
+        output.flush()
+        os.fsync(output.fileno())
+    replace = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
+    replace.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                        wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+    replace.restype = wintypes.BOOL
+    # No IGNORE_ACL/MERGE flags. The original file is also kept beside its replacement.
+    if not replace(str(path), str(temporary), str(backup), 0, None, None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def configuration_snapshot(path, home, old_prepared, prepared):
+    path = plain_path(path).resolve(strict=True)
+    if (path.name != "devspace-watchdog.config.json" or path.stat().st_nlink != 1
+            or any(path.is_relative_to(root) for root in (home, control_directory(home), old_prepared, prepared))):
+        raise ValueError("Configuration must be separate from profile and prepared code")
+    original = path.read_bytes()
+    config = json.loads(original.decode("utf-8-sig"))
+    if config.get("stateDir") != str(path.parent) or config.get("hermesHome") != str(home):
+        raise ValueError("Configuration installation/profile identity mismatch")
+    for key, value in prepared_pair(old_prepared).items():
+        if config.get(key) != value:
+            raise ValueError("Configuration does not select the current prepared pair")
+    config.update(prepared_pair(prepared))
+    candidate = json.dumps(config, indent=2).encode("utf-8")
+    return {"path": str(path), "originalSha256": hashlib.sha256(original).hexdigest(),
+            "candidateSha256": hashlib.sha256(candidate).hexdigest()}, original, candidate
+
+
+def checked_configuration(record, folder):
+    config = record.get("configuration")
+    if not config:
+        return None
+    path = plain_path(Path(config["path"]))
+    if (path.name != "devspace-watchdog.config.json" or not path.is_file()
+            or path.stat().st_nlink != 1
+            or any(path.is_relative_to(Path(root)) for root in
+                   (record["home"], str(folder.parent), record["oldPrepared"], record["prepared"]))):
+        raise ValueError("Configuration journal path is invalid")
+    saved = {}
+    for name, digest in (("original", "originalSha256"), ("candidate", "candidateSha256")):
+        content = plain_path(folder / ("config-" + name + ".json")).read_bytes()
+        if hashlib.sha256(content).hexdigest() != config[digest]:
+            raise ValueError("Configuration backup changed")
+        decoded = json.loads(content.decode("utf-8-sig"))
+        if decoded.get("stateDir") != str(path.parent) or decoded.get("hermesHome") != record["home"]:
+            raise ValueError("Configuration backup identity mismatch")
+        saved[name] = content
+    if path.read_bytes() not in saved.values():
+        raise ValueError("Configuration changed outside this update; preserved")
+    return path, saved
+
+
+def profile_update(home, action, prepared, config=None):
     """Offline switch/rollback for new managed profiles; retain every prior directory."""
     plain_path(home)
     control = plain_path(control_directory(home))
@@ -351,6 +413,11 @@ def profile_update(home, action, prepared):
         if action == "switch":
             if previous and previous["phase"] not in SETTLED_UPDATES:
                 raise RuntimeError("Previous update requires accept or rollback")
+            if previous and previous.get("configuration"):
+                bound = Path(previous["configuration"]["path"])
+                if config and config.resolve() != bound:
+                    raise ValueError("Profile is bound to another Tray configuration")
+                config = bound
             state = stopped_profile(home, owner)
             if prepared is None:
                 raise ValueError("switch requires --prepared")
@@ -361,12 +428,17 @@ def profile_update(home, action, prepared):
                 prepared_runtime(runtime, require_interpreter=False)
             if prepared == Path(state["prepared"]):
                 raise ValueError("Candidate is already selected")
+            configuration = configuration_snapshot(config, home, Path(state["prepared"]), prepared) if config else None
             before = profile_inventory(home)
             transaction = uuid.uuid4().hex
             folder = control / transaction
             folder.mkdir()
             record = {"id": transaction, "profileId": owner["profileId"], "home": str(home),
                       "phase": "copying", "oldPrepared": state["prepared"], "prepared": str(prepared)}
+            if configuration:
+                record["configuration"], original_config, candidate_config = configuration
+                (folder / "config-original.json").write_bytes(original_config)
+                (folder / "config-candidate.json").write_bytes(candidate_config)
             write(folder / "before.json", before)
             write(path, record)
             next_home = folder / "next"
@@ -387,6 +459,9 @@ def profile_update(home, action, prepared):
             write(path, record)
             home.rename(folder / "previous")
             next_home.rename(home)
+            if configuration:
+                config_path, saved = checked_configuration(record, folder)
+                replace_configuration(config_path, saved["candidate"])
             record["phase"] = "trial"
             write(path, record)
             return record
@@ -400,12 +475,15 @@ def profile_update(home, action, prepared):
         folder = plain_path(control / record["id"])
         backup = folder / "previous"
         before = read(folder / "before.json")
+        configuration = checked_configuration(record, folder)
         if action == "accept":
             if record["phase"] != "trial":
                 raise RuntimeError("Incomplete exchange cannot be accepted")
             state = stopped_profile(home, owner)
             if state["prepared"] != record["prepared"] or profile_inventory(backup) != before:
                 raise ValueError("Selected candidate or backup changed")
+            if configuration and configuration[0].read_bytes() != configuration[1]["candidate"]:
+                raise ValueError("Configuration does not select the trial pair")
             record["phase"] = "accepted"
         else:
             if record["phase"] == "copying" and "copyExitCode" not in record:
@@ -424,6 +502,8 @@ def profile_update(home, action, prepared):
                 backup.rename(home)
             elif not home.exists() or profile_inventory(home) != before:
                 raise ValueError("Original profile cannot be identified; rollback blocked")
+            if configuration and configuration[0].read_bytes() != configuration[1]["original"]:
+                replace_configuration(configuration[0], configuration[1]["original"])
             record["phase"] = "rolled_back"
         write(path, record)
         return record
@@ -619,9 +699,12 @@ def main():
     parser.add_argument("action", choices=("init", "run", "stop", "status", "check", "switch", "rollback", "accept", "pair-config"))
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--prepared", type=Path)
+    parser.add_argument("--config", type=Path, help="Quiesced Tray configuration to switch with the profile")
     args = parser.parse_args()
     home = plain_path(args.home).resolve()
     path = home / ".devspace-gateway.json"
+    if args.config and args.action != "switch":
+        parser.error("--config is only valid for switch; recovery uses the recorded configuration")
     if args.action == "pair-config":
         if not args.prepared:
             parser.error("pair-config requires --prepared")
@@ -648,7 +731,7 @@ def main():
                      "phase": "stopped", "starts": []})
         return 0
     if args.action in ("switch", "rollback", "accept"):
-        print(json.dumps(profile_update(home, args.action, args.prepared), indent=2))
+        print(json.dumps(profile_update(home, args.action, args.prepared, args.config), indent=2))
         return 0
     state = read(path)
     if state["schema"] not in (1, 2) or state["home"] != str(home):
@@ -692,8 +775,19 @@ def main():
             if owner != {"home": str(home), "profileId": state["profileId"]}:
                 raise ValueError("Profile transaction ownership mismatch")
             journal = control_directory(home) / "update.json"
-            if journal.exists() and read(journal)["phase"] not in SETTLED_UPDATES | {"trial"}:
-                raise RuntimeError("Incomplete profile exchange; rollback before starting")
+            if journal.exists():
+                update = read(journal)
+                if update["phase"] not in SETTLED_UPDATES | {"trial"}:
+                    raise RuntimeError("Incomplete profile exchange; rollback before starting")
+                if update.get("configuration"):
+                    if (update.get("home") != str(home) or update.get("profileId") != state["profileId"]
+                            or not re.fullmatch(r"[0-9a-f]{32}", update.get("id", ""))):
+                        raise ValueError("Update journal ownership mismatch")
+                    config_path, saved = checked_configuration(update, control_directory(home) / update["id"])
+                    selected = "original" if update["phase"] == "rolled_back" else "candidate"
+                    selected_prepared = update["oldPrepared"] if selected == "original" else update["prepared"]
+                    if config_path.read_bytes() != saved[selected] or state["prepared"] != selected_prepared:
+                        raise ValueError("Configuration and selected profile disagree; launch blocked")
             if read(path)["prepared"] != state["prepared"]:
                 raise RuntimeError("Selected runtime changed while waiting for profile lock")
         root, python = prepared_runtime(Path(state["prepared"]))
