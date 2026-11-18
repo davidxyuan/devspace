@@ -105,12 +105,33 @@ class ProfileTests(unittest.TestCase):
         self.call("rollback")
         self.assertEqual(self.config.read_bytes(), self.original_config)
         self.assertEqual(Path(str(self.config) + ":notes").read_text(), "config stream")
+        self.assertEqual(manager.profile_inventory(self.config)["."]["security"], security)
         self.assertEqual(manager.profile_inventory(self.home), self.before)
-        self.assertTrue(list(self.config.parent.glob("*.previous")))
+        retained = list(self.config.parent.glob("*.previous/" + self.config.name))
+        self.assertTrue(any(p.read_bytes() == self.original_config for p in retained))
         # Subsequent updates must retain the recorded configuration binding.
         self.switch()
         self.assertEqual(manager.read(self.config)["hermesWorkingDirectory"], str(self.new))
         self.call("accept")
+
+    def test_configuration_copy_failure_preserves_original_metadata(self):
+        self.configuration()
+        before = manager.profile_inventory(self.config)
+        with patch.object(manager.subprocess, "run", return_value=SimpleNamespace(returncode=8)):
+            with self.assertRaisesRegex(RuntimeError, "Configuration copy failed"):
+                manager.replace_configuration(self.config, b"candidate")
+        self.assertEqual(manager.profile_inventory(self.config), before)
+
+    def test_configuration_rename_failure_retains_original_and_backup(self):
+        self.configuration()
+        before = manager.profile_inventory(self.config)
+        with patch.object(manager.os, "replace", side_effect=OSError("configuration occupied")):
+            with self.assertRaisesRegex(OSError, "configuration occupied"):
+                manager.replace_configuration(self.config, b"candidate")
+        self.assertEqual(manager.profile_inventory(self.config), before)
+        retained = list(self.config.parent.glob("*.previous/" + self.config.name))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(manager.profile_inventory(retained[0]), before)
 
     def test_wrong_configuration_is_rejected_before_profile_copy(self):
         self.configuration()

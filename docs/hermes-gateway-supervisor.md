@@ -102,15 +102,18 @@ than overwriting it; a failed configuration restore leaves launch blocked.
 After accept/rollback completes, unrelated configuration settings may change;
 the selected Agent/GPT paths, installation and profile identity must still agree.
 
-Configuration publication uses Windows
-[ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
-without ignore-ACL/merge flags, retaining destination DACLs and named streams. A
-`.previous` file remains beside each replaced configuration, in addition to the
-transaction's JSON copies. Preserve these private backups. OS replacement errors
-can require manual recovery from the retained files; this is not a power-loss
-atomic transaction, concurrent-writer protection, or a claim to preserve every
-configuration metadata field. The disposable four-stage integration probe now
-launches GPT from this same configuration after each switch and rollback.
+Configuration publication uses the same metadata-preserving Robocopy operation
+as profile copies. It checks streams, attributes, times and owner/group/DACL on
+both a backup and a replacement before editing the replacement's main stream.
+A same-volume rename publishes it without the inherited-ACL merging performed by
+[ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew).
+A `.previous` directory retains the original configuration beside each update,
+in addition to the transaction's JSON copies; copy logs and staging directories
+also remain. Preserve these private backups. Copy or replacement errors keep
+launch blocked and can require manual recovery. This is not a power-loss atomic
+transaction, concurrent-writer protection, or a claim to preserve every Windows
+metadata field. The disposable four-stage integration probe launches GPT from
+this same configuration after each switch and rollback.
 
 ```powershell
 # Use the candidate preparation's interpreter. The profile must already be stopped.

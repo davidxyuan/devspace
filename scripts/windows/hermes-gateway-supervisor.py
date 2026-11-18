@@ -339,23 +339,37 @@ def stopped_profile(home, owner):
 
 
 def replace_configuration(path, content):
-    """Keep the destination's DACL/streams and retain both files on an OS error."""
+    """Copy metadata before a same-volume rename; retain the original backup."""
     path = plain_path(path)
     if not path.is_file() or path.stat().st_nlink != 1:
         raise ValueError("Configuration must be an existing unlinked file")
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     backup = temporary.with_suffix(".previous")
-    with temporary.open("xb") as output:
+    before = profile_inventory(path)
+    for directory in (backup, temporary):
+        directory.mkdir()
+        with (directory / "copy.log").open("wb") as log:
+            result = subprocess.run([str(Path(os.environ["SYSTEMROOT"]) / "System32" / "robocopy.exe"),
+                                     str(path.parent), str(directory), path.name, "/COPY:DATSO",
+                                     "/R:0", "/W:0", "/NP"], stdout=log, stderr=subprocess.STDOUT,
+                                    creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
+        if result.returncode < 0 or result.returncode >= 8:
+            raise RuntimeError(f"Configuration copy failed ({result.returncode}); original retained")
+        if profile_inventory(directory / path.name) != before:
+            raise RuntimeError("Configuration copy metadata changed; original retained")
+    if profile_inventory(path) != before:
+        raise RuntimeError("Configuration changed during copy; original retained")
+    replacement = temporary / path.name
+    with replacement.open("r+b") as output:
         output.write(content)
+        output.truncate()
         output.flush()
         os.fsync(output.fileno())
-    replace = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
-    replace.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
-                        wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
-    replace.restype = wintypes.BOOL
-    # No IGNORE_ACL/MERGE flags. The original file is also kept beside its replacement.
-    if not replace(str(path), str(temporary), str(backup), 0, None, None):
-        raise ctypes.WinError(ctypes.get_last_error())
+    expected = profile_inventory(replacement)
+    # ReplaceFileW merges inherited ACEs; a same-volume rename preserves the copied descriptor.
+    os.replace(replacement, path)
+    if profile_inventory(path) != expected:
+        raise RuntimeError("Published configuration metadata changed; launch remains blocked")
 
 
 def configuration_snapshot(path, home, old_prepared, prepared):
