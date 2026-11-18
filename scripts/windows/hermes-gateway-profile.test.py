@@ -220,6 +220,24 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ownership mismatch"):
             self.call("run")
 
+    def test_settled_update_allows_unrelated_settings_but_not_runtime_redirection(self):
+        self.configuration()
+        for action in ("accept", "rollback"):
+            target = self.new if action == "accept" else self.old
+            with self.subTest(action=action):
+                self.call("switch", "--prepared", str(target), "--config", str(self.config))
+                self.call(action)
+                record = manager.read(self.control / "update.json")
+                folder = self.control / record["id"]
+                config = manager.read(self.config)
+                manager.write(self.config, dict(config, custom={"changed": True}))
+                manager.checked_configuration(record, folder)
+                self.assertEqual(manager.read(self.config)["custom"], {"changed": True})
+                manager.write(self.config, dict(config, hermesServer="unrelated"))
+                with self.assertRaisesRegex(ValueError, "selected profile disagree"):
+                    self.call("run")
+                manager.write(self.config, config)
+
     @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true' and
                          os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
                          'Distinct file-owner fixture requires the disposable elevated Windows runner')

@@ -395,7 +395,16 @@ def checked_configuration(record, folder):
         if decoded.get("stateDir") != str(path.parent) or decoded.get("hermesHome") != record["home"]:
             raise ValueError("Configuration backup identity mismatch")
         saved[name] = content
-    if path.read_bytes() not in saved.values():
+    current = path.read_bytes()
+    if record["phase"] in SETTLED_UPDATES:
+        selected = "original" if record["phase"] == "rolled_back" else "candidate"
+        expected = json.loads(saved[selected].decode("utf-8-sig"))
+        actual = json.loads(current.decode("utf-8-sig"))
+        for key in ("stateDir", "hermesHome", "hermesPython", "hermesServer", "hermesWorkingDirectory",
+                    "hermesAgentWorkingDirectory", "hermesAgentExe"):
+            if actual.get(key) != expected.get(key):
+                raise ValueError("Configuration and selected profile disagree; launch blocked")
+    elif current not in saved.values():
         raise ValueError("Configuration changed outside this update; preserved")
     return path, saved
 
@@ -786,7 +795,8 @@ def main():
                     config_path, saved = checked_configuration(update, control_directory(home) / update["id"])
                     selected = "original" if update["phase"] == "rolled_back" else "candidate"
                     selected_prepared = update["oldPrepared"] if selected == "original" else update["prepared"]
-                    if config_path.read_bytes() != saved[selected] or state["prepared"] != selected_prepared:
+                    if (state["prepared"] != selected_prepared
+                            or update["phase"] == "trial" and config_path.read_bytes() != saved[selected]):
                         raise ValueError("Configuration and selected profile disagree; launch blocked")
             if read(path)["prepared"] != state["prepared"]:
                 raise RuntimeError("Selected runtime changed while waiting for profile lock")

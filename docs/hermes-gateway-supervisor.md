@@ -99,6 +99,8 @@ switches retain the binding. Rollback uses the recorded path and restores both t
 complete profile and the original configuration before releasing the launch
 barrier. An unknown configuration edit or damaged backup blocks rollback rather
 than overwriting it; a failed configuration restore leaves launch blocked.
+After accept/rollback completes, unrelated configuration settings may change;
+the selected Agent/GPT paths, installation and profile identity must still agree.
 
 Configuration publication uses Windows
 [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
