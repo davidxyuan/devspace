@@ -1,5 +1,11 @@
 # Tray／watchdog 正式版準備：執行結果
 
+## 11/21 Hermes GPT 安裝候選
+
+`tray-20261121-candidate.1` 的全新安裝使用 Hermes GPT 0.18.0。Git 來源和隨附的 Python wheel 對應提交 `95ea04659b6fda027f970ff75d70fe00a99e772a`。wheel 內含網頁資源，安裝前會依 `stack-release-manifest.json` 核對 SHA-256。[wheel 建置紀錄](https://github.com/davidxyuan/hermes-gpt/actions/runs/44784541993/attempts/2)
+
+更新 Hermes GPT 時，從同一提交通過測試的建置取得 wheel，一併更新版本、提交、分支與 wheel 雜湊，替換 `scripts/windows/wheels` 中的檔案。執行全新 Windows 安裝測試，核對實裝的來源、MCP 讀取，以及從安裝環境取得的 HTML、JavaScript、CSS。此候選沿用 DevSpace 1.0.8 與 Hermes Agent 0.21.1。TYO 仍需實機驗證。
+
 ## 11/11 套用 Hermes 資料回復保護
 
 已將下方 11/9 的四檔修正套入候選分支。直接啟用的 12 組保護案例、更新介面的 Hermes 保留／DevSpace 回復案例、真實 SQLite 回復、Setup 呼叫、安裝交易與 50 項套件檢查均通過；故意不相容來源的預檢錯誤屬預期負向案例。測試資料與服務替身均在獨立目錄，沒有切換 TYO 正式服務。當日輸出保留於 `outputs/tray-20261111-activation.log`、`tray-20261111-component-worker.log`、`tray-20261111-activation-database.log`。

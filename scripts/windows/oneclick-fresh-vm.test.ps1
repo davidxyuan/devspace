@@ -282,6 +282,10 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     $hermesMcp = Get-Content -LiteralPath $hermesMcpPath -Raw | ConvertFrom-Json
     if (-not $hermesMcp.passed) { throw 'Installed Hermes MCP evidence did not confirm success.' }
 
+    $uiOutput = & ([string]$watchdog.hermesPython) -I -B (Join-Path $packageRoot 'scripts\windows\stack-hermes-ui-smoke.py') $hermesDir $releasePolicy.components.'hermes-gpt'.version
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Hermes UI did not serve its packaged assets.' }
+    $hermesUi = $uiOutput | ConvertFrom-Json
+
     $stopwatch.Stop()
     if ($MaxElapsedSeconds -gt 0 -and $stopwatch.Elapsed.TotalSeconds -gt $MaxElapsedSeconds) {
         throw ("Fresh One-Click install exceeded the performance budget: {0}s > {1}s." -f [math]::Round($stopwatch.Elapsed.TotalSeconds,1), $MaxElapsedSeconds)
@@ -295,6 +299,7 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         componentHeads = $componentHeads
         state = 'core-installed-skip-start'
         isolatedHermesMcp = @{ passed=$true; toolCount=$hermesMcp.toolCount; evidence='hermes-mcp-smoke.json' }
+        isolatedHermesUi = $hermesUi
         ngrokCredentialRoundTrip = $true
         devspaceProfile = 'full/stateless-json/skills/subagents'
         hermesProfile = 'owner/direct/full'

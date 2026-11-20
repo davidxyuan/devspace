@@ -18,6 +18,10 @@ try {
   changed.channel = "stable";
   fs.writeFileSync(file, JSON.stringify(changed));
   assert.throws(() => readReleasePolicy(root), /promotion evidence/);
+  const missingWheel = structuredClone(policy);
+  delete missingWheel.components["hermes-gpt"].wheelSha256;
+  fs.writeFileSync(file, JSON.stringify(missingWheel));
+  assert.throws(() => readReleasePolicy(root), /wheel digest/);
   for (const [id, pin] of Object.entries(policy.components)) {
     const target = installationTarget(id);
     assert.equal(target.commit, pin.revision);

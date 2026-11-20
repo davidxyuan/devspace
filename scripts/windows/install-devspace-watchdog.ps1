@@ -731,7 +731,8 @@ if ($needsNode) {
 if ($installDevSpace -and -not $CliPath) {
     $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
 }
-if ($installHermes -and [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
+$pendingHermesWheel = Join-Path $HermesDir '.git\oneclick-pending-wheel'
+if ($installHermes -and -not [IO.File]::Exists($pendingHermesWheel) -and [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
     ([IO.File]::Exists((Join-Path $HermesDir '.venv\Scripts\python.exe')) -or ($PythonPath -and [IO.File]::Exists($PythonPath)))) { $SkipHermesInstall = $true }
 $hermesAgentPath = if ($SkipHermesInstall) { Find-HermesAgentExe } else { Install-HermesAgentIfNeeded }
 $hermesAgentWorkingDirectory = if ($hermesAgentPath) { Find-HermesAgentSourceRoot $hermesAgentPath } else { '' }
@@ -893,17 +894,29 @@ if ($installHermes -and $hermesCapabilities.filesystemScope -eq "full") {
 $hermesCommandPath = ""
 if ($installHermes) {
     if (-not $SkipHermesInstall) {
+        $pin = $releasePolicy.components.'hermes-gpt'
+        $pinnedRepository = 'https://github.com/' + [string]$pin.repository + '.git'
         if (-not (Test-Path -LiteralPath $HermesDir)) {
             Write-Host "Cloning hermes-gpt..."
             $gitPath = Find-GitForClone
-            $pin = $releasePolicy.components.'hermes-gpt'
-            $pinnedRepository = 'https://github.com/' + [string]$pin.repository + '.git'
             if ($PSBoundParameters.ContainsKey('HermesRepo') -and $HermesRepo.TrimEnd('/') -ine $pinnedRepository) { Fail 'A custom Hermes repository requires its own pinned release manifest.' }
             Invoke-Checked { & $gitPath clone --no-checkout -- $pinnedRepository $HermesDir } 'git clone hermes-gpt failed.'
             Invoke-Checked { & $gitPath -C $HermesDir checkout --detach ([string]$pin.revision) } 'Pinned Hermes checkout failed.'
-            $installedHead = (& $gitPath -C $HermesDir rev-parse HEAD).Trim()
-            if ($LASTEXITCODE -ne 0 -or $installedHead -cne $pin.revision) { Fail 'Hermes revision does not match the release manifest.' }
+            [IO.File]::WriteAllText($pendingHermesWheel, [string]$pin.revision)
         } elseif (-not (Test-Path -LiteralPath (Join-Path $HermesDir 'server.py'))) { Fail "Existing Hermes directory is not a recognized Hermes-GPT installation: $HermesDir" }
+
+        $wheel = $null
+        if ([IO.File]::Exists($pendingHermesWheel)) {
+            $gitPath = Find-GitForClone
+            $installedHead = & $gitPath -C $HermesDir rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $installedHead -cne $pin.revision -or [IO.File]::ReadAllText($pendingHermesWheel) -cne $pin.revision) { Fail 'Pending Hermes installation does not match the release revision.' }
+            $origin = & $gitPath -C $HermesDir remote get-url origin
+            if ($LASTEXITCODE -ne 0 -or $origin -cne $pinnedRepository) { Fail 'Pending Hermes installation has a different source.' }
+            $changes = & $gitPath -C $HermesDir status --porcelain
+            if ($LASTEXITCODE -ne 0 -or $changes) { Fail 'Pending Hermes source has local changes.' }
+            $wheel = Join-Path $PSScriptRoot ("wheels\hermes_gpt-" + $pin.version + "-py3-none-any.whl")
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash -ine $pin.wheelSha256) { Fail 'Bundled Hermes GPT wheel integrity check failed.' }
+        }
 
         $venvPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $venvPython)) {
@@ -913,7 +926,10 @@ if ($installHermes) {
         }
 
         $requirementsPath = Join-Path $HermesDir "requirements.txt"
-        if (Test-Path -LiteralPath $requirementsPath) {
+        if ($wheel) {
+            Invoke-Checked { & $venvPython -m pip install --disable-pip-version-check $wheel } "Pinned Hermes GPT wheel installation failed."
+            [IO.File]::Delete($pendingHermesWheel)
+        } elseif (Test-Path -LiteralPath $requirementsPath) {
             Write-Host "Installing hermes-gpt Python dependencies..."
             Invoke-Checked { & $venvPython -m pip install -r $requirementsPath } "pip install hermes-gpt requirements failed."
         }
