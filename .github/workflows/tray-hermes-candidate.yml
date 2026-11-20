@@ -24,6 +24,10 @@ on:
         description: Full official Agent commit; apply reviewed Windows patch, stop on conflict, never deploy
         required: true
         type: string
+      verify_scheduled_launcher:
+        description: Verify the official Windows launcher's stop and scheduled retry behavior
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -108,6 +112,10 @@ jobs:
           if ($LASTEXITCODE) { throw 'Gateway test profile initialization failed' }
           & $python -I -B scripts/windows/hermes-gateway-real.test.py --prepared $prepared --baseline $baseline --home $profile --report "$prepared/gateway-real.json" *> "$prepared/gateway-real.log"
           if ($LASTEXITCODE) { throw 'Real gateway lifecycle test failed; inspect preserved evidence' }
+      - name: Verify official launcher exit codes and scheduled crash recovery
+        if: inputs.verify_scheduled_launcher
+        shell: pwsh
+        run: ./.github/tests/hermes-launcher.ps1
       - name: Preserve evidence (not an installable release)
         if: always()
         uses: actions/upload-artifact@v4
