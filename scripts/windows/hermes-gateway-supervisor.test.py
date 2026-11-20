@@ -218,6 +218,7 @@ class SupervisorTests(unittest.TestCase):
             with self.subTest(exit_code=exit_code):
                 self.state = {"phase": "stopped", "starts": []}
                 record = self.home / f"unobserved-{exit_code}.json"
+                launcher = self.home / f"launcher-{exit_code}.json"
                 release = self.home / f"release-{exit_code}"
                 descendant = (
                     "import json,psutil,time; from pathlib import Path; p=psutil.Process(); "
@@ -226,9 +227,10 @@ class SupervisorTests(unittest.TestCase):
                     f"while not Path({str(release)!r}).exists() and time.monotonic()<deadline: time.sleep(.01)"
                 )
                 code = (
-                    "import subprocess,sys,time; from pathlib import Path\n"
+                    "import json,psutil,subprocess,sys,time; from pathlib import Path\n"
                     f"if Path({str(record)!r}).exists(): raise SystemExit(0)\n"
-                    f"subprocess.Popen([sys.executable,'-I','-B','-c',{descendant!r}]); "
+                    f"child=subprocess.Popen([sys.executable,'-I','-B','-c',{descendant!r}]); "
+                    f"Path({str(launcher)!r}).write_text(json.dumps([child.pid,psutil.Process(child.pid).create_time()])); "
                     "deadline=time.monotonic()+8\n"
                     f"while not Path({str(record)!r}).exists() and time.monotonic()<deadline: time.sleep(.01)\n"
                     f"raise SystemExit({exit_code})"
@@ -242,14 +244,18 @@ class SupervisorTests(unittest.TestCase):
                     self.assertEqual(len(self.state["starts"]), 1)
                     self.assertEqual(self.state["phase"], "attention_required")
                     self.assertGreater(self.state["jobActiveProcesses"], 0)
+                    self.assertTrue(launcher.is_file())
                     pid, started = json.loads(record.read_text())
                     process = psutil.Process(pid)
                     self.assertEqual(process.create_time(), started)
                     self.assertTrue(process.is_running(), "Closing ownership must preserve the child")
                 finally:
                     release.touch()
-                    if record.exists():
-                        pid, started = json.loads(record.read_text())
+                    # A Windows venv launcher can retain the log after its interpreter exits.
+                    for identity in (record, launcher):
+                        if not identity.exists():
+                            continue
+                        pid, started = json.loads(identity.read_text())
                         try:
                             process = psutil.Process(pid)
                             if process.create_time() == started:
