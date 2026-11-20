@@ -44,6 +44,16 @@ foreach ($invalidRepo in @('https://github.com/asimons81/hermes-gpt.git', 'https
 $tempRoot = Join-Path $env:TEMP ('devspace-python-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
+    $partial = Join-Path $tempRoot 'partial-hermes'
+    [void][IO.Directory]::CreateDirectory((Join-Path $partial '.git'))
+    $pending = Join-Path $partial '.git\oneclick-pending-wheel'
+    [IO.File]::WriteAllText($pending, 'test-revision')
+    try {
+        & $scriptPath -InstallDir (Join-Path $tempRoot 'state') -Components Hermes -HermesDir $partial -SkipHermesInstall -UserMode -NoElevate -SkipStart -SkipNgrok -NodePath (Join-Path $tempRoot 'missing-node.exe')
+        throw 'An unfinished Hermes install was accepted.'
+    } catch { if ($_.Exception.Message -notlike 'Cannot skip an unfinished Hermes GPT installation.*') { throw } }
+    if ([IO.File]::ReadAllText($pending) -ne 'test-revision') { throw 'The unfinished installation was changed.' }
+
     $good = Join-Path $tempRoot 'python-good.cmd'
     $old = Join-Path $tempRoot 'python-old.cmd'
     $bad = Join-Path $tempRoot 'python-bad.cmd'

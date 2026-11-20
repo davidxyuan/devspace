@@ -666,7 +666,18 @@ foreach ($entry in $installedParameters.GetEnumerator()) {
     }
 }
 if (-not $PSBoundParameters.ContainsKey('SkipNgrok') -and $existingWatchdogConfig -and $existingWatchdogConfig.manageNgrok -eq $false) { $SkipNgrok = $true }
-if ($existingWatchdogConfig.hermesEnabled -and [IO.File]::Exists([string]$existingWatchdogConfig.hermesServer) -and [IO.File]::Exists([string]$existingWatchdogConfig.hermesPython) -and -not $PSBoundParameters.ContainsKey('HermesDir')) { $SkipHermesInstall = $true }
+$pendingHermesWheel = Join-Path $HermesDir '.git\oneclick-pending-wheel'
+if ($installHermes) {
+    if ([IO.File]::Exists($pendingHermesWheel)) {
+        if ($SkipHermesInstall) { Fail 'Cannot skip an unfinished Hermes GPT installation.' 'Rerun without -SkipHermesInstall to verify and finish the pinned installation.' }
+    } else {
+        $reuseConfiguredHermes = $existingWatchdogConfig.hermesEnabled -and -not $PSBoundParameters.ContainsKey('HermesDir') -and
+            [IO.File]::Exists([string]$existingWatchdogConfig.hermesServer) -and [IO.File]::Exists([string]$existingWatchdogConfig.hermesPython)
+        $reuseLocalHermes = [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
+            ([IO.File]::Exists((Join-Path $HermesDir '.venv\Scripts\python.exe')) -or [IO.File]::Exists([string]$PythonPath))
+        if ($reuseConfiguredHermes -or $reuseLocalHermes) { $SkipHermesInstall = $true }
+    }
+}
 $MachineName = if ($MachineName) { $MachineName } else { [System.Net.Dns]::GetHostName() }
 $machineSlug = ConvertTo-Slug $MachineName
 if (-not $machineSlug) { Fail 'Missing machine name.' 'Pass a URL-safe MachineName.' }
@@ -731,9 +742,6 @@ if ($needsNode) {
 if ($installDevSpace -and -not $CliPath) {
     $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
 }
-$pendingHermesWheel = Join-Path $HermesDir '.git\oneclick-pending-wheel'
-if ($installHermes -and -not [IO.File]::Exists($pendingHermesWheel) -and [IO.File]::Exists((Join-Path $HermesDir 'server.py')) -and
-    ([IO.File]::Exists((Join-Path $HermesDir '.venv\Scripts\python.exe')) -or ($PythonPath -and [IO.File]::Exists($PythonPath)))) { $SkipHermesInstall = $true }
 $hermesAgentPath = if ($SkipHermesInstall) { Find-HermesAgentExe } else { Install-HermesAgentIfNeeded }
 $hermesAgentWorkingDirectory = if ($hermesAgentPath) { Find-HermesAgentSourceRoot $hermesAgentPath } else { '' }
 
@@ -901,8 +909,8 @@ if ($installHermes) {
             $gitPath = Find-GitForClone
             if ($PSBoundParameters.ContainsKey('HermesRepo') -and $HermesRepo.TrimEnd('/') -ine $pinnedRepository) { Fail 'A custom Hermes repository requires its own pinned release manifest.' }
             Invoke-Checked { & $gitPath clone --no-checkout -- $pinnedRepository $HermesDir } 'git clone hermes-gpt failed.'
-            Invoke-Checked { & $gitPath -C $HermesDir checkout --detach ([string]$pin.revision) } 'Pinned Hermes checkout failed.'
             [IO.File]::WriteAllText($pendingHermesWheel, [string]$pin.revision)
+            Invoke-Checked { & $gitPath -C $HermesDir checkout --detach ([string]$pin.revision) } 'Pinned Hermes checkout failed.'
         } elseif (-not (Test-Path -LiteralPath (Join-Path $HermesDir 'server.py'))) { Fail "Existing Hermes directory is not a recognized Hermes-GPT installation: $HermesDir" }
 
         $wheel = $null
