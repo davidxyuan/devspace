@@ -164,7 +164,7 @@ const remoteFixture = [
       "package-lock.json": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.0", lockfileVersion: 3, requires: true, packages: { "": { name: "@waishnav/devspace", bin: { devspace: "dist/cli.js" }, version: "1.0.0" } } },
       "dist/cli.js": "console.log('active');",
       "dist/config.js": `exports.loadConfig = () => ({stateDir: ${JSON.stringify(path.join(root, "data"))} });`,
-      "dist/user-config.js": `exports.devspaceConfigDir = () => ${JSON.stringify(installDir)};`,
+      "dist/user-config.js": `exports.devspaceConfigDir = () => ${JSON.stringify(installDir)}; exports.devspaceConfigPath = () => ${JSON.stringify(path.join(installDir, "config.json"))};`,
       "dist/db/client.js": "exports.databasePath = dir => require('node:path').join(dir, 'devspace.sqlite');",
       "scripts/windows/devspace-stack-setup.cjs": "// management",
       "scripts/windows/stack-management.cjs": "// management",

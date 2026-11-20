@@ -18,12 +18,15 @@ async function resolveDatabase(cli, installDir) {
   const cwd = process.cwd();
   try {
     process.chdir(path.dirname(path.resolve(cli)));
-    const { loadConfig } = await load("config.js");
-    const { devspaceConfigDir } = await load("user-config.js");
-    const { databasePath } = await load("db/client.js");
+    const { devspaceConfigDir, devspaceConfigPath } = await load("user-config.js");
     const configDir = path.resolve(devspaceConfigDir(process.env));
     if (fs.realpathSync.native(configDir).toLowerCase() !== fs.realpathSync.native(installDir).toLowerCase())
       throw new Error("Runtime configuration directory differs from the managed installation.");
+    // v1.1 migrates config.json during loadConfig, before the activation backup exists.
+    if (path.relative(configDir, devspaceConfigPath(process.env)) !== "config.json")
+      throw new Error("This runtime uses a configuration format the Tray cannot update or restore.");
+    const { loadConfig } = await load("config.js");
+    const { databasePath } = await load("db/client.js");
     const stateDir = loadConfig(process.env).stateDir;
     if (typeof stateDir !== "string" || !path.isAbsolute(stateDir)) throw new Error("Runtime did not return an absolute state directory.");
     const db = path.resolve(databasePath(stateDir));
@@ -35,6 +38,6 @@ async function resolveDatabase(cli, installDir) {
 
 if (require.main === module) {
   resolveDatabase(process.argv[2], process.argv[3]).then(value => process.stdout.write(JSON.stringify({ databasePath: value })))
-    .catch(() => { console.error("Cannot verify DevSpace database/configuration paths; update blocked before activation."); process.exitCode = 1; });
+    .catch(() => { console.error("Cannot verify the managed DevSpace config.json and database paths; update blocked before activation."); process.exitCode = 1; });
 }
 module.exports = { resolveDatabase };

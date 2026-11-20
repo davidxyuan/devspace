@@ -37,7 +37,7 @@ try {
     write(path.join(root, "dist/cli.js"), "// stopped fixture runtime");
     write(path.join(root, "dist/config.js"), `export function loadConfig() { return { stateDir: ${JSON.stringify(state)} }; }`);
     write(path.join(root, "dist/db/client.js"), "import {join} from 'node:path'; export const databasePath = dir => join(dir, 'devspace.sqlite');");
-    write(path.join(root, "dist/user-config.js"), `export const devspaceConfigDir = () => ${JSON.stringify(install)};`);
+    write(path.join(root, "dist/user-config.js"), `export const devspaceConfigDir = () => ${JSON.stringify(install)}; export const devspaceConfigPath = () => ${JSON.stringify(path.join(install, "config.json"))};`);
     for (const name of ["devspace-stack-setup.cjs", "stack-management.cjs", "stack-host-management.ps1", "install-devspace-watchdog-tray.ps1"])
       write(path.join(root, "scripts/windows", name), "// fixture");
   }
@@ -104,6 +104,14 @@ if ([IO.File]::Exists($absent)) { throw 'Candidate database survived rollback of
   const freshRun = spawnSync("powershell.exe", ["-NoProfile", "-File", harness], { encoding: "utf8", windowsHide: true, timeout: 30000 });
   assert.equal(freshRun.status, 0, freshRun.stdout + freshRun.stderr);
   assert.deepEqual(JSON.parse(fs.readFileSync(configPath)), freshConfig);
+  // The newer runtime migrates the legacy file even on a configuration read.
+  const legacyPath = path.join(install, "config.json"), legacyBytes = fs.readFileSync(legacyPath);
+  write(path.join(candidateRoot, "dist/user-config.js"), `export const devspaceConfigDir = () => ${JSON.stringify(install)}; export const devspaceConfigPath = () => ${JSON.stringify(path.join(install, "config.jsonc"))};`);
+  write(path.join(candidateRoot, "dist/config.js"), `import fs from "node:fs"; export function loadConfig() { fs.renameSync(${JSON.stringify(legacyPath)}, ${JSON.stringify(legacyPath + ".v1.0.bak")}); return { stateDir: ${JSON.stringify(state)} }; }`);
+  const preview = spawnSync(process.execPath, [path.join(scripts, "stack-database-path.cjs"), firstInstall.cliPath, install], { encoding: "utf8" });
+  assert.equal(preview.status, 1, preview.stdout + preview.stderr);
+  assert.deepEqual(fs.readFileSync(legacyPath), legacyBytes);
+  assert.ok(!fs.existsSync(legacyPath + ".v1.0.bak"));
   console.log("Activation rollback restores both configuration and the custom-state database.");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });

@@ -144,11 +144,11 @@ try {
     if ($candidate.kind -eq 'devspace') {
         $resolver = Join-Path $PSScriptRoot 'stack-database-path.cjs'
         $newPathOutput = & ([string]$change.config.nodePath) $resolver ([string]$change.config.cliPath) $InstallDir
-        if ($LASTEXITCODE -ne 0) { throw 'Candidate does not support the database rollback contract; update is blocked.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the candidate uses the managed config.json and supports database rollback; update is blocked.' }
         $databasePath = [string](($newPathOutput | ConvertFrom-Json).databasePath)
         if ([string]$config.cliPath) {
             $oldPathOutput = & ([string]$config.nodePath) $resolver ([string]$config.cliPath) $InstallDir
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the installed DevSpace database path; update is blocked.' }
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the installed DevSpace config.json and database paths; update is blocked.' }
             if (-not $databasePath -or $databasePath -ne [string](($oldPathOutput | ConvertFrom-Json).databasePath)) { throw 'Candidate changes the DevSpace database location; an explicit data migration is required.' }
         } elseif ($candidate.action -ne 'install' -or -not $databasePath) { throw 'Previous DevSpace runtime identity is missing.' }
     }
