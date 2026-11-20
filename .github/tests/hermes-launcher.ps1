@@ -15,12 +15,13 @@ if ($task.Principals.Principal.RunLevel -ne 'LeastPrivilege' -or $task.Principal
     throw 'Official task settings do not match the restart scenario'
 }
 # Exercise the real scheduler without installing a logon trigger. One retry suffices.
-$task.Triggers.RemoveAll()
+$triggers = $task.SelectSingleNode("*[local-name()='Triggers']")
+$triggers.RemoveAll()
 $trigger = $xml.CreateElement('TimeTrigger', $task.NamespaceURI)
 $start = $xml.CreateElement('StartBoundary', $task.NamespaceURI)
 $start.InnerText = (Get-Date).AddSeconds(15).ToString('yyyy-MM-ddTHH:mm:ss')
 [void]$trigger.AppendChild($start)
-[void]$task.Triggers.AppendChild($trigger)
+[void]$triggers.AppendChild($trigger)
 $task.Settings.RestartOnFailure.Count = '1'
 $registered = Register-ScheduledTask -TaskName $name -TaskPath '\' -Xml $xml.OuterXml
 $receipt = [ordered]@{ task=$name; source=$env:AGENT_REVISION; exitCodes=(Get-Content (Join-Path $directory 'exit-codes.json') -Raw | ConvertFrom-Json); runs=@(); removed=$false; passed=$false }
