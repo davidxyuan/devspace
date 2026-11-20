@@ -38,6 +38,7 @@ jobs:
       # Push validation stays on the reviewed official baseline; newer revisions require explicit dispatch.
       AGENT_REVISION: ${{ inputs.agent_revision || 'd923a5eb487a17c0a68801bba9ef0f56c81040a8' }}
       BASELINE_REVISION: 297552a9d646119871391d202509822cd86330df
+      LAUNCHER_REVISION: bc3398ee9d1c490e417e401fbadc68e2d6556e23
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,10 +89,26 @@ jobs:
           if ($LASTEXITCODE) { throw 'GPT pinned checkout failed' }
       - name: Prepare frozen Agent and rebuild paired GPT dependencies
         shell: pwsh
+        env:
+          VERIFY_LAUNCHER: ${{ inputs.verify_scheduled_launcher }}
         run: |
           $gpt = (Get-Content scripts/windows/stack-release-manifest.json -Raw | ConvertFrom-Json).components.'hermes-gpt'
           foreach ($pin in @(@{Name='baseline'; Revision=$env:BASELINE_REVISION}, @{Name='candidate'; Revision=$env:AGENT_REVISION})) {
-            python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source "$env:RUNNER_TEMP/hermes-$($pin.Name)-source" --revision $pin.Revision --patch scripts/windows/patches/hermes-windows-control-pipe.patch --gpt-source "$env:RUNNER_TEMP/hermes-gpt-source" --gpt-revision $gpt.revision --out "$env:RUNNER_TEMP/hermes-pm-$($pin.Name)"
+            $source = Join-Path $env:RUNNER_TEMP "hermes-$($pin.Name)-source"
+            $patch = (Resolve-Path scripts/windows/patches/hermes-windows-control-pipe.patch).Path
+            if ($pin.Name -eq 'candidate' -and $env:VERIFY_LAUNCHER -eq 'true') {
+              git -C $source fetch --no-tags --depth=2 https://github.com/davidxyuan/hermes-agent.git $env:LAUNCHER_REVISION
+              if ($LASTEXITCODE) { throw 'Launcher fix fetch failed' }
+              $parent = git -C $source rev-parse "$env:LAUNCHER_REVISION^"
+              if ($LASTEXITCODE -or $parent -cne $pin.Revision) { throw 'Launcher fix has a different upstream base' }
+              $delta = Join-Path $env:RUNNER_TEMP 'launcher.patch'
+              git -C $source diff --binary "--output=$delta" $parent $env:LAUNCHER_REVISION --
+              if ($LASTEXITCODE) { throw 'Cannot extract the pinned launcher fix' }
+              $combined = Join-Path $env:RUNNER_TEMP 'candidate-windows.patch'
+              [IO.File]::WriteAllBytes($combined, [byte[]]([IO.File]::ReadAllBytes($patch) + [IO.File]::ReadAllBytes($delta)))
+              $patch = $combined
+            }
+            python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source $source --revision $pin.Revision --patch $patch --gpt-source "$env:RUNNER_TEMP/hermes-gpt-source" --gpt-revision $gpt.revision --out "$env:RUNNER_TEMP/hermes-pm-$($pin.Name)"
             if ($LASTEXITCODE) { throw "$($pin.Name) preparation failed; preserved diagnostics below" }
           }
       - name: Verify bounded external gateway supervision with real test processes

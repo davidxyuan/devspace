@@ -11,10 +11,10 @@ if ($LASTEXITCODE) { throw 'Official launcher exit-code checks failed' }
 [xml]$xml = Get-Content -LiteralPath (Join-Path $directory 'task.xml') -Raw
 $task = $xml.Task
 if ($task.Principals.Principal.RunLevel -ne 'LeastPrivilege' -or $task.Principals.Principal.LogonType -ne 'InteractiveToken' -or
-    $task.Settings.RestartOnFailure.Interval -ne 'PT1M' -or $task.Settings.RestartOnFailure.Count -lt 1) {
+    $task.Settings.RestartOnFailure -or $task.Actions.Exec.Arguments -cne ('//B //Nologo "' + (Join-Path $directory 'scheduled\gateway.vbs') + '" --retry-task')) {
     throw 'Official task settings do not match the restart scenario'
 }
-# Exercise the real scheduler without installing a logon trigger. One retry suffices.
+# Exercise the real scheduler without installing a logon trigger.
 $triggers = $task.SelectSingleNode("*[local-name()='Triggers']")
 $triggers.RemoveAll()
 $trigger = $xml.CreateElement('TimeTrigger', $task.NamespaceURI)
@@ -22,9 +22,8 @@ $start = $xml.CreateElement('StartBoundary', $task.NamespaceURI)
 $start.InnerText = (Get-Date).AddSeconds(15).ToString('yyyy-MM-ddTHH:mm:ss')
 [void]$trigger.AppendChild($start)
 [void]$triggers.AppendChild($trigger)
-$task.Settings.RestartOnFailure.Count = '1'
 $registered = Register-ScheduledTask -TaskName $name -TaskPath '\' -Xml $xml.OuterXml
-$receipt = [ordered]@{ task=$name; source=$env:AGENT_REVISION; exitCodes=(Get-Content (Join-Path $directory 'exit-codes.json') -Raw | ConvertFrom-Json); runs=@(); removed=$false; passed=$false }
+$receipt = [ordered]@{ task=$name; source=$env:AGENT_REVISION; launcherRevision=$env:LAUNCHER_REVISION; exitCodes=(Get-Content (Join-Path $directory 'exit-codes.json') -Raw | ConvertFrom-Json); runs=@(); removed=$false; passed=$false }
 try {
     $deadline = [DateTime]::UtcNow.AddMinutes(3)
     do {
@@ -38,6 +37,12 @@ try {
     $receipt.lastTaskResult = $info.LastTaskResult
     if ($files.Count -ne 2 -or ($receipt.runs.code -join ',') -ne '37,0' -or $status.State -ne 'Ready' -or $info.LastTaskResult -ne 0) {
         throw "Expected one scheduled recovery after exit 37. Runs=$($files.Count), state=$($status.State), result=$($info.LastTaskResult)"
+    }
+    $first, $second = $receipt.runs
+    $receipt.retrySeconds = $second.time - $first.time
+    if ($first.launcherPid -ne $second.launcherPid -or $first.launcherStarted -ne $second.launcherStarted -or
+        ($first.pid -eq $second.pid -and $first.started -eq $second.started) -or $receipt.retrySeconds -lt 59) {
+        throw 'Expected two distinct children of the same launcher after its retry delay'
     }
     $receipt.passed = $true
 } finally {

@@ -9,13 +9,18 @@ from unittest.mock import patch
 
 
 def fixture(expected):
+    import psutil
+
     home = Path(os.environ["HERMES_HOME"]).resolve(strict=True)
     assert home == expected and home.parent.name.startswith("HermesLauncherTest-")
     count = len(list(home.glob("launch-*.json")))
     codes = json.loads((home / "codes.json").read_text())
     code = codes[count] if count < len(codes) else 99
+    child = psutil.Process()
+    launcher = next(p for p in child.parents() if p.name().lower() in {"wscript.exe", "cscript.exe"})
     with (home / f"launch-{count + 1}.json").open("x") as output:
-        json.dump({"pid": os.getpid(), "code": code, "time": time.time()}, output)
+        json.dump({"pid": child.pid, "started": child.create_time(), "code": code, "time": time.time(),
+                   "launcherPid": launcher.pid, "launcherStarted": launcher.create_time()}, output)
     return code
 
 
@@ -41,10 +46,13 @@ def prepare(directory, user):
         ("failure", 1, False, 1), ("crash", 37, False, 37), ("handoff", 75, False, 75),
     ]:
         launcher = render(name, [code], owned)
-        observed = subprocess.run(["cscript.exe", "//Nologo", str(launcher)], timeout=20).returncode
+        # A scheduled launcher must park immediately for all three explicit stop outcomes.
+        args = ["--retry-task"] if expected == 0 else []
+        observed = subprocess.run(["cscript.exe", "//Nologo", str(launcher), *args], timeout=20).returncode
         receipt = json.loads((launcher.parent / "launch-1.json").read_text())
         assert receipt["code"] == code and observed == expected, (name, receipt, observed, expected)
-        report[name] = {"child": code, "launcher": observed}
+        assert len(list(launcher.parent.glob("launch-*.json"))) == 1
+        report[name] = {"child": code, "launcher": observed, "args": args}
     print(json.dumps(report))
     (directory / "exit-codes.json").write_text(json.dumps(report))
     launcher = render("scheduled", [37, 0])
