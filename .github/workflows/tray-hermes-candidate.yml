@@ -28,6 +28,10 @@ on:
         description: Verify the official Windows launcher's stop and scheduled retry behavior
         type: boolean
         default: false
+      candidate_gpt_revision:
+        description: Optional full Hermes GPT fork commit for the candidate only. Restore tests use the manifest baseline.
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -39,6 +43,7 @@ jobs:
       AGENT_REVISION: ${{ inputs.agent_revision || 'd923a5eb487a17c0a68801bba9ef0f56c81040a8' }}
       BASELINE_REVISION: 297552a9d646119871391d202509822cd86330df
       LAUNCHER_REVISION: bc3398ee9d1c490e417e401fbadc68e2d6556e23
+      CANDIDATE_GPT_REVISION: ${{ inputs.candidate_gpt_revision }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,6 +64,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:AGENT_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Full commit SHA required' }
+          if ($env:CANDIDATE_GPT_REVISION -and $env:CANDIDATE_GPT_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Full GPT commit SHA required' }
           if ($env:AGENT_REVISION -ceq $env:BASELINE_REVISION) { throw 'Upgrade requires two distinct revisions' }
           foreach ($pin in @(@{Name='baseline'; Revision=$env:BASELINE_REVISION}, @{Name='candidate'; Revision=$env:AGENT_REVISION})) {
             $source = Join-Path $env:RUNNER_TEMP "hermes-$($pin.Name)-source"
@@ -96,6 +102,15 @@ jobs:
           foreach ($pin in @(@{Name='baseline'; Revision=$env:BASELINE_REVISION}, @{Name='candidate'; Revision=$env:AGENT_REVISION})) {
             $source = Join-Path $env:RUNNER_TEMP "hermes-$($pin.Name)-source"
             $patch = (Resolve-Path scripts/windows/patches/hermes-windows-control-pipe.patch).Path
+            $gptSource = Join-Path $env:RUNNER_TEMP 'hermes-gpt-source'
+            $gptRevision = $gpt.revision
+            if ($pin.Name -eq 'candidate' -and $env:CANDIDATE_GPT_REVISION) {
+              $gptRevision = $env:CANDIDATE_GPT_REVISION
+              git -C $gptSource fetch --no-tags --depth=1 origin $gptRevision
+              if ($LASTEXITCODE) { throw 'Candidate GPT fetch failed' }
+              git -C $gptSource checkout --detach $gptRevision
+              if ($LASTEXITCODE) { throw 'Candidate GPT checkout failed' }
+            }
             if ($pin.Name -eq 'candidate' -and $env:VERIFY_LAUNCHER -eq 'true') {
               git -C $source fetch --no-tags --depth=2 https://github.com/davidxyuan/hermes-agent.git $env:LAUNCHER_REVISION
               if ($LASTEXITCODE) { throw 'Launcher fix fetch failed' }
@@ -108,7 +123,7 @@ jobs:
               [IO.File]::WriteAllBytes($combined, [byte[]]([IO.File]::ReadAllBytes($patch) + [IO.File]::ReadAllBytes($delta)))
               $patch = $combined
             }
-            python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source $source --revision $pin.Revision --patch $patch --gpt-source "$env:RUNNER_TEMP/hermes-gpt-source" --gpt-revision $gpt.revision --out "$env:RUNNER_TEMP/hermes-pm-$($pin.Name)"
+            python -I -B scripts/windows/prepare-hermes-pm-candidate.py --source $source --revision $pin.Revision --patch $patch --gpt-source $gptSource --gpt-revision $gptRevision --out "$env:RUNNER_TEMP/hermes-pm-$($pin.Name)"
             if ($LASTEXITCODE) { throw "$($pin.Name) preparation failed; preserved diagnostics below" }
           }
       - name: Verify bounded external gateway supervision with real test processes
