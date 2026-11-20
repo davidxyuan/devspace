@@ -348,9 +348,11 @@ test("the Claude bash tool reports a missing configured shell instead of running
   const shellPath = join(tmpdir(), "devspace-missing-shell-test", "bash.exe");
   const context = await fixture(t, { surface: "claude", shellPath });
   const workspace = structuredContent(await callOpen(context.client, context.project, "missing-shell"));
+
   const response = await context.client.callTool({
     name: "bash", arguments: { workspace_id: workspace.workspace_id, command: "pwd" },
   });
+
   assert.equal(response.isError, true);
   assert.deepEqual(response.content, [{ type: "text", text: `Custom shell path not found: ${shellPath}` }]);
 });

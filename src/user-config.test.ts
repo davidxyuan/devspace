@@ -20,6 +20,7 @@ import {
 test("a legacy config.json migrates once to config.jsonc and keeps a backup", (t) => {
   const { configDir, env } = tempConfigDir(t);
   const shellPath = String.raw`C:\Program Files\Git\bin\bash.exe`;
+
   const legacy = JSON.stringify({
     host: "0.0.0.0",
     port: 8787,
@@ -30,6 +31,7 @@ test("a legacy config.json migrates once to config.jsonc and keeps a backup", (t
     artifactsEnabled: true,
     subagents: true,
   });
+
   writeFileSync(join(configDir, "config.json"), legacy);
   writeFileSync(join(configDir, "auth.json"), JSON.stringify({
     ownerToken: "test-owner-token",

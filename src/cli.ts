@@ -634,7 +634,12 @@ function runConfigCommand(args: string[]): void {
     setDevspaceConfigValue(["tools", key], value);
   } else if (files.config.tools.shellPath !== undefined) {
     setDevspaceConfigValue(["tools", key], undefined);
+  } else {
+    console.log("The shellPath setting is already unset.");
+
+    return;
   }
+
   console.log(`Updated ${files.configPath}`);
   console.log("Restart `devspace serve` to apply this change to a running server.");
 }

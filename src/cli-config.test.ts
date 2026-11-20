@@ -12,8 +12,11 @@ test("config set shellPath stores a path with spaces and clears it", (t) => {
   t.after(() => rmSync(configDir, { recursive: true, force: true }));
   const env = { ...process.env, DEVSPACE_CONFIG_DIR: configDir };
   const shellPath = join(configDir, "Custom Git", "bash.exe");
+
   const setShell = (value: string) =>
     execFileSync(process.execPath, ["bin/devspace.js", "config", "set", "shellPath", value], { env });
+
+  assert.match(setShell("null").toString(), /already unset/);
   setShell(shellPath);
   assert.equal(loadDevspaceFiles(env).config.tools.shellPath, shellPath);
   setShell("null");
