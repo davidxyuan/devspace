@@ -11,6 +11,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { MAX_RUNNING_EXECUTIONS } from "./code-mode-executions.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import type { LocalAgentProviderAvailability } from "./local-agent-availability.js";
@@ -307,7 +308,7 @@ test("Codex process tools bound model-facing yield windows to 12 seconds", async
 });
 
 test("Claude edit and bash tools accept snake_case runtime inputs", async (t) => {
-  const context = await fixture(t, { surface: "claude", uiEnabled: false });
+  const context = await fixture(t, { surface: "claude", uiEnabled: false, shellPath: getShellConfig().shell });
 
   const workspaceId = structuredContent(
     await callOpen(context.client, context.project, "snake-case-claude"),
@@ -341,6 +342,17 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
 
   // SAFETY: The surrounding checks or construction already match this type.
   assert.match(shell.result as string, /nested/i);
+});
+
+test("the Claude bash tool reports a missing configured shell instead of running the default", async (t) => {
+  const shellPath = join(tmpdir(), "devspace-missing-shell-test", "bash.exe");
+  const context = await fixture(t, { surface: "claude", shellPath });
+  const workspace = structuredContent(await callOpen(context.client, context.project, "missing-shell"));
+  const response = await context.client.callTool({
+    name: "bash", arguments: { workspace_id: workspace.workspace_id, command: "pwd" },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.content, [{ type: "text", text: `Custom shell path not found: ${shellPath}` }]);
 });
 
 test("read rejects a symlink that leaves the workspace", async (t) => {
@@ -1380,6 +1392,7 @@ async function fixture(
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
     subagents?: SubagentsConfig;
     surface?: ToolSurfaceName;
+    shellPath?: string;
     uiEnabled?: boolean;
     experimentalCodeMode?: boolean;
     captureActivity?: boolean;
@@ -1418,6 +1431,7 @@ async function fixture(
 
   const loadedConfig = loadConfig(writeTestDevspaceConfig(join(root, ".config"), {
     server: { port: 1 },
+    tools: { shellPath: options.shellPath },
     workspaces: { allowedRoots: [root], worktreeRoot: join(root, ".worktrees") },
     skills: { agentDir },
     subagents: {

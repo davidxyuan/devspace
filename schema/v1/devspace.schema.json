@@ -100,6 +100,10 @@
       "default": {},
       "type": "object",
       "properties": {
+        "shellPath": {
+          "description": "Local Bash executable for the Claude tool surface.",
+          "type": "string"
+        },
         "mode": {
           "description": "Optional override. When unset, DevSpace picks the tool surface from the connecting MCP host.",
           "type": "string",

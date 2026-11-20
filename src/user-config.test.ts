@@ -19,15 +19,18 @@ import {
 
 test("a legacy config.json migrates once to config.jsonc and keeps a backup", (t) => {
   const { configDir, env } = tempConfigDir(t);
-  writeFileSync(join(configDir, "config.json"), JSON.stringify({
+  const shellPath = String.raw`C:\Program Files\Git\bin\bash.exe`;
+  const legacy = JSON.stringify({
     host: "0.0.0.0",
     port: 8787,
     tool_mode: "claude",
+    shellPath,
     allowedRoots: ["/work"],
     publicBaseUrl: "https://devspace.example.com",
     artifactsEnabled: true,
     subagents: true,
-  }));
+  });
+  writeFileSync(join(configDir, "config.json"), legacy);
   writeFileSync(join(configDir, "auth.json"), JSON.stringify({
     ownerToken: "test-owner-token",
   }));
@@ -40,14 +43,16 @@ test("a legacy config.json migrates once to config.jsonc and keeps a backup", (t
   assert.equal(files.config.artifacts.enabled, true);
   assert.equal(files.config.subagents?.enabled, true);
   assert.equal(files.config.tools.mode, "claude");
+  assert.equal(files.config.tools.shellPath, shellPath);
   assert.equal(files.config.ui.enabled, true);
   assert.equal(files.auth.ownerToken, "test-owner-token");
   assert.equal(existsSync(join(configDir, "config.json")), false);
   assert.equal(existsSync(join(configDir, "config.jsonc")), true);
-  assert.equal(existsSync(join(configDir, "config.json.v1.0.bak")), true);
+  assert.equal(readFileSync(join(configDir, "config.json.v1.0.bak"), "utf8"), legacy);
 
   const nextLoad = loadDevspaceFiles(env);
   assert.equal(nextLoad.migratedLegacyConfig, false);
+  assert.equal(nextLoad.config.tools.shellPath, shellPath);
 });
 
 test("concurrent loads migrate a legacy config exactly once", async (t) => {

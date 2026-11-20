@@ -24,6 +24,7 @@ const storageConfigSchema = z.object({
 }).strict().prefault({});
 
 const toolsConfigSchema = z.object({
+  shellPath: z.string().optional().describe("Local Bash executable for the Claude tool surface."),
   mode: z.enum(["claude", "codex"]).optional().meta({
     description:
       "Optional override. When unset, DevSpace picks the tool surface from the connecting MCP host.",

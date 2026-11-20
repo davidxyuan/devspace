@@ -219,9 +219,7 @@ function registerShellTool(context: ToolRegistrationContext): void {
         workingDirectory,
       );
 
-      const response = await runShellTool(input, {
-        cwd,
-      });
+      const response = await runShellTool(input, { cwd }, config.shellPath);
 
       if (response.isError) {
         logFailedToolResponse(

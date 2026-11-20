@@ -22,6 +22,7 @@ export interface AgentConfig {
 }
 
 export interface ServerConfig extends AgentConfig {
+  shellPath?: string;
   host: string;
   port: number;
   oauth: OAuthConfig;
@@ -65,6 +66,13 @@ function agentConfig(files: DevspaceFiles, env: NodeJS.ProcessEnv, subagents: Su
   };
 }
 
+export function configuredShellPath(files: DevspaceFiles, env: NodeJS.ProcessEnv): string | undefined {
+  const path = env.DEVSPACE_SHELL_PATH ?? files.config.tools.shellPath;
+
+  // Resolve in the host process before a tool changes to the requested workspace.
+  return path ? resolve(path) : undefined;
+}
+
 /** Strict config for `devspace serve`: requires the owner token. Subagents stay an explicit opt-in. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const files = loadDevspaceFiles(env);
@@ -103,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     allowedHosts: normalizeAllowedHosts(derivedAllowedHosts),
     publicBaseUrl,
     toolSurfaceOverride: stored.tools.mode,
+    shellPath: configuredShellPath(files, env),
     experimentalCodeMode: env.DEVSPACE_EXPERIMENTAL_CODE_MODE === "1",
     uiEnabled: stored.ui.enabled,
     activity: stored.activity,

@@ -26,6 +26,7 @@ test("an empty config dir loads secure-by-default server config", (t) => {
   const { env } = serverConfigDir(t);
   const defaults = loadConfig(env);
   assert.equal(defaults.host, "127.0.0.1");
+  assert.equal(defaults.shellPath, undefined);
   assert.deepEqual(defaults.allowedRoots, [process.cwd()]);
   assert.deepEqual(defaults.allowedHosts, ["localhost", "127.0.0.1", "::1"]);
   assert.equal(defaults.experimentalCodeMode, false);
@@ -60,7 +61,7 @@ test("the config file and persisted auth configure the server, and the env owner
       worktreeRoot: "~/trees",
     },
     storage: { stateDir: "~/state" },
-    tools: { mode: "claude" },
+    tools: { mode: "claude", shellPath: "custom/bash" },
     ui: { enabled: false },
     artifacts: { enabled: true, maxFileBytes: 321 },
     skills: { enabled: false, paths: ["~/skills"], agentDir: "~/agent" },
@@ -103,6 +104,8 @@ test("the config file and persisted auth configure the server, and the env owner
     "example.internal",
   ]);
   assert.equal(configured.toolSurfaceOverride, "claude");
+  assert.equal(configured.shellPath, resolve("custom/bash"));
+  assert.equal(loadConfig({ ...env, DEVSPACE_SHELL_PATH: "override/bash" }).shellPath, resolve("override/bash"));
   assert.equal(configured.uiEnabled, false);
   assert.equal(configured.stateDir, resolve(homedir(), "state"));
   assert.equal(configured.worktreeRoot, resolve(homedir(), "trees"));

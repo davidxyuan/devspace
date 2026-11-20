@@ -13,7 +13,7 @@ import {
   installAgentsSkill,
   renderAgentsSkill,
 } from "./agents-skill.js";
-import { loadAgentConfig, loadConfig } from "./config.js";
+import { configuredShellPath, loadAgentConfig, loadConfig } from "./config.js";
 import type { AgentConfig, ServerConfig } from "./config.js";
 import { resolveCliWorkspaceContext } from "./cli-workspace.js";
 import {
@@ -582,7 +582,7 @@ async function runDoctor(): Promise<void> {
   console.log(`Node: ${process.version} (${nodeVersionStatus()})`);
   console.log(`Platform: ${process.platform} ${process.arch}`);
   console.log(`Git: ${checkGitAvailable()}`);
-  console.log(`Bash shell: ${checkBashShell()}`);
+  console.log(`Bash shell: ${checkBashShell(configuredShellPath(files, process.env))}`);
   console.log(`SQLite: ${await checkSqlite()}`);
 
   try {
@@ -618,20 +618,23 @@ function runConfigCommand(args: string[]): void {
     throw new Error(`Unknown config command: ${subcommand}`);
   }
 
-  if (key !== "publicBaseUrl") {
-    throw new Error("Only `devspace config set publicBaseUrl <url|null>` is supported right now.");
+  if (key !== "publicBaseUrl" && key !== "shellPath") {
+    throw new Error("Supported settings: publicBaseUrl and shellPath.");
   }
 
   const value = rest.join(" ").trim();
 
   if (!value) {
-    throw new Error("Missing publicBaseUrl value.");
+    throw new Error(`Missing ${key} value.`);
   }
 
-  setDevspaceConfigValue(
-    ["server", "publicBaseUrl"],
-    normalizeOptionalPublicBaseUrl(value),
-  );
+  if (key === "publicBaseUrl") {
+    setDevspaceConfigValue(["server", key], normalizeOptionalPublicBaseUrl(value));
+  } else if (value.toLowerCase() !== "null") {
+    setDevspaceConfigValue(["tools", key], value);
+  } else if (files.config.tools.shellPath !== undefined) {
+    setDevspaceConfigValue(["tools", key], undefined);
+  }
   console.log(`Updated ${files.configPath}`);
   console.log("Restart `devspace serve` to apply this change to a running server.");
 }
@@ -686,6 +689,7 @@ function printHelp(): void {
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
+      "  devspace config set shellPath <path|null>",
       "  devspace worktrees prune Prune managed worktrees unused for 3 days",
       "  devspace show-changes <review-ref> [--json]",
       "  devspace agents targets [--json]  List usable subagent providers and profiles",
@@ -1443,9 +1447,9 @@ function checkGitAvailable(): string {
   }
 }
 
-function checkBashShell(): string {
+function checkBashShell(shellPath?: string): string {
   try {
-    const { shell, args } = getShellConfig();
+    const { shell, args } = getShellConfig(shellPath);
 
     return `${shell} ${args.join(" ")}`;
   } catch (error) {
