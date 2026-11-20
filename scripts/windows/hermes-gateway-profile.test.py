@@ -52,6 +52,21 @@ class ProfileTests(unittest.TestCase):
         self.call("switch", "--prepared", str(self.new))
         return manager.read(self.control / "update.json")
 
+    def test_init_preserves_a_profile_created_while_claiming_ownership(self):
+        self.home = self.base / "other-profile"
+        control = manager.control_directory(self.home)
+        mkdir = Path.mkdir
+        def concurrent_mkdir(path, *args, **kwargs):
+            mkdir(path, *args, **kwargs)
+            if path == control:
+                mkdir(self.home)
+                (self.home / "keep").write_text("existing data")
+        with patch.object(Path, "mkdir", concurrent_mkdir), self.assertRaises(FileExistsError):
+            self.call("init", "--prepared", str(self.new))
+        self.assertEqual([p.name for p in self.home.iterdir()], ["keep"])
+        self.assertEqual((self.home / "keep").read_text(), "existing data")
+        self.assertFalse(control.exists())
+
     def test_switch_then_full_rollback_restores_sqlite_streams_permissions_and_version(self):
         record = self.switch()
         self.assertEqual(record["phase"], "trial")
@@ -182,6 +197,9 @@ class ProfileTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.call("switch", "--prepared", str(self.new), "--config", str(self.config))
         self.assertFalse(self.home.exists())
+        with self.assertRaises(FileExistsError):
+            self.call("init", "--prepared", str(self.new))
+        self.assertFalse(self.home.exists(), "Initialization must leave the rollback destination free")
         self.call("rollback")
         self.assertEqual(self.config.read_bytes(), self.original_config)
         self.assertEqual(manager.profile_inventory(self.home), self.before)

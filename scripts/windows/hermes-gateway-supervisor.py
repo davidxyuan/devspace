@@ -745,9 +745,13 @@ def main():
         prepared = args.prepared.resolve(strict=True)
         if prepared.is_relative_to(home) or home.is_relative_to(prepared):
             raise ValueError("Prepared code and profile data must be separate")
-        home.mkdir()  # Never adopt an existing user profile, even an empty directory.
         control = plain_path(control_directory(home))
-        control.mkdir()  # A previous control directory also blocks adoption.
+        control.mkdir()  # During an exchange the profile can be absent while its owner still exists.
+        try:
+            home.mkdir()
+        except OSError:
+            control.rmdir()
+            raise
         owner = {"home": str(home), "profileId": uuid.uuid4().hex}
         write(control / "profile.json", owner)
         write(path, {"schema": 2, **owner, "prepared": str(args.prepared.resolve()),
