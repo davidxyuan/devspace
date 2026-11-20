@@ -121,6 +121,7 @@ function registeredSource(id, source) {
   return canonical;
 }
 function sourceProblem(id, source) {
+  if (source.candidates) return "偵測到多份 Hermes Agent，請先核對服務來源。";
   const registered = registeredSource(id, source);
   if (!registered || !sameRepository(source.repository, registered.repository)) return "來源未登錄；保留既有安裝，不自動切換官方或 Fork。";
   if (source.historical) return "已識別固定的歷史版本；請使用明確的移轉操作，保留原始工作目錄。";
@@ -250,9 +251,32 @@ async function collectInventory(options = {}) {
   const agentExecutable = safePath(w.hermesAgentExe) || findExecutable(["hermes.exe", "hermes.cmd", "hermes"], env);
   const agentReceipt = agentExecutable ? json(path.resolve(path.dirname(agentExecutable), "..", "..", "candidate.json")) : null;
   const managedAgent = agentReceipt?.kind === "hermes-agent" && samePath(agentReceipt.hermesAgentExe, agentExecutable) ? safePath(agentReceipt.root) : null;
-  const agentRoot = safePath(w.hermesAgentWorkingDirectory) || managedAgent || (agentExecutable && /[\\/]venv[\\/]Scripts[\\/]/i.test(agentExecutable) ? path.resolve(path.dirname(agentExecutable), "..", "..") : path.join(local, "hermes", "hermes-agent"));
-  const agent = component("hermes-agent", agentRoot, exists(path.join(agentRoot, "pyproject.toml")) && exists(path.join(agentRoot, "hermes_cli")) ? "installed" : exists(agentRoot) || agentExecutable ? "partial" : "missing", productVersion(agentRoot), await inspectSource(agentRoot, toolPaths.git, run));
-  if (agentExecutable && !exists(agentRoot)) agent.detail = "偵測到 Hermes 命令，但無法確認其安裝來源。";
+  const commandRoot = managedAgent || (agentExecutable && /[\\/]venv[\\/]Scripts[\\/]/i.test(agentExecutable) ? path.resolve(path.dirname(agentExecutable), "..", "..") : null);
+  const explicitRoot = safePath(w.hermesAgentWorkingDirectory), profile = safePath(w.hermesHome);
+  const defaultRoot = path.join(local, "hermes", "hermes-agent");
+  const searchRoots = explicitRoot ? [explicitRoot] : [profile, profile && path.join(profile, "hermes-agent"), defaultRoot, path.join(home, ".hermes", "hermes-agent"), commandRoot];
+  const agentRoots = new Map();
+  let commandSource;
+  for (const root of searchRoots) {
+    if (!root || !exists(path.join(root, "pyproject.toml")) || !exists(path.join(root, "hermes_cli"))) continue;
+    const identity = fs.realpathSync.native(root);
+    const key = process.platform === "win32" ? identity.toLowerCase() : identity;
+    if (!agentRoots.has(key)) agentRoots.set(key, root);
+    if (root === commandRoot) commandSource = agentRoots.get(key);
+  }
+  if (agentRoots.size > 1) {
+    const candidates = await Promise.all(Array.from(agentRoots.values(), async root => {
+      const { head, dirty, fingerprint } = await inspectSource(root, toolPaths.git, run);
+      return { path: root, commandSource: root === commandSource, version: productVersion(root), head, dirty, fingerprint };
+    }));
+    const agent = component("hermes-agent", null, "unknown", null, { candidates });
+    agent.detail = [sourceProblem(agent.id, agent.source), ...candidates.map(c =>
+      [c.commandSource ? "命令列來源" : "服務搜尋位置", c.path, c.version, c.head, c.dirty === true ? "有本機修改" : c.dirty === false ? "工作目錄乾淨" : "修改狀態未知"].filter(Boolean).join(" · "))].join("\n");
+  } else {
+    const root = agentRoots.values().next().value || explicitRoot || commandRoot || defaultRoot;
+    const agent = component("hermes-agent", root, agentRoots.size ? "installed" : exists(root) || agentExecutable ? "partial" : "missing", productVersion(root), await inspectSource(root, toolPaths.git, run));
+    if (agentExecutable && !exists(root)) agent.detail = "偵測到 Hermes 命令，但無法確認其安裝來源。";
+  }
   const routerPath = configuredPath(w.routerPath, path.join(installDir, "mcp-router.cjs"));
   component("router", routerPath, exists(routerPath) ? "installed" : w.routerEnabled ? "partial" : "missing", null, { kind: "bundled", fingerprint: fileHash(routerPath) });
   const trayFiles = ["devspace-watchdog-bootstrap.ps1", "devspace-watchdog-tray.ps1", "devspace-watchdog-tray-ui.ps1", "run-devspace-watchdog-tray-hidden.vbs"];
