@@ -243,10 +243,16 @@ class PairTests(unittest.TestCase):
         self.mcp_passed = True
         self.calls = []
         self.pair = {}
+        self.supports_lock = False
 
     def run_step(self, label, command, cwd):
         self.calls.append(label)
+        if label == "pair-pm-help":
+            return "--lock LOCK" if self.supports_lock else "--lock-only --lock-source LOCK_SOURCE"
         if label in ("pair-resolution", "pair-runtime"):
+            self.assertEqual("--lock" in command, self.supports_lock)
+            if self.supports_lock:
+                self.assertEqual(Path(command[command.index("--lock") + 1]), self.base / "agent/uv.lock")
             # The PM fixture consumes the actual requirements handed to the external builder.
             requirements = Path(command[command.index("--requirements") + 1]).read_text()
             self.assertIn("mcp==2.0.0", requirements)
@@ -258,6 +264,9 @@ class PairTests(unittest.TestCase):
             return str(executable)
         if label.endswith("-inventory"):
             return json.dumps(self.resolved if label == "pair-resolution-inventory" else self.rebuilt)
+        if label == "pair-gpt-requirements":
+            self.assertEqual(json.loads(command[-1]), ["mcp[cli]>=2"])
+            return ""
         if label == "pair-source":
             return json.dumps({"agentRoot": str(self.base / "agent"), "server": str(self.gpt / "server.py")})
         if label == "pair-mcp":
@@ -281,6 +290,12 @@ class PairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "frozen Agent"):
             self.prepare_pair()
         self.assertNotIn("pair-runtime", self.calls)
+
+    def test_supported_pm_uses_agent_lock_for_both_builds_and_checks_gpt(self):
+        self.supports_lock = True
+        self.prepare_pair()
+        self.assertTrue(self.pair["usesAgentLockForRequirements"])
+        self.assertEqual(self.calls[-3:], ["pair-gpt-requirements", "pair-source", "pair-mcp"])
 
     def test_new_dependency_drift_fails_before_smoke(self):
         self.rebuilt["packages"][1]["version"] = "9.0"

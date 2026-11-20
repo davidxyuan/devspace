@@ -13,6 +13,18 @@ import tomllib
 REPOSITORY = "https://github.com/NousResearch/hermes-agent.git"
 BOOTSTRAP = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module(sys.argv.pop(1),run_name='__main__')"
 INVENTORY = "import importlib.metadata as m,json,sys; print(json.dumps({'python':sys.version,'packages':sorted([{'name':d.metadata['Name'],'version':d.version} for d in m.distributions()],key=lambda d:d['name'])}))"
+CHECK_GPT_REQUIREMENTS = """
+import json, sys
+from importlib.metadata import version
+from packaging.requirements import Requirement
+for dependency in json.loads(sys.argv[1]):
+    requirement = Requirement(dependency)
+    if requirement.marker and not requirement.marker.evaluate():
+        continue
+    installed = version(requirement.name)
+    if not requirement.specifier.contains(installed, prereleases=True):
+        sys.exit(f"GPT requires {requirement}, found {installed}")
+"""
 
 
 def package_pins(runtime):
@@ -42,11 +54,15 @@ def prepare_pair(root, gpt, python, destination, agent_runtime, run, pair):
     requirements.write_text("\n".join(f"{name}=={version}" for name, version in sorted(pins.items())) +
                             "\n" + "\n".join(dependencies) + "\n", encoding="utf-8")
     pair.update(state="resolving", version=project["version"], inputSha256=hashlib.sha256(requirements.read_bytes()).hexdigest())
+    pm = [sys.executable, "-I", "-B", "-X", "utf8", "-c", BOOTSTRAP, str(root), "pm.build_env"]
+    help_text = run("pair-pm-help", [*pm, "--help"], root)
+    # Older PM releases only support project locks for source builds.
+    lock_args = ["--lock", str(root / "uv.lock")] if re.search(r"(?<![\w-])--lock(?=[ =])", help_text) else []
+    pair["usesAgentLockForRequirements"] = bool(lock_args)
 
     def build(label, requirements):
         target = destination / label
-        built = run(label, [sys.executable, "-I", "-B", "-X", "utf8", "-c", BOOTSTRAP, str(root), "pm.build_env",
-                           "--requirements", str(requirements), "--out", str(target), "--python", str(python),
+        built = run(label, [*pm, *lock_args, "--requirements", str(requirements), "--out", str(target), "--python", str(python),
                            "--cache", str(destination / "cache")], root)
         executable = target / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not built or Path(built.splitlines()[-1]).absolute() != executable or not executable.is_file():
@@ -68,6 +84,10 @@ def prepare_pair(root, gpt, python, destination, agent_runtime, run, pair):
     if actual != resolved_pins:
         raise ValueError("Paired rebuild does not match the complete resolved package set")
     pair.update(python=str(executable), runtime=runtime, state="checking")
+    if lock_args:
+        # An Agent override must not silently replace a direct GPT requirement.
+        run("pair-gpt-requirements", [str(executable), "-I", "-B", "-c", CHECK_GPT_REQUIREMENTS,
+                                      json.dumps(dependencies)], destination)
     scripts = Path(__file__).resolve().parent
     pair["sourceCheck"] = json.loads(run("pair-source", [str(executable), "-I", "-B", "-X", "utf8",
         str(scripts / "stack-hermes-source.py"), str(gpt / "server.py"), str(root)], destination))
