@@ -55,6 +55,10 @@ function productVersion(root) {
   if (pkg && VERSION.test(pkg.version || "")) return pkg.version;
   return null;
 }
+function describeAgentSource(label, source) {
+  const changes = source.dirty === true ? "有本機修改" : source.dirty === false ? "工作目錄乾淨" : "修改狀態未知";
+  return [label, source.path, source.version, source.head, changes].filter(Boolean).join(" · ");
+}
 function defaultRun(command, args, options = {}) {
   return new Promise((resolve, reject) => execFile(command, args, { windowsHide: true, timeout: 15000, maxBuffer: 16 * 1024 * 1024, ...options }, (error, stdout, stderr) => error ? reject(new Error(`${path.basename(command)} failed.`)) : resolve({ stdout, stderr })));
 }
@@ -254,7 +258,7 @@ async function collectInventory(options = {}) {
   const commandRoot = managedAgent || (agentExecutable && /[\\/]venv[\\/]Scripts[\\/]/i.test(agentExecutable) ? path.resolve(path.dirname(agentExecutable), "..", "..") : null);
   const explicitRoot = safePath(w.hermesAgentWorkingDirectory), profile = safePath(w.hermesHome);
   const defaultRoot = path.join(local, "hermes", "hermes-agent");
-  const searchRoots = explicitRoot ? [explicitRoot] : [profile, profile && path.join(profile, "hermes-agent"), defaultRoot, path.join(home, ".hermes", "hermes-agent"), commandRoot];
+  const searchRoots = explicitRoot ? [explicitRoot, commandRoot] : [profile, profile && path.join(profile, "hermes-agent"), defaultRoot, path.join(home, ".hermes", "hermes-agent"), commandRoot];
   const agentRoots = new Map();
   let commandSource;
   for (const root of searchRoots) {
@@ -264,17 +268,22 @@ async function collectInventory(options = {}) {
     if (!agentRoots.has(key)) agentRoots.set(key, root);
     if (root === commandRoot) commandSource = agentRoots.get(key);
   }
-  if (agentRoots.size > 1) {
+  if (!explicitRoot && agentRoots.size > 1) {
     const candidates = await Promise.all(Array.from(agentRoots.values(), async root => {
       const { head, dirty, fingerprint } = await inspectSource(root, toolPaths.git, run);
       return { path: root, commandSource: root === commandSource, version: productVersion(root), head, dirty, fingerprint };
     }));
     const agent = component("hermes-agent", null, "unknown", null, { candidates });
     agent.detail = [sourceProblem(agent.id, agent.source), ...candidates.map(c =>
-      [c.commandSource ? "命令列來源" : "服務搜尋位置", c.path, c.version, c.head, c.dirty === true ? "有本機修改" : c.dirty === false ? "工作目錄乾淨" : "修改狀態未知"].filter(Boolean).join(" · "))].join("\n");
+      describeAgentSource(c.commandSource ? "命令列來源" : "服務搜尋位置", c))].join("\n");
   } else {
-    const root = agentRoots.values().next().value || explicitRoot || commandRoot || defaultRoot;
-    const agent = component("hermes-agent", root, agentRoots.size ? "installed" : exists(root) || agentExecutable ? "partial" : "missing", productVersion(root), await inspectSource(root, toolPaths.git, run));
+    const firstSource = agentRoots.values().next().value;
+    const root = explicitRoot || firstSource || commandRoot || defaultRoot;
+    const agent = component("hermes-agent", root, root === firstSource ? "installed" : exists(root) || agentExecutable ? "partial" : "missing", productVersion(root), await inspectSource(root, toolPaths.git, run));
+    if (explicitRoot && commandSource && commandSource !== root) {
+      const { head, dirty, fingerprint } = await inspectSource(commandSource, toolPaths.git, run);
+      agent.source.commandLine = { path: commandSource, version: productVersion(commandSource), head, dirty, fingerprint };
+    }
     if (agentExecutable && !exists(root)) agent.detail = "偵測到 Hermes 命令，但無法確認其安裝來源。";
   }
   const routerPath = configuredPath(w.routerPath, path.join(installDir, "mcp-router.cjs"));
@@ -323,6 +332,7 @@ async function collectInventory(options = {}) {
       ];
       if (entry.source.historical) entry.actions.push({ id: "migrate", label: "移轉歷史版本", enabled: entry.installState === "installed" && current && ["ahead", "identical"].includes(latest.comparison) && !blockers.length, reason: !current ? "先查詢並固定目前已登錄來源的版本。" : !["ahead", "identical"].includes(latest.comparison) ? "無法確認歷史版本至目前來源的提交關係。" : null });
       if (problem && !missing) entry.detail = entry.detail || problem;
+      if (entry.source.commandLine) entry.detail = [entry.detail, describeAgentSource("命令列來源", entry.source.commandLine)].filter(Boolean).join("\n");
     } else if (["tray", "router", "legacy-watchdog"].includes(entry.id)) {
       const installer = path.join(packageRoot, "scripts", "windows", "install-devspace-watchdog-tray.ps1");
       const ready = Boolean(config && exists(installer) && !blockers.length);
