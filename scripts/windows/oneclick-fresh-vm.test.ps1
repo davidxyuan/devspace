@@ -234,6 +234,14 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
 
     . (Join-Path $installDir 'watchdog-control-core.ps1')
     $watchdog = Read-WatchdogJson $watchdogPath
+    $configHash = (Get-FileHash -LiteralPath $watchdogPath).Hash
+    try {
+        & (Join-Path $packageRoot 'scripts\windows\install-devspace-watchdog.ps1') -InstallDir $installDir -UserMode -SkipStart -HermesAgentExe (Join-Path $WorkRoot 'other\hermes.exe')
+        throw 'Packaged repair ignored a conflicting Hermes Agent selection.'
+    } catch {
+        if ($_.Exception.Message -notlike 'A different Hermes Agent is already configured.*') { throw }
+    }
+    if ((Get-FileHash -LiteralPath $watchdogPath).Hash -ne $configHash) { throw 'Rejected Agent selection changed the installed configuration.' }
     $roundTrip = Get-WatchdogNgrokCredential $watchdog
     if ($roundTrip -cne $fakeNgrokToken) { throw 'ngrok DPAPI round-trip did not return the submitted token.' }
     $roundTrip = $null
@@ -306,6 +314,7 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         hermesPython = [string]$watchdog.hermesPython
         hermesAgentExe = [string]$watchdog.hermesAgentExe
         hermesAgentRoot = [string]$watchdog.hermesAgentWorkingDirectory
+        conflictingAgentRepairRejected = $true
         ngrokPath = [string]$watchdog.ngrokPath
     }
     $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding UTF8

@@ -117,6 +117,8 @@ public static class NativePythonProbeFixture {
     $source = Get-Content -LiteralPath $scriptPath -Raw
     $sourceFinder = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-HermesAgentSourceRoot' }, $true)
     . ([scriptblock]::Create($sourceFinder.Extent.Text))
+    $exeFinder = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-HermesAgentExe' }, $true)
+    . ([scriptblock]::Create($exeFinder.Extent.Text))
     $originalLocalAppData = $env:LOCALAPPDATA
     try {
         $env:LOCALAPPDATA = Join-Path $tempRoot 'local'
@@ -130,6 +132,35 @@ public static class NativePythonProbeFixture {
         $exe = Join-Path $managed 'venv\Scripts\hermes.exe'
         if ((Find-HermesAgentSourceRoot $exe) -ne [IO.Path]::GetFullPath($payload)) { throw 'Managed Agent source was replaced by an unrelated legacy checkout.' }
         if (Find-HermesAgentSourceRoot (Join-Path $tempRoot 'unknown\hermes.exe')) { throw 'Unknown executable silently adopted the default Agent source.' }
+        & {
+            $pathExe = Join-Path $oldRoot 'venv\Scripts\hermes.exe'
+            foreach ($file in @($exe, $pathExe)) {
+                [void][IO.Directory]::CreateDirectory((Split-Path $file -Parent))
+                [IO.File]::WriteAllText($file, '')
+            }
+            function Find-CommandPath { return $pathExe }
+            $HermesAgentExe = $null
+            $existingWatchdogConfig = @{ hermesAgentExe=$exe }
+            $chosen = Find-HermesAgentExe
+            if ($chosen -ne [IO.Path]::GetFullPath($exe) -or (Find-HermesAgentSourceRoot $chosen) -ne [IO.Path]::GetFullPath($payload)) {
+                throw 'Repair mixed the saved Hermes executable with the Agent on PATH.'
+            }
+            $HermesAgentExe = $pathExe
+            try { Find-HermesAgentExe | Out-Null; throw 'Repair silently accepted a different Agent.' }
+            catch { if ($_.Exception.Message -notlike 'A different Hermes Agent*') { throw } }
+            $HermesAgentExe = $null
+            $existingWatchdogConfig.hermesAgentExe = "$exe.missing"
+            try { Find-HermesAgentExe | Out-Null; throw 'Missing saved Agent was silently replaced.' }
+            catch { if ($_.Exception.Message -notlike 'Hermes Agent executable was not found*') { throw } }
+            $existingWatchdogConfig = $null
+            $HermesAgentExe = $managed
+            try { Find-HermesAgentExe | Out-Null; throw 'Explicit directory accepted as an Agent executable.' }
+            catch { if ($_.Exception.Message -notlike 'Hermes Agent executable was not found*') { throw } }
+            $HermesAgentExe = $exe
+            if ((Find-HermesAgentExe) -ne [IO.Path]::GetFullPath($exe)) { throw 'Fresh install ignored an explicit Agent.' }
+            $HermesAgentExe = $null
+            if ((Find-HermesAgentExe) -ne $pathExe) { throw 'Fresh Agent discovery failed.' }
+        }
     } finally { $env:LOCALAPPDATA = $originalLocalAppData }
     $fastInstall = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-HermesAgentRuntimeFast' }, $true)
     . ([scriptblock]::Create($fastInstall.Extent.Text))

@@ -21,7 +21,7 @@ param(
     [string]$HermesDir = "$env:USERPROFILE\hermes-gpt",
     [string]$PythonPath,
     [string]$MachineName,
-    [string]$HermesAgentExe,
+    [ValidateNotNullOrEmpty()][string]$HermesAgentExe,
     [int]$HermesPort = 4750,
     [int]$RouterPort = 8765,
     [ValidateSet("Vbs", "PowerShell")]
@@ -318,8 +318,15 @@ function Invoke-Checked([scriptblock]$command, [string]$message) {
 }
 
 function Find-HermesAgentExe {
-    if ($HermesAgentExe -and (Test-Path -LiteralPath $HermesAgentExe)) {
-        return [System.IO.Path]::GetFullPath($HermesAgentExe)
+    $savedExe = [string]$existingWatchdogConfig.hermesAgentExe
+    if ($savedExe -or $HermesAgentExe) {
+        $selected = if ($HermesAgentExe) { $HermesAgentExe } else { $savedExe }
+        $selected = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($selected))
+        if ($savedExe -and $HermesAgentExe -and $selected -ne [IO.Path]::GetFullPath($savedExe)) {
+            Fail 'A different Hermes Agent is already configured.' 'Use the existing executable for repair. A version switch requires a separate profile upgrade and rollback.'
+        }
+        if (-not [IO.File]::Exists($selected)) { Fail "Hermes Agent executable was not found: $selected" }
+        return $selected
     }
 
     $command = Find-CommandPath "hermes.exe"
@@ -332,7 +339,7 @@ function Find-HermesAgentExe {
         (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\hermes.exe"),
         (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\.venv\Scripts\hermes.exe")
     )) {
-        if (Test-Path -LiteralPath $localExe) {
+        if ([IO.File]::Exists($localExe)) {
             return $localExe
         }
     }
@@ -425,7 +432,7 @@ function Install-HermesAgentIfNeeded {
     }
 
     $exe = Find-HermesAgentExe
-    if ($exe) {
+    if ($exe -or $SkipHermesInstall) {
         return $exe
     }
     if ($SkipHermesAgentInstall) {
@@ -742,7 +749,7 @@ if ($needsNode) {
 if ($installDevSpace -and -not $CliPath) {
     $npmPath = Ensure-Command "npm.cmd" "OpenJS.NodeJS.LTS" "npm"
 }
-$hermesAgentPath = if ($SkipHermesInstall) { Find-HermesAgentExe } else { Install-HermesAgentIfNeeded }
+$hermesAgentPath = Install-HermesAgentIfNeeded
 $hermesAgentWorkingDirectory = if ($hermesAgentPath) { Find-HermesAgentSourceRoot $hermesAgentPath } else { '' }
 
 $ngrokWebAddrSupported = $false
