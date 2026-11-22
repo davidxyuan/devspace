@@ -242,6 +242,31 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         if ($_.Exception.Message -notlike 'A different Hermes Agent is already configured.*') { throw }
     }
     if ((Get-FileHash -LiteralPath $watchdogPath).Hash -ne $configHash) { throw 'Rejected Agent selection changed the installed configuration.' }
+    # Reproduce a legacy config with one CLI checkout and a different service source.
+    $originalBytes = [IO.File]::ReadAllBytes($watchdogPath)
+    $legacyConfig = Read-WatchdogJson $watchdogPath
+    $secondAgent = Join-Path $WorkRoot 'second-agent'
+    $secondExe = Join-Path $secondAgent 'venv\Scripts\hermes.exe'
+    [void][IO.Directory]::CreateDirectory((Split-Path $secondExe -Parent))
+    [void][IO.Directory]::CreateDirectory((Join-Path $secondAgent 'hermes_cli'))
+    [IO.File]::WriteAllText($secondExe, '')
+    [IO.File]::WriteAllText((Join-Path $secondAgent 'pyproject.toml'), '[project]')
+    $legacyConfig.hermesAgentExe = $secondExe
+    $legacyConfig.hermesAgentWorkingDirectory = ''
+    try {
+        $legacyConfig | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $watchdogPath -Encoding UTF8
+        $legacyHash = (Get-FileHash -LiteralPath $watchdogPath).Hash
+        $repairLog = Join-Path $WorkRoot 'legacy-repair.log'
+        $repairExit = & {
+            $ErrorActionPreference = 'Continue'
+            & powershell.exe -NoProfile -NonInteractive -File (Join-Path $packageRoot 'scripts\windows\install-devspace-watchdog.ps1') -InstallDir $installDir -UserMode -SkipStart *> $repairLog
+            $LASTEXITCODE
+        }
+        if ($repairExit -eq 0 -or -not (Select-String -LiteralPath $repairLog -SimpleMatch 'Legacy Hermes profile has a different Agent source')) {
+            throw 'Packaged repair did not identify competing legacy Agent sources.'
+        }
+        if ((Get-FileHash -LiteralPath $watchdogPath).Hash -ne $legacyHash) { throw 'Ambiguous repair changed the legacy configuration.' }
+    } finally { [IO.File]::WriteAllBytes($watchdogPath, $originalBytes) }
     $roundTrip = Get-WatchdogNgrokCredential $watchdog
     if ($roundTrip -cne $fakeNgrokToken) { throw 'ngrok DPAPI round-trip did not return the submitted token.' }
     $roundTrip = $null
@@ -315,6 +340,7 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
         hermesAgentExe = [string]$watchdog.hermesAgentExe
         hermesAgentRoot = [string]$watchdog.hermesAgentWorkingDirectory
         conflictingAgentRepairRejected = $true
+        ambiguousLegacySourceRejected = $true
         ngrokPath = [string]$watchdog.ngrokPath
     }
     $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding UTF8

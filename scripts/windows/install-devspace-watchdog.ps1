@@ -1108,7 +1108,12 @@ $watchdogConfig['managementPackageRoot'] = $ManagementPackageRoot
 
 # Everything needed by the new configuration is prepared before activation.
 if ($watchdogConfig.hermesEnabled) {
-    & ([string]$watchdogConfig.hermesPython) (Join-Path $PSScriptRoot 'stack-hermes-source.py') ([string]$watchdogConfig.hermesServer) ([string]$watchdogConfig.hermesAgentWorkingDirectory)
+    $sourceArgs = @([string]$watchdogConfig.hermesServer, [string]$watchdogConfig.hermesAgentWorkingDirectory)
+    if ($existingWatchdogConfig.hermesEnabled -and -not $existingWatchdogConfig.hermesAgentWorkingDirectory) {
+        $legacyHome = if ($existingWatchdogConfig.hermesHome) { $existingWatchdogConfig.hermesHome } else { Join-Path $env:LOCALAPPDATA 'hermes' }
+        $sourceArgs += @('--legacy-home', $legacyHome)
+    }
+    & ([string]$watchdogConfig.hermesPython) -I -B (Join-Path $PSScriptRoot 'stack-hermes-source.py') @sourceArgs
     if ($LASTEXITCODE -ne 0) { throw 'Hermes GPT/Agent source or dependencies are incompatible; installation is blocked before stopping services.' }
 }
 $taskSnapshots = @(Get-InstallTaskSnapshots $InstallDir)

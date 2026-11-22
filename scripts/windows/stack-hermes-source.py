@@ -43,6 +43,19 @@ def main():
     if len(sys.argv) == 4 and sys.argv[3] == '--child':
         check(server_path, agent_root)
         return
+    if len(sys.argv) == 5 and sys.argv[3] == '--legacy-home':
+        profile = Path(sys.argv[4])
+        if not profile.is_absolute():
+            raise ValueError('Legacy Hermes profile needs an absolute path.')
+        user = Path.home()
+        local = Path(os.environ['LOCALAPPDATA'])
+        for root in (profile, profile / 'hermes-agent', local / 'hermes/hermes-agent',
+                     user / 'AppData/Local/hermes/hermes-agent', user / '.hermes/hermes-agent'):
+            if ((root / 'hermes_state.py').is_file() or (root / 'tools/__init__.py').is_file()) and not root.samefile(agent_root):
+                raise RuntimeError(f'Legacy Hermes profile has a different Agent source at {root}. '
+                                   f'The selected executable uses {agent_root}. Confirm the existing service source before repair.')
+    elif len(sys.argv) != 3:
+        raise ValueError('Unexpected Hermes source check arguments.')
     with tempfile.TemporaryDirectory(prefix='hermes-source-probe-') as data:
         # Do not inherit user auth, owner gates, PYTHONPATH or a real Hermes profile.
         env = {key: value for key, value in os.environ.items()
