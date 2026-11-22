@@ -56,7 +56,7 @@ function Observe-Processes {
             name=$p.Name; parentPid=[int]$p.ParentProcessId; command=$p.CommandLine}
     }
 }
-function Read-NativeReady {
+function Read-NativeReady([bool]$Candidate) {
     Observe-Processes
     $roles = @(foreach ($pair in @(@('host','host','devspace-watchdog-tray.ps1'), @('tray','tray-ui','devspace-watchdog-tray-ui.ps1'), @('supervisor','supervisor','devspace-watchdog-bootstrap.ps1'))) {
         $h = Read-WatchdogJson (Join-Path $runtime "watchdog-$($pair[0])-heartbeat.json")
@@ -67,7 +67,7 @@ function Read-NativeReady {
             -not $p.CommandLine.Contains((Join-Path $runtime $pair[2])) -or -not $p.CommandLine.Contains($configPath)) {
             throw 'Stale heartbeat or wrong native process identity.'
         }
-        if ($pair[0] -ne 'supervisor' -and (-not $h.processStartUtc -or
+        if (($Candidate -or $pair[0] -ne 'supervisor') -and (-not $h.processStartUtc -or
             [Math]::Abs(($p.CreationDate.ToUniversalTime() - ([DateTimeOffset]$h.processStartUtc).UtcDateTime).Ticks) -ge 10)) {
             throw 'Heartbeat process start mismatch.'
         }
@@ -81,7 +81,7 @@ function Read-NativeReady {
 function Checkpoint([string]$Name) {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(45)
     do {
-        try { $roles = @(Read-NativeReady); break } catch { $reason = $_.Exception.Message }
+        try { $roles = @(Read-NativeReady ($Name -like 'candidate-*')); break } catch { $reason = $_.Exception.Message }
         Start-Sleep -Milliseconds 300
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     if (-not $roles) { throw "$Name failed readiness: $reason" }

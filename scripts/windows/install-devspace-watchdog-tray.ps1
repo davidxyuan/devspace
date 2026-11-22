@@ -89,15 +89,15 @@ function Copy-InstallerFileWithRetry([string]$Source, [string]$Destination, [boo
 function Read-InstallerHeartbeat([string]$Path) {
     if (-not [System.IO.File]::Exists($Path)) { return $null }
     try {
-        $value = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $value = Read-WatchdogJson $Path
         $heartbeatPid = 0
         if (-not [int]::TryParse([string]$value.pid, [ref]$heartbeatPid) -or $heartbeatPid -le 0) { return $null }
-        $timestamp = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse([string]$value.timestamp, [ref]$timestamp)) { return $null }
+        $timestamp = [DateTimeOffset]$value.timestamp
         $sessionId = -1
         [void][int]::TryParse([string]$value.sessionId, [ref]$sessionId)
         return [pscustomobject]@{
             pid = $heartbeatPid
+            processStartUtc = $value.processStartUtc
             timestamp = $timestamp
             role = [string]$value.role
             dashboard = [string]$value.dashboard
@@ -111,7 +111,7 @@ function Test-InstallerHeartbeatFresh($Heartbeat, [string]$ExpectedRole = "") {
     $age = ([DateTimeOffset]::UtcNow - $Heartbeat.timestamp.ToUniversalTime()).TotalSeconds
     if ($age -lt -5 -or $age -gt 15) { return $false }
     if ($ExpectedRole -and [string]$Heartbeat.role -ne $ExpectedRole) { return $false }
-    return [bool](Get-Process -Id ([int]$Heartbeat.pid) -ErrorAction SilentlyContinue)
+    return Test-WatchdogHeartbeatProcess $Heartbeat $ExpectedRole $configPath
 }
 
 function Get-LegacyTaskName {

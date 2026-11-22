@@ -481,11 +481,13 @@ $generation = if ([IO.File]::Exists($generationPath)) { [IO.File]::ReadAllText($
 try {
     try { $ownsGuard = $guard.WaitOne(20000) } catch [Threading.AbandonedMutexException] { $ownsGuard = $true }
     if (-not $ownsGuard) { return }
+    $worker = [Diagnostics.Process]::GetCurrentProcess()
+    try { $supervisorStart = $worker.StartTime.ToUniversalTime().ToString('o') } finally { $worker.Dispose() }
     while ($true) {
         try {
             $currentGeneration = if ([IO.File]::Exists($generationPath)) { [IO.File]::ReadAllText($generationPath) } else { '' }
             if ($currentGeneration -ne $generation) { break }
-            Write-WatchdogAtomicJson (Join-Path $stateDir 'watchdog-supervisor-heartbeat.json') ([pscustomobject]@{pid=$PID;role='supervisor';timestamp=[DateTimeOffset]::UtcNow.ToString('o')})
+            Write-WatchdogAtomicJson (Join-Path $stateDir 'watchdog-supervisor-heartbeat.json') ([pscustomobject]@{pid=$PID;role='supervisor';timestamp=[DateTimeOffset]::UtcNow.ToString('o');processStartUtc=$supervisorStart})
             if (-not [IO.File]::Exists($pausePath) -and -not (Test-StackOperationBusy -InstallDir (Split-Path $ConfigPath -Parent))) {
                 Invoke-BootstrapRun 'Run'
             }

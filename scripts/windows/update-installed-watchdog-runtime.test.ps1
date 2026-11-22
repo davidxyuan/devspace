@@ -52,6 +52,28 @@ Assert-NotContains 'does not stop Hermes service' "Stop-WatchdogManagedService '
 Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'ngrok'"
 
 & {
+    . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
+    $check = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-UpdateHeartbeat'}, $true)
+    . ([scriptblock]::Create($check.Extent.Text))
+    $configPath = 'C:\test instance\devspace-watchdog.config.json'
+    $born = [DateTime]::UtcNow.AddMinutes(-1)
+    $worker = [pscustomobject]@{CreationDate=$born; ExecutablePath=(Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'); CommandLine='powershell -File "C:\test instance\devspace-watchdog-bootstrap.ps1" -Mode Watch -ScheduledSupervisor -ConfigPath "C:\test instance\devspace-watchdog.config.json"'}
+    $sample = [pscustomobject]@{pid=42;role='supervisor';timestamp=[DateTimeOffset]::UtcNow.ToString('o');processStartUtc=$born.ToString('o')}
+    function Get-CimInstance { [CmdletBinding()]param($ClassName,$Filter) if ($Filter -eq 'ProcessId=42') { $worker } }
+    function Read-UpdateHeartbeat { $sample }
+    if (-not (Test-UpdateHeartbeat 'fixture' 'supervisor')) { throw 'Matching worker was rejected.' }
+    $sample.processStartUtc = $born.AddSeconds(-1).ToString('o')
+    if (Test-UpdateHeartbeat 'fixture' 'supervisor') { throw 'Reused PID was accepted.' }
+    $sample.PSObject.Properties.Remove('processStartUtc')
+    if (-not (Test-UpdateHeartbeat 'fixture' 'supervisor')) { throw 'Verified legacy worker was rejected.' }
+    $worker.CreationDate = [DateTime]::UtcNow.AddSeconds(1)
+    if (Test-UpdateHeartbeat 'fixture' 'supervisor') { throw 'Legacy heartbeat predating its worker was accepted.' }
+    $worker.CreationDate = $born
+    $worker.CommandLine = $worker.CommandLine.Replace('C:\test instance\devspace-watchdog.config.json', 'C:\other\devspace-watchdog.config.json')
+    if (Test-UpdateHeartbeat 'fixture' 'supervisor') { throw 'Another installation was accepted.' }
+}
+
+& {
     $healthFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-UpdateServiceAcceptable'}, $true)
     . ([scriptblock]::Create($healthFunction.Extent.Text))
     $AllowHermesBusyTransport = $false

@@ -1048,6 +1048,32 @@ function Test-WatchdogExecutablePath($Process, [string]$ExpectedPath) {
     } catch { return $false }
 }
 
+function Test-WatchdogHeartbeatProcess($Heartbeat, [string]$Role, [string]$ConfigPath) {
+    try {
+        $rolePid = [int]$Heartbeat.pid
+        if ($rolePid -le 0) { return $false }
+        $worker = Get-CimInstance Win32_Process -Filter "ProcessId=$rolePid" -ErrorAction Stop
+        $powerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (-not $worker.CreationDate -or -not (Test-WatchdogExecutablePath $worker $powerShell) -or
+            -not (Test-WatchdogCommandToken $worker.CommandLine $ConfigPath)) { return $false }
+        $born = $worker.CreationDate.ToUniversalTime()
+        # Older heartbeats omit the creation time. A replacement PID cannot have emitted a heartbeat before it started.
+        if ($born -gt ([DateTimeOffset]$Heartbeat.timestamp).UtcDateTime) { return $false }
+        if ($null -ne $Heartbeat.processStartUtc -and
+            [Math]::Abs(($born - ([DateTimeOffset]$Heartbeat.processStartUtc).UtcDateTime).Ticks) -ge 10) { return $false }
+        $root = Split-Path -Parent $ConfigPath
+        $hostScript = Join-Path $root 'devspace-watchdog-tray.ps1'
+        switch ($Role) {
+            'supervisor' { return (Test-WatchdogCommandToken $worker.CommandLine (Join-Path $root 'devspace-watchdog-bootstrap.ps1')) -and (Test-WatchdogCommandToken $worker.CommandLine 'Watch') }
+            'host' { return (Test-WatchdogCommandToken $worker.CommandLine $hostScript) -and (Test-WatchdogCommandToken $worker.CommandLine 'Host') }
+            'tray-ui' { if (Test-WatchdogCommandToken $worker.CommandLine (Join-Path $root 'devspace-watchdog-tray-ui.ps1')) { return $true } }
+            '' { }
+            default { return $false }
+        }
+        return (Test-WatchdogCommandToken $worker.CommandLine $hostScript) -and $worker.CommandLine -notmatch '(?i)\s"?-Mode"?\s+"?(?:Host|Stop|StopHost)"?(?=\s|$)'
+    } catch { return $false }
+}
+
 function Test-WatchdogManagedProcess($Process, [string]$Service, $Config) {
     if (-not $Process) { return $false }
     $name = [string]$Process.Name

@@ -91,7 +91,7 @@ function Test-UpdateHeartbeat([string]$Name, [string]$Role, [int]$MaxAgeSeconds 
     if (-not [DateTimeOffset]::TryParse([string]$heartbeat.timestamp, [ref]$stamp)) { return $false }
     $age = ([DateTimeOffset]::UtcNow - $stamp.ToUniversalTime()).TotalSeconds
     if ($age -lt -5 -or $age -gt $MaxAgeSeconds) { return $false }
-    return [bool](Get-Process -Id ([int]$heartbeat.pid) -ErrorAction SilentlyContinue)
+    return Test-WatchdogHeartbeatProcess $heartbeat $Role $configPath
 }
 function Wait-UpdateRolesReady([int]$DashboardPort) {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
