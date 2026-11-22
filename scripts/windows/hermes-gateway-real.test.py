@@ -110,7 +110,7 @@ os.environ.update(env)
 sys.path.insert(0, str(PREPARED / "payload"))
 from gateway.control_socket import pause_gateway_for_update
 
-report = {"scope": "Two real pinned gateways with coordinated offline profile/configuration switch/rollback and Tray-launched paired GPT using that configuration; isolated loopback only, no installed task or chat/model call. Startup failure and data migration are injected test faults. Automatic Tray lifecycle orchestration is not exercised.",
+report = {"scope": "Two real pinned gateways, offline profile/configuration switch and rollback, Tray-launched paired GPT, and test conversation history read by each Agent. Startup failure and a separate SQLite schema change are injected. Runs on isolated loopback without a model call or automatic Tray lifecycle orchestration.",
           "prepared": str(PREPARED), "revision": manager.read(PREPARED / "preparation.json")["revision"],
           "versions": [{"prepared": str(path), "upstreamRevision": receipt["upstreamRevision"],
                         "revision": receipt["revision"], "gptRevision": receipt["pair"]["revision"]}
@@ -124,6 +124,49 @@ def event(kind, value):
     report["events"].append({"at": time.time(), "kind": kind, "value": value})
     manager.write(REPORT, report)
     print(kind, json.dumps(value), flush=True)
+
+def check_session_history(prepared, action):
+    # Each version must open the profile with its own interpreter and storage implementation.
+    probe = """
+import contextlib, json, os, sqlite3, sys
+from pathlib import Path
+payload, home, action = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+assert Path(os.environ['HERMES_HOME']).resolve() == home
+sys.path.insert(0, str(payload))
+import hermes_state
+assert Path(hermes_state.__file__).resolve().parent == payload
+path = home / 'state.db'
+session = 'devspace-rollback-evidence'
+expected = [('user', 'before upgrade')]
+if action != 'restore':
+    with hermes_state.SessionDB(path) as db:
+        if action == 'seed':
+            assert db.get_session(session) is None
+            db.create_session(session, 'cli')
+            db.append_message(session, *expected[0])
+        elif action == 'upgrade':
+            assert [(m['role'], m['content']) for m in db.get_messages(session)] == expected
+            expected.append(('assistant', 'after upgrade'))
+            db.append_message(session, *expected[-1])
+        else:
+            raise ValueError(action)
+with hermes_state.SessionDB(path, read_only=True) as db:
+    assert db.get_session(session)['id'] == session
+    messages = [(m['role'], m['content']) for m in db.get_messages(session)]
+    assert messages == expected, messages
+with contextlib.closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+    assert conn.execute('pragma integrity_check').fetchall() == [('ok',)]
+    schema = conn.execute('select version from schema_version').fetchone()[0]
+print(json.dumps(dict(action=action, schema=schema, messages=messages)))
+"""
+    result = subprocess.run([receipts[prepared]["python"], "-I", "-B", "-c", probe,
+                             str(prepared / "payload"), str(HOME), action],
+                            env=env, cwd=HOME, capture_output=True, text=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError(f"Hermes session {action} failed: {result.stderr}")
+    evidence = json.loads(result.stdout)
+    event("session_history", dict(evidence, agentRevision=receipts[prepared]["upstreamRevision"]))
+    return evidence["schema"]
 
 def wait_observed_exit(identities, deadline):
     for pid, start in identities:
@@ -262,6 +305,7 @@ try:
     ready(BASELINE)
     verify_pair(BASELINE)
     stopped(1)
+    baseline_schema = check_session_history(BASELINE, "seed")
     with contextlib.closing(sqlite3.connect(HOME / "rollback-proof.sqlite3")) as db, db:
         db.execute("create table history(message text)")
         db.execute("insert into history values ('baseline data')")
@@ -287,6 +331,7 @@ try:
     event("replacement_after_official_handoff", third)
     verify_pair(PREPARED)
     stopped(4)
+    check_session_history(PREPARED, "upgrade")
     with contextlib.closing(sqlite3.connect(HOME / "rollback-proof.sqlite3")) as db, db:
         db.execute("alter table history add column migration integer")
         db.execute("update history set message='candidate data', migration=1")
@@ -298,6 +343,7 @@ try:
     ready(BASELINE)
     verify_pair(BASELINE)
     stopped(2)
+    assert check_session_history(BASELINE, "restore") == baseline_schema
 
     before = manager.profile_inventory(HOME)
     transaction = manager.profile_update(HOME, "switch", PREPARED)
@@ -309,6 +355,7 @@ try:
     ready(BASELINE)
     verify_pair(BASELINE)
     stopped(3)
+    assert check_session_history(BASELINE, "restore") == baseline_schema
     report["passed"] = True
 except Exception as exc:
     report["error"] = repr(exc)
