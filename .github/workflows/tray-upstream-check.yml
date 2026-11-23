@@ -1,6 +1,13 @@
 name: Tray upstream release discovery
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/tray-upstream-check.yml'
+      - 'scripts/windows/stack-release-manifest.json'
+      - 'scripts/windows/stack-release-policy.cjs'
+      - 'scripts/windows/stack-upstream-check.cjs'
+      - 'scripts/windows/stack-upstream-check.test.cjs'
   schedule:
     - cron: '25 2 * * 1'
 permissions:
