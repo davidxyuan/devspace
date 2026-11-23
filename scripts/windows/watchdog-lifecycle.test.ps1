@@ -350,6 +350,48 @@ End Class
     $output = & cscript.exe //NoLogo $vbsPath -Invalid
     Assert-True "VBS rejects invalid mode without launch" ($LASTEXITCODE -eq 5 -and -not $output)
     $global:LASTEXITCODE = 0
+    & {
+        $fixtureRoot = Join-Path $tempRoot 'autostart'
+        $backup = Join-Path $fixtureRoot 'configuration-backups\original'
+        [void][IO.Directory]::CreateDirectory($backup)
+        $manifest = @{installDir=$fixtureRoot; backupPath=$backup; runName='DevSpaceWatchdogTray-0123456789ab'
+            runValue='recorded launcher'; previousRunValue='previous launcher'; installedFiles=@(); overwrittenFiles=@(); configBackups=@()}
+        $json = $manifest | ConvertTo-Json
+        [IO.File]::WriteAllText((Join-Path $backup 'manifest.json'), $json)
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot 'watchdog-tray-install.json'), $json)
+        $bootstrap = Join-Path $fixtureRoot 'devspace-watchdog-bootstrap.ps1'
+        $stopSentinel = 'param($Mode,$ConfigPath) throw "fixture bootstrap called: $Mode"'
+        $fixtureKey = [pscustomobject]@{value='changed launcher';kind='String'}
+        $fixtureKey | Add-Member ScriptMethod GetValue { param($name,$fallback,$options) return $this.value }
+        $fixtureKey | Add-Member ScriptMethod GetValueKind { param($name) return $this.kind }
+        $fixtureKey | Add-Member ScriptMethod Dispose {}
+        function Get-Item {
+            [CmdletBinding()]param($LiteralPath)
+            if ($LiteralPath -ne 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run') { throw "Unexpected registry path: $LiteralPath" }
+            return $fixtureKey
+        }
+        function Set-ItemProperty { throw 'Unexpected registry write' }
+        function Remove-ItemProperty { throw 'Unexpected registry removal' }
+        foreach ($name in @('uninstall-devspace-watchdog-tray.ps1','restore-old-watchdog.ps1')) {
+            [IO.File]::WriteAllText($bootstrap, $stopSentinel)
+            $path = Join-Path $PSScriptRoot $name
+            foreach ($value in @('changed launcher','',$null)) {
+                $fixtureKey.value = $value
+                Assert-Throws "$name preserves changed or removed autostart before Stop" { & $path -InstallDir $fixtureRoot -Confirm:$false } 'autostart.*changed'
+            }
+            $fixtureKey.value = $manifest.runValue
+            $fixtureKey.kind = 'ExpandString'
+            Assert-Throws "$name refuses a changed registry type" { & $path -InstallDir $fixtureRoot -Confirm:$false } 'autostart.*changed'
+            $fixtureKey.kind = 'String'
+            Assert-Throws "$name accepts the recorded launcher" { & $path -InstallDir $fixtureRoot -Confirm:$false } 'fixture bootstrap called: Stop'
+            [IO.File]::WriteAllText($bootstrap, 'param($Mode,$ConfigPath) if ($Mode -eq "Stop") { $fixtureKey.value = "changed during stop" }')
+            Assert-Throws "$name rechecks the launcher before writing" { & $path -InstallDir $fixtureRoot -Confirm:$false } 'autostart.*changed'
+        }
+        . (Join-Path $PSScriptRoot 'watchdog-install-transaction.ps1')
+        $fixtureKey.value = $null
+        $manifest.previousRunValue = $null
+        Assert-InstallTrayAutostart $manifest 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    }
     Write-Host "watchdog lifecycle tests passed (mocked processes; temporary payload files only)."
 } finally {
     if ($heldMutex) { $heldMutex.ReleaseMutex(); $heldMutex.Dispose() }

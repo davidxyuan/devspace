@@ -1,6 +1,21 @@
 # Installer-only helpers. Keep runtime state and secrets out of public inventory.
 . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
 
+function Assert-InstallTrayAutostart($Record, [string]$RunPath) {
+    $key = $null
+    try {
+        try { $key = Get-Item -LiteralPath $RunPath -ErrorAction Stop }
+        catch [System.Management.Automation.ItemNotFoundException] { }
+        $name = [string]$Record.runName
+        $value = $null
+        if ($key) { $value = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+        if ($null -eq $value -and $null -eq $Record.previousRunValue) { return }
+        if ($value -isnot [string] -or $key.GetValueKind($name) -ne 'String' -or $value -cne $Record.runValue) {
+            throw 'Tray autostart changed after installation; refusing to overwrite it.'
+        }
+    } finally { if ($key) { $key.Dispose() } }
+}
+
 function Get-InstallSupervisorTaskSpec([string]$InstallDir) {
     $root = [IO.Path]::GetFullPath($InstallDir)
     $sha = [Security.Cryptography.SHA256]::Create()

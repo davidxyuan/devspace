@@ -81,6 +81,8 @@ if ($taskName -and [string]$manifest.legacyTaskXml) {
 if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configuration, and re-enable the legacy watchdog")) {
     $restoreLease = Enter-StackOperation $InstallDir
     try {
+    $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    Assert-InstallTrayAutostart $manifest $runPath
     $bootstrap = Join-Path $InstallDir "devspace-watchdog-bootstrap.ps1"
     $launcher = Join-Path $InstallDir "run-devspace-watchdog-tray-hidden.vbs"
     if ([System.IO.File]::Exists($bootstrap)) {
@@ -108,10 +110,7 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "stop Tray, restore pre-Tray configurat
         Remove-InstallSupervisorTask $InstallDir
     }
 
-    $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    $runProperties = Get-ItemProperty -LiteralPath $runPath -Name ([string]$manifest.runName) -ErrorAction SilentlyContinue
-    $currentRun = if ($runProperties -and $runProperties.PSObject.Properties[[string]$manifest.runName]) { [string]$runProperties.PSObject.Properties[[string]$manifest.runName].Value } else { $null }
-    if ($currentRun -and $currentRun -ne [string]$manifest.runValue) { throw "Tray autostart changed after installation; refusing to overwrite it." }
+    Assert-InstallTrayAutostart $manifest $runPath
     if ($null -ne $manifest.previousRunValue) { Set-ItemProperty -LiteralPath $runPath -Name ([string]$manifest.runName) -Value ([string]$manifest.previousRunValue) }
     else { Remove-ItemProperty -LiteralPath $runPath -Name ([string]$manifest.runName) -ErrorAction SilentlyContinue }
 

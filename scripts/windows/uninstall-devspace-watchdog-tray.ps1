@@ -74,6 +74,8 @@ foreach ($original in $retiredBackups) {
 if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray without stopping managed services")) {
     $uninstallLease = Enter-StackOperation $InstallDir
     try {
+    $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    Assert-InstallTrayAutostart $record $runPath
     $bootstrap = Join-Path $InstallDir "devspace-watchdog-bootstrap.ps1"
     if ([System.IO.File]::Exists($bootstrap)) {
         & $bootstrap -Mode Stop -ConfigPath (Join-Path $InstallDir "devspace-watchdog.config.json")
@@ -93,10 +95,7 @@ if ($PSCmdlet.ShouldProcess($InstallDir, "uninstall DevSpace Watchdog Tray witho
         Remove-InstallSupervisorTask $InstallDir
     }
 
-    $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    $runProperties = Get-ItemProperty -LiteralPath $runPath -Name ([string]$record.runName) -ErrorAction SilentlyContinue
-    $currentRun = if ($runProperties -and $runProperties.PSObject.Properties[[string]$record.runName]) { [string]$runProperties.PSObject.Properties[[string]$record.runName].Value } else { $null }
-    if ($currentRun -and $currentRun -ne [string]$record.runValue) { throw "Autostart value changed after installation; refusing to overwrite it." }
+    Assert-InstallTrayAutostart $record $runPath
     if ($null -ne $record.previousRunValue) { Set-ItemProperty -LiteralPath $runPath -Name ([string]$record.runName) -Value ([string]$record.previousRunValue) }
     else { Remove-ItemProperty -LiteralPath $runPath -Name ([string]$record.runName) -ErrorAction SilentlyContinue }
 
