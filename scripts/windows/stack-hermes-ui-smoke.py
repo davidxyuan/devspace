@@ -23,12 +23,16 @@ class PageAssets(HTMLParser):
             self.paths.append(values["href"])
 
 
-def main(source, version):
+def main(source, version, expected_digest):
     sys.path.insert(0, str(Path(source).resolve(strict=True)))
     import ui_api
 
     wheel = distribution("hermes-gpt")
     assert wheel.version == version
+    # Multiple builds share this version. pip records the archive it actually installed.
+    archive = json.loads(wheel.read_text("direct_url.json"))["archive_info"]
+    digest = archive.get("hashes", {}).get("sha256") or archive["hash"].removeprefix("sha256=")
+    assert digest == expected_digest, "Installed Hermes wheel differs from the release manifest"
     files = {p.as_posix(): p for p in wheel.files or ()}
     index = next(p for name, p in files.items() if name.endswith("/hermes-gpt/web/index.html"))
     assets = PageAssets()
@@ -48,7 +52,7 @@ def main(source, version):
             response.raise_for_status()
             assert response.content and response.content == wheel.locate_file(entry).read_bytes()
             hashes[url] = sha256(response.content).hexdigest()
-    print(json.dumps({"version": version, "sha256": hashes}))
+    print(json.dumps({"version": version, "wheelSha256": digest, "sha256": hashes}))
 
 
 if __name__ == "__main__":

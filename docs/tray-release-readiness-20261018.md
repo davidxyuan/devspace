@@ -1,5 +1,9 @@
 # Tray／watchdog 正式版準備：執行結果
 
+## 11/23 Hermes GPT 維護候選
+
+`tray-20261123-candidate.1` 在全新安裝採用 Hermes GPT `71805f9`，包含官方 `v0.18.0` 標籤之後的維護修正與 Windows 本地修正。套件版本仍為 0.18.0，安裝程式以提交與 wheel 的 SHA-256 識別這次建置。它需要 Python 3.11 以上；沿用既有 Hermes 安裝時保留原有的 Python 3.10 相容路徑。DevSpace 固定為 1.0.8，Hermes Agent 固定為 0.21.1。TYO 的備份還原、原生部署與部署後驗收仍待完成。[Hermes 建置與測試](https://github.com/davidxyuan/hermes-gpt/actions/runs/45099334839)
+
 ## 11/21 Hermes GPT 安裝候選
 
 `tray-20261121-candidate.1` 的全新安裝使用 Hermes GPT 0.18.0。Git 來源和隨附的 Python wheel 對應提交 `95ea04659b6fda027f970ff75d70fe00a99e772a`。wheel 內含網頁資源，安裝前會依 `stack-release-manifest.json` 核對 SHA-256。[wheel 建置紀錄](https://github.com/davidxyuan/hermes-gpt/actions/runs/44784541993/attempts/2)

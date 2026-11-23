@@ -463,7 +463,7 @@ function Find-GitForClone {
     Fail "Git is missing." "Rerun with -InstallTools, install Git for Windows manually, or install Hermes Agent before selecting -Components Hermes."
 }
 
-function Test-PythonForHermesGpt([string]$candidate) {
+function Test-PythonForHermesGpt([string]$candidate, [version]$minimumVersion = '3.10') {
     if (-not $candidate) {
         return $false
     }
@@ -483,13 +483,13 @@ function Test-PythonForHermesGpt([string]$candidate) {
         if ($pythonExitCode -ne 0 -or -not $versionText) {
             return $false
         }
-        return ([version]([string]$versionText).Trim()) -ge [version]'3.10'
+        return ([version]([string]$versionText).Trim()) -ge $minimumVersion
     } catch {
         return $false
     }
 }
 
-function Find-UsablePythonForHermesGpt {
+function Find-UsablePythonForHermesGpt([version]$minimumVersion = '3.10') {
     Refresh-Path
     $candidates = New-Object System.Collections.Generic.List[string]
     function Add-PythonCandidate([string]$candidate) {
@@ -545,36 +545,36 @@ function Find-UsablePythonForHermesGpt {
     }
 
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
-        if (Test-PythonForHermesGpt $candidate) {
+        if (Test-PythonForHermesGpt $candidate $minimumVersion) {
             return [System.IO.Path]::GetFullPath($candidate)
         }
     }
     return $null
 }
 
-function Find-PythonForHermesGpt {
+function Find-PythonForHermesGpt([version]$minimumVersion) {
     if ($PythonPath) {
         $explicit = [System.IO.Path]::GetFullPath($PythonPath)
-        if (Test-PythonForHermesGpt $explicit) {
+        if (Test-PythonForHermesGpt $explicit $minimumVersion) {
             return $explicit
         }
-        Fail "The configured Python runtime is missing or incompatible: $explicit" "Use Python 3.10 or newer, or omit -PythonPath so the installer can discover/install Python automatically."
+        Fail "The configured Python runtime is missing or incompatible: $explicit" "Use Python $minimumVersion or newer, or omit -PythonPath for automatic discovery."
     }
 
-    $python = Find-UsablePythonForHermesGpt
+    $python = Find-UsablePythonForHermesGpt $minimumVersion
     if ($python) {
         return $python
     }
 
     if ($InstallTools) {
         Install-WingetPackage "Python.Python.3.12" "Python 3"
-        $python = Find-UsablePythonForHermesGpt
+        $python = Find-UsablePythonForHermesGpt $minimumVersion
         if ($python) {
             return $python
         }
-        Fail "Python 3.12 was installed, but no usable Python runtime was found." "Close/reopen PowerShell and rerun, or pass -PythonPath with the full path to a Python 3.10+ python.exe."
+        Fail "Python 3.12 was installed, but no usable Python runtime was found." "Pass -PythonPath with the full path to Python $minimumVersion or newer."
     }
-    Fail "Python is missing." "Rerun with -InstallTools, install Python 3 manually, or pass -PythonPath with a Python 3.10+ runtime."
+    Fail "Python $minimumVersion or newer is required." "Rerun with -InstallTools or pass -PythonPath with a compatible runtime."
 }
 
 function Get-UrlOrigin([string]$Url) {
@@ -908,6 +908,7 @@ if ($installHermes -and $hermesCapabilities.filesystemScope -eq "full") {
 
 $hermesCommandPath = ""
 if ($installHermes) {
+    $minimumHermesPython = [version]'3.10'
     if (-not $SkipHermesInstall) {
         $pin = $releasePolicy.components.'hermes-gpt'
         $pinnedRepository = 'https://github.com/' + [string]$pin.repository + '.git'
@@ -931,13 +932,16 @@ if ($installHermes) {
             if ($LASTEXITCODE -ne 0 -or $changes) { Fail 'Pending Hermes source has local changes.' }
             $wheel = Join-Path $PSScriptRoot ("wheels\hermes_gpt-" + $pin.version + "-py3-none-any.whl")
             if ((Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash -ine $pin.wheelSha256) { Fail 'Bundled Hermes GPT wheel integrity check failed.' }
+            if ($pin.minimumPythonVersion) { $minimumHermesPython = [version]$pin.minimumPythonVersion }
         }
 
         $venvPython = Join-Path $HermesDir ".venv\Scripts\python.exe"
         if (-not (Test-Path -LiteralPath $venvPython)) {
             Write-Host "Creating hermes-gpt virtual environment..."
-            $PythonPath = Find-PythonForHermesGpt
+            $PythonPath = Find-PythonForHermesGpt $minimumHermesPython
             Invoke-Checked { & $PythonPath -m venv (Join-Path $HermesDir ".venv") } "python -m venv failed."
+        } elseif ($wheel -and -not (Test-PythonForHermesGpt $venvPython $minimumHermesPython)) {
+            Fail "The unfinished Hermes GPT installation requires Python $minimumHermesPython or newer." "Preserve the existing directory and select a new installation directory with a compatible runtime."
         }
 
         $requirementsPath = Join-Path $HermesDir "requirements.txt"
@@ -956,8 +960,7 @@ if ($installHermes) {
         $hermesPython = [System.IO.Path]::GetFullPath($PythonPath)
     }
     if (-not [IO.File]::Exists($hermesPython)) { Fail "Hermes-GPT Python was not found: $hermesPython" }
-    $pythonVersion = [version](& $hermesPython -c 'import platform; print(platform.python_version())')
-    if ($LASTEXITCODE -ne 0 -or $pythonVersion -lt [version]'3.10') { Fail 'Hermes-GPT requires Python >=3.10.' }
+    if (-not (Test-PythonForHermesGpt $hermesPython $minimumHermesPython)) { Fail "Hermes-GPT requires Python $minimumHermesPython or newer." }
     $hermesServer = Join-Path $HermesDir "server.py"
     if (-not (Test-Path -LiteralPath $hermesServer)) {
         Fail "hermes-gpt server.py was not found: $hermesServer" "Remove -SkipHermesInstall so the installer can clone hermes-gpt, or pass -HermesDir to the correct repo folder."

@@ -90,6 +90,24 @@ public static class NativePythonProbeFixture {
 '@ -OutputAssembly $nativeGood -OutputType ConsoleApplication
 
     if (-not (Test-PythonForHermesGpt $good)) { throw 'Python 3.12 fixture was rejected.' }
+    $pin = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'stack-release-manifest.json') -Raw | ConvertFrom-Json).components.'hermes-gpt'
+    $wheel = Join-Path $PSScriptRoot ("wheels\hermes_gpt-" + $pin.version + "-py3-none-any.whl")
+    if ((Get-FileHash -LiteralPath $wheel).Hash -ine $pin.wheelSha256) { throw 'Wrong Hermes GPT wheel in the release.' }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($wheel)
+    try {
+        $entry = $archive.GetEntry("hermes_gpt-$($pin.version).dist-info/METADATA")
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $archive.Dispose() }
+    if (($metadata -split '\r?\n') -cnotcontains "Requires-Python: >=$($pin.minimumPythonVersion)") { throw 'Interpreter floor differs from wheel metadata.' }
+    $legacyPython = Join-Path $tempRoot 'python-310.cmd'
+    [IO.File]::WriteAllLines($legacyPython, @('@echo off','echo 3.10.19','exit /b 0'))
+    if (-not (Test-PythonForHermesGpt $legacyPython)) { throw 'Existing Python 3.10 installations must remain usable.' }
+    if (Test-PythonForHermesGpt $legacyPython ([version]$pin.minimumPythonVersion)) { throw 'Python 3.10 was accepted for the new Hermes wheel.' }
+    $minimumPython = Join-Path $tempRoot 'python-311.cmd'
+    [IO.File]::WriteAllLines($minimumPython, @('@echo off','echo 3.11.0','exit /b 0'))
+    if (-not (Test-PythonForHermesGpt $minimumPython ([version]$pin.minimumPythonVersion))) { throw 'The minimum supported wheel interpreter was rejected.' }
     if (-not (Test-PythonForHermesGpt $nativeGood)) { throw 'Native Python-like executable was rejected due to LASTEXITCODE/pipeline handling.' }
     if (Test-PythonForHermesGpt $old) { throw 'Python 3.9 fixture was accepted.' }
     if (Test-PythonForHermesGpt $bad) { throw 'Failed Python fixture was accepted.' }

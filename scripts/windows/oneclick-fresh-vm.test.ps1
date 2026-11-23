@@ -317,7 +317,8 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     $hermesMcp = Get-Content -LiteralPath $hermesMcpPath -Raw | ConvertFrom-Json
     if (-not $hermesMcp.passed) { throw 'Installed Hermes MCP evidence did not confirm success.' }
 
-    $uiOutput = & ([string]$watchdog.hermesPython) -I -B (Join-Path $packageRoot 'scripts\windows\stack-hermes-ui-smoke.py') $hermesDir $releasePolicy.components.'hermes-gpt'.version
+    $hermesPin = $releasePolicy.components.'hermes-gpt'
+    $uiOutput = & ([string]$watchdog.hermesPython) -I -B (Join-Path $packageRoot 'scripts\windows\stack-hermes-ui-smoke.py') $hermesDir $hermesPin.version $hermesPin.wheelSha256
     if ($LASTEXITCODE -ne 0) { throw 'Installed Hermes UI did not serve its packaged assets.' }
     $hermesUi = $uiOutput | ConvertFrom-Json
 

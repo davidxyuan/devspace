@@ -22,6 +22,13 @@ try {
   delete missingWheel.components["hermes-gpt"].wheelSha256;
   fs.writeFileSync(file, JSON.stringify(missingWheel));
   assert.throws(() => readReleasePolicy(root), /wheel digest/);
+  const legacy = structuredClone(policy);
+  delete legacy.components["hermes-gpt"].minimumPythonVersion;
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.deepEqual(readReleasePolicy(root), legacy);
+  legacy.components["hermes-gpt"].minimumPythonVersion = "3.11+";
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.throws(() => readReleasePolicy(root), /minimum Python version/);
   for (const [id, pin] of Object.entries(policy.components)) {
     const target = installationTarget(id);
     assert.equal(target.commit, pin.revision);
