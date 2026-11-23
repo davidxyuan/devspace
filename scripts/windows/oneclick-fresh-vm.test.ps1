@@ -309,7 +309,9 @@ fs.writeFileSync(process.argv[6],JSON.stringify(params));
     $hermesMcpPath = Join-Path $WorkRoot 'hermes-mcp-smoke.json'
     & ([string]$watchdog.hermesPython) -I -B (Join-Path $packageRoot 'scripts\windows\stack-hermes-mcp-smoke.py') ([string]$watchdog.hermesServer) ([string]$watchdog.hermesAgentWorkingDirectory) $hermesMcpPath
     $hermesMcpExit = $LASTEXITCODE
-    [ordered]@{ checkedAt=[DateTimeOffset]::UtcNow.ToString('o'); exitCode=$hermesMcpExit; evidenceExists=[IO.File]::Exists($hermesMcpPath) } |
+    $watchdogLog = Read-SharedText (Join-Path $installDir 'devspace-watchdog.log')
+    $restartStops = @($watchdogLog -split '\r?\n' | Where-Object { $_ -match 'stopping PID \d+ \(python\.exe\): restart request for managed DevSpace stack$' })
+    [ordered]@{ checkedAt=[DateTimeOffset]::UtcNow.ToString('o'); exitCode=$hermesMcpExit; evidenceExists=[IO.File]::Exists($hermesMcpPath); legacyPythonRestartStops=$restartStops } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkRoot 'hermes-mcp-smoke-process.json') -Encoding UTF8
     if ($hermesMcpExit -ne 0) { throw "Installed Hermes readonly MCP smoke failed (exit=$hermesMcpExit); see hermes-mcp-smoke diagnostics." }
     $hermesMcp = Get-Content -LiteralPath $hermesMcpPath -Raw | ConvertFrom-Json

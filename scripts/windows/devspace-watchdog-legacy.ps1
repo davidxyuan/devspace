@@ -169,12 +169,7 @@ function Is-DevSpaceServe($process) {
 }
 
 function Is-HermesServe($process) {
-    if (-not $process) {
-        return $false
-    }
-    $cmd = [string]$process.CommandLine
-    return ($hermesServer -and $cmd -like "*$hermesServer*") -or
-        ($hermesCommand -and $cmd -like "*$hermesCommand*")
+    return Test-WatchdogManagedProcess $process 'hermes' $config
 }
 
 function Is-RouterServe($process) {
@@ -226,7 +221,7 @@ function Invoke-RestartIfRequested {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
                 (Is-DevSpaceServe $_) -or
-                    ($hermesServer -and ([string]$_.CommandLine) -like "*$hermesServer*") -or
+                    ($_.Name -eq 'python.exe' -and (Is-HermesServe $_)) -or
                     ($routerPath -and ([string]$_.CommandLine) -like "*$routerPath*") -or
                     (Is-NgrokForDevSpace $_)
             }
