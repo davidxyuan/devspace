@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "tray-20261121-candidate.1",
+  "channel": "candidate",
+  "description": "Pinned candidate inputs, not a tested stable combination. Preserve existing installations; stage upgrades separately.",
+  "components": {
+    "devspace-official": {
+      "repository": "Waishnav/devspace",
+      "version": "1.0.8",
+      "revision": "fe712e2b6c07231d2a76503bf2a674b165850616",
+      "integrity": "sha512-uyEgFUmt8UcxRy7xnH2rddYdEm6lLIPMKgS2JHwRP7qVnWFtC7j1l4//EOfEVhO4NqGMckWxixNkCWAHPvgZqg=="
+    },
+    "hermes-gpt": {
+      "repository": "davidxyuan/hermes-gpt",
+      "version": "0.18.0",
+      "revision": "95ea04659b6fda027f970ff75d70fe00a99e772a",
+      "ref": "codex/tyo-tray-v018-20261121",
+      "updateBranch": "codex/tyo-tray-v018-20261121",
+      "wheelSha256": "d8deba5810b092df369aaddf357155c9d5007c2be8791d42ccaedb008ac417a0"
+    },
+    "hermes-agent": {
+      "repository": "davidxyuan/hermes-agent",
+      "version": "0.21.1",
+      "revision": "601d98c2709f766290cc3627b035ab73cfd54232",
+      "ref": "oneclick-runtime-601d98c",
+      "updateBranch": "oneclick-runtime-601d98c"
+    }
+  }
+}
