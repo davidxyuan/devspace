@@ -29,6 +29,25 @@ try {
         finally { $snapshotReader.Dispose() }
     } finally { $stream.Dispose() }
     Assert-Capture ((Read-WatchdogJson $heartbeat).pid -eq 456) 'Next production JSON read did not see the replacement.'
+    $writer = [PowerShell]::Create()
+    try {
+        [void]$writer.AddScript({
+            param($core, $path)
+            $ErrorActionPreference = 'Stop'
+            . $core
+            foreach ($index in 1..200) { Write-WatchdogAtomicJson $path @{pid=$index} }
+        }).AddArgument((Join-Path $PSScriptRoot 'watchdog-control-core.ps1')).AddArgument($heartbeat)
+        $writes = $writer.BeginInvoke()
+        do { Assert-Capture ((Read-WatchdogJson $heartbeat).pid -gt 0) 'Reader lost a heartbeat snapshot.' } until ($writes.IsCompleted)
+        [void]$writer.EndInvoke($writes)
+        Assert-Capture ((Read-WatchdogJson $heartbeat).pid -eq 200) 'Concurrent replacements did not finish.'
+    } finally { $writer.Dispose() }
+    $locked = [IO.File]::Open($heartbeat, 'Open', 'Read', 'None')
+    try {
+        $rejected = $false
+        try { [void](Read-WatchdogJson $heartbeat) } catch [IO.IOException] { $rejected = ($_.Exception.GetBaseException().HResult -band 65535) -eq 32 }
+        Assert-Capture $rejected 'An unresolved exclusive lock must surface the sharing error.'
+    } finally { $locked.Dispose() }
     Write-WatchdogAtomicJson $heartbeat @{pid=123;processStartUtc='fixture';timestamp=[DateTimeOffset]::UtcNow.ToString('o')}
     $sha=[Security.Cryptography.SHA256]::Create()
     try { $hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($ConfigPath.ToLowerInvariant()))).Replace('-','').Substring(0,20) }

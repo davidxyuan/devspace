@@ -73,8 +73,10 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
     Start-HealthRunspace
     Assert-True 'only one probe may run' ([object]::ReferenceEquals($originalWorker,$script:healthPowerShell))
     $script:lastHealthStarted=[DateTimeOffset]::UtcNow.AddSeconds(-46)
+    $readerCore = Join-Path $SourceDirectory 'watchdog-control-core.ps1'
     $clientBody = {
-        param($Port,$HeartbeatPath,$GateName,$StopName)
+        param($Port,$HeartbeatPath,$GateName,$StopName,$ReaderCore)
+        . $ReaderCore
         $gate=[Threading.EventWaitHandle]::OpenExisting($GateName)
         $stop=[Threading.EventWaitHandle]::OpenExisting($StopName)
         $watch=[Diagnostics.Stopwatch]::StartNew(); $ok=0; $failed=0; $maxAge=0; $delayed=0
@@ -85,7 +87,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
                     if ($status.overall.label -eq 'Health check delayed') { $delayed++ }
                     $page=Invoke-WebRequest "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 1
                     if ($page.StatusCode -eq 200) { $ok++ }
-                    $hb=[IO.File]::ReadAllText($HeartbeatPath) | ConvertFrom-Json
+                    $hb=Read-WatchdogJson $HeartbeatPath
                     $maxAge=[Math]::Max($maxAge,([DateTimeOffset]::UtcNow-[DateTimeOffset]::Parse($hb.timestamp)).TotalSeconds)
                 } catch { $failed++ }
                 Start-Sleep -Milliseconds 100
@@ -94,7 +96,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
         } finally { [void]$gate.Set(); [void]$stop.Set(); $gate.Dispose(); $stop.Dispose() }
     }
     $clientWorker=[PowerShell]::Create()
-    [void]$clientWorker.AddScript($clientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($gateName).AddArgument($stopName)
+    [void]$clientWorker.AddScript($clientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($gateName).AddArgument($stopName).AddArgument($readerCore)
     $clientAsync=$clientWorker.BeginInvoke()
     Invoke-Expression $loop.Extent.Text
     $result=@($clientWorker.EndInvoke($clientAsync))[0]
@@ -131,7 +133,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
     Assert-True 'recovery heartbeat protects transaction' ((Read-WatchdogJson $script:heartbeatPath).mutationInProgress)
     $clientWorker.Dispose()
     $clientWorker=[PowerShell]::Create()
-    [void]$clientWorker.AddScript($clientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($gateName).AddArgument($stopName)
+    [void]$clientWorker.AddScript($clientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($gateName).AddArgument($stopName).AddArgument($readerCore)
     $clientAsync=$clientWorker.BeginInvoke()
     Invoke-Expression $loop.Extent.Text
     $recoveryResult=@($clientWorker.EndInvoke($clientAsync))[0]
@@ -145,7 +147,8 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
     Write-ControlHeartbeat -Force
     $clientWorker.Dispose(); $clientWorker=[PowerShell]::Create()
     $slowClientBody={
-        param($Port,$HeartbeatPath,$StopName)
+        param($Port,$HeartbeatPath,$StopName,$ReaderCore)
+        . $ReaderCore
         $ErrorActionPreference='Stop'
         $stop=[Threading.EventWaitHandle]::OpenExisting($StopName)
         try {
@@ -173,9 +176,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
                             throw
                         }
                         Start-Sleep -Milliseconds 100
-                        $file=[IO.File]::Open($HeartbeatPath,'Open','Read',[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-                        $reader=New-Object IO.StreamReader($file)
-                        try {$hb=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}
+                        $hb=Read-WatchdogJson $HeartbeatPath
                         $maxAge=[Math]::Max($maxAge,([DateTimeOffset]::UtcNow-[DateTimeOffset]$hb.timestamp).TotalSeconds)
                     }
                 } finally {$client.Dispose()}
@@ -188,9 +189,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
                 foreach($i in 1..8) {$idle=New-Object Net.Sockets.TcpClient;$idle.Connect('127.0.0.1',$Port);$idleClients+=$idle}
                 $watch=[Diagnostics.Stopwatch]::StartNew();$maxAge=0
                 while($watch.Elapsed.TotalSeconds -lt 8) {
-                    $file=[IO.File]::Open($HeartbeatPath,'Open','Read',[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-                    $reader=New-Object IO.StreamReader($file)
-                    try {$hb=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}
+                    $hb=Read-WatchdogJson $HeartbeatPath
                     $maxAge=[Math]::Max($maxAge,([DateTimeOffset]::UtcNow-[DateTimeOffset]$hb.timestamp).TotalSeconds)
                     Start-Sleep -Milliseconds 100
                 }
@@ -199,7 +198,7 @@ function Invoke-WatchdogServiceRecovery($Service,$Path,$Config,$Health) {
             } finally {foreach($idle in $idleClients){$idle.Dispose()}}
         } finally {[void]$stop.Set();$stop.Dispose()}
     }
-    [void]$clientWorker.AddScript($slowClientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($stopName)
+    [void]$clientWorker.AddScript($slowClientBody.ToString()).AddArgument($script:settings.dashboardPort).AddArgument($script:heartbeatPath).AddArgument($stopName).AddArgument($readerCore)
     $clientAsync=$clientWorker.BeginInvoke()
     Invoke-Expression $loop.Extent.Text
     $slowResults=@($clientWorker.EndInvoke($clientAsync))

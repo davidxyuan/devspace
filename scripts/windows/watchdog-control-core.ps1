@@ -45,7 +45,18 @@ function Protect-WatchdogText([string]$Value, [int]$MaximumLength = 500) {
 
 function Read-WatchdogText([string]$Path) {
     # Readers must allow atomic replacement while retaining their original file snapshot.
-    $stream = [IO.File]::Open($Path, 'Open', 'Read', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    for ($retryClock = $null; ; ) {
+        try {
+            $stream = [IO.File]::Open($Path, 'Open', 'Read', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            break
+        } catch [IO.IOException] {
+            # ReplaceFile can briefly report file-not-found or a sharing violation even to a shared-delete reader.
+            if (($_.Exception.GetBaseException().HResult -band 65535) -notin @(2, 32)) { throw }
+            if (-not $retryClock) { $retryClock = [Diagnostics.Stopwatch]::StartNew(); $spin = New-Object Threading.SpinWait }
+            if ($retryClock.ElapsedMilliseconds -ge 50) { throw }
+            $spin.SpinOnce()
+        }
+    }
     try {
         $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
         try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
@@ -115,8 +126,8 @@ function Write-WatchdogAtomicJson([string]$Path, $Value, [int]$Depth = 20) {
 }
 
 function Read-WatchdogJson([string]$Path) {
-    if (-not [System.IO.File]::Exists($Path)) { throw "Missing JSON file: $Path" }
-    return ((Read-WatchdogText ([System.IO.Path]::GetFullPath($Path))) | ConvertFrom-Json)
+    try { return ((Read-WatchdogText ([System.IO.Path]::GetFullPath($Path))) | ConvertFrom-Json) }
+    catch [IO.FileNotFoundException] { throw "Missing JSON file: $Path" }
 }
 
 function Get-WatchdogOrigin([string]$Value, [string]$FieldName, [switch]$RequireInternal, [switch]$AllowPath) {
