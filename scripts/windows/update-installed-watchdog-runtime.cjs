@@ -33,6 +33,23 @@ function contentEqual(left, right) {
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
 }
+function backendMatchesBaseline(name, target, actual, record, config) {
+  if (Object.hasOwn(record.backendFileHashes || {}, name)) {
+    return actual !== null && actual === String(record.backendFileHashes[name]).toUpperCase();
+  }
+  if (actual === null) return name === "devspace-watchdog-legacy.ps1";
+  const root = config.managementPackageRoot;
+  if (!root || !path.isAbsolute(root)) return false;
+  const manifest = path.join(root, "oneclick-payload.json");
+  if (!fs.existsSync(manifest)) return false;
+  const relative = "scripts/windows/" + name;
+  const entries = readJson(manifest).files.filter(entry => entry.path === relative);
+  if (entries.length !== 1 || !/^[0-9a-f]{64}$/i.test(entries[0].sha256)) return false;
+  const expected = entries[0].sha256.toUpperCase();
+  if (actual === expected) return true;
+  const original = path.join(root, relative);
+  return fs.existsSync(original) && sha256File(original) === expected && contentEqual(target, original);
+}
 function supervisorTaskName(installDir) {
   const hash = crypto.createHash("sha256").update(path.resolve(installDir).toLowerCase(), "utf8").digest("hex").slice(0, 12);
   return `DevSpaceWatchdogSupervisor-${hash}`;
@@ -45,7 +62,7 @@ function buildPlan({ installDir, sourceDir, expectedMachineSlug = "" }) {
   if (!fs.existsSync(configPath) || !fs.existsSync(recordPath)) throw new Error("This updater requires an existing verified Watchdog Tray installation.");
   for (const name of ALL_FILES) {
     if (!fs.existsSync(path.join(sourceDir, name))) throw new Error(`Update source is missing: ${name}`);
-    if (!fs.existsSync(path.join(installDir, name))) throw new Error(`Installed runtime file is missing: ${name}`);
+    if (name !== "devspace-watchdog-legacy.ps1" && !fs.existsSync(path.join(installDir, name))) throw new Error(`Installed runtime file is missing: ${name}`);
   }
   const config = readJson(configPath);
   const record = readJson(recordPath);
@@ -59,11 +76,17 @@ function buildPlan({ installDir, sourceDir, expectedMachineSlug = "" }) {
     const actual = sha256File(path.join(installDir, name));
     if (actual !== String(entry.sha256 || "").toUpperCase()) throw new Error(`Installed payload changed since the install record: ${name}`);
   }
-  const changes = ALL_FILES.filter(name => !contentEqual(path.join(sourceDir, name), path.join(installDir, name))).map(name => ({
-    name,
-    sourceHash: sha256File(path.join(sourceDir, name)),
-    targetHash: sha256File(path.join(installDir, name)),
-  }));
+  const changes = [];
+  for (const name of ALL_FILES) {
+    const source = path.join(sourceDir, name), target = path.join(installDir, name);
+    const exists = fs.existsSync(target);
+    if (exists && contentEqual(source, target)) continue;
+    const targetHash = exists ? sha256File(target) : null;
+    if (BACKEND_FILES.includes(name) && !backendMatchesBaseline(name, target, targetHash, record, config)) {
+      throw new Error(`Cannot verify installed backend against its previous version: ${name}. Preserve the current file and review its changes.`);
+    }
+    changes.push({ name, sourceHash: sha256File(source), targetHash });
+  }
   return { installDir, sourceDir, configPath, recordPath, config, record, installedMap, changes };
 }
 function httpJson({ port, method = "GET", pathname = "/api/status", body, timeoutMs = 5000 }) {

@@ -1,5 +1,9 @@
 # Tray／watchdog 正式版準備：執行結果
 
+## 11/23 既有 Tray 安裝的更新與回復
+
+更新器在覆寫 Router 和兩個後端 watchdog 腳本之前，會先比對安裝時記錄的 SHA-256。舊版安裝紀錄若缺少這三個檔案，就查原設定指向的管理套件清單。內容無法核對時，更新會在備份與停止服務前中止。請保留現場檔案，與原版本比對後再決定如何合併。成功更新時，新雜湊會存入安裝紀錄；啟動失敗時，更新器會一併還原原檔案與安裝紀錄。
+
 ## 11/23 Hermes GPT 維護候選
 
 `tray-20261123-candidate.1` 在全新安裝採用 Hermes GPT `71805f9`，包含官方 `v0.18.0` 標籤之後的維護修正與 Windows 本地修正。套件版本仍為 0.18.0，安裝程式以提交與 wheel 的 SHA-256 識別這次建置。它需要 Python 3.11 以上；沿用既有 Hermes 安裝時保留原有的 Python 3.10 相容路徑。DevSpace 固定為 1.0.8，Hermes Agent 固定為 0.21.1。TYO 的備份還原、原生部署與部署後驗收仍待完成。[Hermes 建置與測試](https://github.com/davidxyuan/hermes-gpt/actions/runs/45099334839)

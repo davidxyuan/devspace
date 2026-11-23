@@ -318,11 +318,21 @@ try {
     Set-ItemProperty -LiteralPath $runPath -Name $runName -Value $runValue
     $runChanged = $true
 
+    # Backends belong to the stack, not the Tray uninstaller. Record only known distribution bytes.
+    $backendHashes = @{}
+    foreach ($name in @('devspace-watchdog.ps1','devspace-watchdog-legacy.ps1','mcp-router.cjs')) {
+        $target = Join-Path $InstallDir $name
+        $source = Join-Path $PSScriptRoot $name
+        if ([IO.File]::Exists($target) -and [IO.File]::Exists($source)) {
+            $hash = Get-WatchdogFileSha256 $target
+            if ($hash -eq (Get-WatchdogFileSha256 $source)) { $backendHashes[$name] = $hash }
+        }
+    }
     $manifest = [pscustomobject][ordered]@{
         schemaVersion=1; timestamp=[DateTimeOffset]::Now.ToString("o"); installDir=$InstallDir; backupPath=$backupPath
         runName=$runName; runValue=$runValue; previousRunValue=$existingRun; legacyTaskName=$legacyName
         legacyTaskWasEnabled=$legacyWasEnabled; legacyTaskXml=$taskXmlName; legacyTaskXmlSha256=$taskXmlSha256; createdTargets=$createdTargets
-        overwrittenFiles=$overwritten; installedFiles=$installed; configBackups=$configBackups; retiredFiles=$retiredFiles; dashboardPort=$settings.dashboardPort
+        overwrittenFiles=$overwritten; installedFiles=$installed; backendFileHashes=$backendHashes; configBackups=$configBackups; retiredFiles=$retiredFiles; dashboardPort=$settings.dashboardPort
         originalTransactionPath=$OriginalTransactionPath; legacyTasks=$legacyTaskBackups; supervisorTask=$supervisorSpec.name
         legacyProcesses=$(if ($originalTransaction) { @($originalTransaction.legacyProcesses) } else { @($legacyProcessTransaction.stoppedLegacyProcesses) })
     }

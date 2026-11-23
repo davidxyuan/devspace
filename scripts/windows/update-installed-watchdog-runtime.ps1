@@ -52,6 +52,24 @@ function Test-UpdateContentEqual([string]$Left, [string]$Right) {
         return $leftText -ceq $rightText
     } catch { return $false }
 }
+function Test-UpdateBackendBaseline([string]$Name, [string]$Target, [string]$Actual, $Record, $Config) {
+    $hashes = $Record.backendFileHashes
+    if ($null -ne $hashes -and $null -ne $hashes.PSObject.Properties[$Name]) {
+        return $Actual -and $Actual -ieq [string]$hashes.$Name
+    }
+    if (-not $Actual) { return $Name -eq 'devspace-watchdog-legacy.ps1' }
+    $root = [string]$Config.managementPackageRoot
+    if (-not $root -or -not [IO.Path]::IsPathRooted($root)) { return $false }
+    $manifest = Join-Path $root 'oneclick-payload.json'
+    if (-not [IO.File]::Exists($manifest)) { return $false }
+    $relative = "scripts/windows/$Name"
+    $entries = @((Read-WatchdogJson $manifest).files | Where-Object { $_.path -ceq $relative })
+    if ($entries.Count -ne 1 -or [string]$entries[0].sha256 -notmatch '^[0-9a-f]{64}$') { return $false }
+    $expected = [string]$entries[0].sha256
+    if ($Actual -ieq $expected) { return $true }
+    $original = Join-Path $root $relative
+    return [IO.File]::Exists($original) -and (Get-WatchdogFileSha256 $original) -ieq $expected -and (Test-UpdateContentEqual $Target $original)
+}
 function Test-UpdateKasperskyEndpointSecurity {
     if (Get-Process -Name 'avp' -ErrorAction SilentlyContinue) { return $true }
     foreach ($root in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
@@ -197,6 +215,7 @@ foreach ($name in $backendFiles) {
 [void](Get-UpdateStableHealth)
 
 $changes = @()
+$backendHashes = @{}
 foreach ($name in $allFiles) {
     $source = Join-Path $SourceDir $name
     $target = Join-Path $InstallDir $name
@@ -204,7 +223,13 @@ foreach ($name in $allFiles) {
     $targetExists = [IO.File]::Exists($target)
     $targetHash = if ($targetExists) { Get-WatchdogFileSha256 $target } else { '' }
     if (-not $targetExists -or -not (Test-UpdateContentEqual $source $target)) {
+        if ($name -in $backendFiles -and -not (Test-UpdateBackendBaseline $name $target $targetHash $record $config)) {
+            throw "Cannot verify installed backend against its previous version: $name. Preserve the current file and review its changes."
+        }
         $changes += [pscustomobject]@{name=$name;sourceHash=$sourceHash;targetHash=$targetHash;targetExisted=$targetExists}
+        if ($name -in $backendFiles) { $backendHashes[$name] = $sourceHash }
+    } elseif ($name -in $backendFiles) {
+        $backendHashes[$name] = $targetHash
     }
 }
 Write-Host "Machine: $($config.machineSlug)"
@@ -251,6 +276,7 @@ try {
         $entry = $installedMap[$name]
         $entry.sha256 = Get-WatchdogFileSha256 (Join-Path $InstallDir $name)
     }
+    $record | Add-Member -NotePropertyName backendFileHashes -NotePropertyValue $backendHashes -Force
     Write-WatchdogAtomicJson $recordPath $record
     $supervisorAction = Convert-InstallSupervisorTaskAction $InstallDir
     $supervisorActionChanged = [bool]$supervisorAction.changed

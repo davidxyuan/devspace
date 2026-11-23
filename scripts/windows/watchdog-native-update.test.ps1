@@ -28,8 +28,13 @@ foreach ($name in $files) {
 $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
 $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $configPath = Join-Path $runtime 'devspace-watchdog.config.json'
+$baselinePackage = Join-Path $WorkRoot 'installed-package'
+[void][IO.Directory]::CreateDirectory($baselinePackage)
+Write-WatchdogAtomicJson (Join-Path $baselinePackage 'oneclick-payload.json') @{files=@(foreach ($name in $files[11..13]) {
+    @{path="scripts/windows/$name"; sha256=(Get-WatchdogFileSha256 (Join-Path $BaselineDirectory $name))}
+})}
 Write-WatchdogAtomicJson $configPath @{
-    stateDir=$runtime; machineSlug='native-ci'; publicBaseUrl='https://validation.invalid';
+    stateDir=$runtime; managementPackageRoot=$baselinePackage; machineSlug='native-ci'; publicBaseUrl='https://validation.invalid';
     devspaceEnabled=$false; hermesEnabled=$false; routerPort=0; manageNgrok=$false;
     nodePath=(Get-Command node.exe).Source; cliPath=(Join-Path $env:GITHUB_WORKSPACE 'dist\cli.js');
     controlCenter=@{dashboardPort=$port}
@@ -109,9 +114,30 @@ try {
     Export-ScheduledTask -TaskName $spec.name | Set-Content -LiteralPath (Join-Path $WorkRoot 'task.xml')
     Start-ScheduledTask -TaskName $spec.name
     Checkpoint 'baseline-ready'
+    # An older receipt covers only the Tray files. A locally edited backend must survive Apply.
+    $legacyName = 'devspace-watchdog-legacy.ps1'
+    $legacyPath = Join-Path $runtime $legacyName
+    [IO.File]::AppendAllText($legacyPath, "`r`n# disposable local modification`r`n")
+    $editedHash = Get-WatchdogFileSha256 $legacyPath
+    $oldRecordHash = Get-WatchdogFileSha256 $recordPath
+    $refused = $false
+    try {
+        & (Join-Path $PSScriptRoot 'update-installed-watchdog-runtime.ps1') -InstallDir $runtime -SourceDir $PSScriptRoot -ExpectedMachineSlug 'native-ci' -Apply
+    } catch {
+        if ($_.Exception.Message -notlike "Cannot verify installed backend against its previous version: $legacyName.*") { throw }
+        $refused = $true
+    }
+    if (-not $refused -or (Get-WatchdogFileSha256 $legacyPath) -ne $editedHash -or (Get-WatchdogFileSha256 $recordPath) -ne $oldRecordHash -or
+        [IO.Directory]::Exists((Join-Path $runtime 'configuration-backups'))) { throw 'Backend preflight did not preserve the original installation.' }
+    $report.locallyModifiedBackendPreserved = $true
+    [IO.File]::Copy((Join-Path $BaselineDirectory $legacyName), $legacyPath, $true)
     & (Join-Path $PSScriptRoot 'update-installed-watchdog-runtime.ps1') -InstallDir $runtime -SourceDir $PSScriptRoot -ExpectedMachineSlug 'native-ci' -Apply
     Checkpoint 'candidate-ready'
     Assert-Payload $PSScriptRoot
+    $updated = Read-WatchdogJson $recordPath
+    foreach ($name in $files[11..13]) {
+        if ($updated.backendFileHashes.$name -ne (Get-WatchdogFileSha256 (Join-Path $runtime $name))) { throw "Missing backend receipt: $name" }
+    }
     $recordHash = Get-WatchdogFileSha256 $recordPath
     $expectedFailure = $false
     try {

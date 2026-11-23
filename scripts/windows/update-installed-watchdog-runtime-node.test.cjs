@@ -30,7 +30,16 @@ try {
     fs.writeFileSync(path.join(sourceDir, name), text.replace(/\r\n/g, "\n"), "utf8");
   }
   fs.writeFileSync(path.join(sourceDir, "mcp-router.cjs"), "fixture mcp-router.cjs\nline two\nnew router line\n", "utf8");
-  const config = { stateDir: installDir, machineSlug: "fixture", control: { dashboardPort: 18777 } };
+  const router = "mcp-router.cjs";
+  const routerPath = path.join(installDir, router);
+  const originalRouter = fs.readFileSync(routerPath);
+  const previousPackage = path.join(root, "previous-package");
+  fs.mkdirSync(previousPackage);
+  const baselineHash = sha256File(routerPath);
+  fs.writeFileSync(path.join(previousPackage, "oneclick-payload.json"), JSON.stringify({
+    files: [{path: "scripts/windows/" + router, sha256: baselineHash.toLowerCase()}],
+  }));
+  const config = { stateDir: installDir, managementPackageRoot: previousPackage, machineSlug: "fixture", control: { dashboardPort: 18777 } };
   fs.writeFileSync(path.join(installDir, "devspace-watchdog.config.json"), JSON.stringify(config), "utf8");
   const record = {
     installDir,
@@ -42,6 +51,29 @@ try {
     "line-ending-only differences should be ignored");
   const plan = buildPlan({ installDir, sourceDir, expectedMachineSlug: "fixture" });
   assert.deepEqual(plan.changes.map(item => item.name), ["mcp-router.cjs"], "only semantic runtime changes should be planned");
+  const archived = path.join(previousPackage, "scripts", "windows", router);
+  fs.mkdirSync(path.dirname(archived), { recursive: true });
+  fs.writeFileSync(archived, originalRouter);
+  fs.writeFileSync(routerPath, originalRouter.toString().replace(/\r\n/g, "\n"));
+  assert.deepEqual(buildPlan({ installDir, sourceDir }).changes.map(c => c.name), [router]);
+  fs.writeFileSync(archived, fs.readFileSync(routerPath));
+  assert.throws(() => buildPlan({ installDir, sourceDir }), /Cannot verify installed backend.*mcp-router/);
+  fs.writeFileSync(archived, originalRouter);
+  fs.appendFileSync(routerPath, "local customization\n");
+  assert.throws(() => buildPlan({ installDir, sourceDir }), /Cannot verify installed backend.*mcp-router/);
+  fs.writeFileSync(routerPath, originalRouter);
+  fs.unlinkSync(path.join(previousPackage, "oneclick-payload.json"));
+  assert.throws(() => buildPlan({ installDir, sourceDir }), /Cannot verify installed backend.*mcp-router/);
+  record.backendFileHashes = { [router]: baselineHash };
+  fs.writeFileSync(path.join(installDir, "watchdog-tray-install.json"), JSON.stringify(record));
+  assert.deepEqual(buildPlan({ installDir, sourceDir }).changes.map(c => c.name), [router]);
+  const legacy = "devspace-watchdog-legacy.ps1";
+  fs.unlinkSync(path.join(installDir, legacy));
+  assert.equal(buildPlan({ installDir, sourceDir }).changes.find(c => c.name === legacy).targetHash, null);
+  record.backendFileHashes[legacy] = sha256File(path.join(sourceDir, legacy));
+  fs.writeFileSync(path.join(installDir, "watchdog-tray-install.json"), JSON.stringify(record));
+  assert.throws(() => buildPlan({ installDir, sourceDir }), /Cannot verify installed backend.*watchdog-legacy/);
+  fs.copyFileSync(path.join(sourceDir, legacy), path.join(installDir, legacy));
   assert.match(supervisorTaskName(installDir), /^DevSpaceWatchdogSupervisor-[a-f0-9]{12}$/, "supervisor task name should be stable and bounded");
 
   for (const service of [undefined, null, {}, { healthy: true }, { enabled: null }, { enabled: 0 }, { enabled: "false", healthy: true }]) {
