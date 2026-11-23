@@ -256,9 +256,14 @@ foreach ($change in $changes) {
 $recordBackup = Join-Path $backupDir 'watchdog-tray-install.json'
 [IO.File]::Copy($recordPath, $recordBackup, $false)
 $recordBackupHash = Get-WatchdogFileSha256 $recordBackup
+$taskBackup = Join-Path $backupDir 'previous-supervisor-task.xml'
+if ([string]::IsNullOrWhiteSpace($previousSupervisorTaskXml)) { throw 'Cannot back up an empty supervisor task definition.' }
+[IO.File]::WriteAllText($taskBackup, $previousSupervisorTaskXml, [Text.Encoding]::Unicode)
+if ([IO.File]::ReadAllText($taskBackup) -cne $previousSupervisorTaskXml) { throw 'Supervisor task backup differs from the exported definition.' }
 Write-WatchdogAtomicJson (Join-Path $backupDir 'runtime-update-manifest.json') ([pscustomobject]@{
     schemaVersion=1; createdAt=[DateTimeOffset]::UtcNow.ToString('o'); machineSlug=[string]$config.machineSlug
     sourceDir=$SourceDir; installDir=$InstallDir; files=$backupFiles; installRecordSha256=$recordBackupHash
+    supervisorTaskName=$supervisorSpec.name; supervisorTaskXmlSha256=(Get-WatchdogFileSha256 $taskBackup)
 })
 
 $rolesStopped = $false

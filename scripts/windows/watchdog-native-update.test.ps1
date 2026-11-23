@@ -131,9 +131,17 @@ try {
         [IO.Directory]::Exists((Join-Path $runtime 'configuration-backups'))) { throw 'Backend preflight did not preserve the original installation.' }
     $report.locallyModifiedBackendPreserved = $true
     [IO.File]::Copy((Join-Path $BaselineDirectory $legacyName), $legacyPath, $true)
+    $taskXmlBeforeUpdate = Export-ScheduledTask -TaskName $spec.name -TaskPath '\'
     & (Join-Path $PSScriptRoot 'update-installed-watchdog-runtime.ps1') -InstallDir $runtime -SourceDir $PSScriptRoot -ExpectedMachineSlug 'native-ci' -Apply
     Checkpoint 'candidate-ready'
     Assert-Payload $PSScriptRoot
+    $firstBackup = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'configuration-backups') -Filter 'runtime-update-*' -Directory)
+    if ($firstBackup.Count -ne 1) { throw 'Expected one original runtime-update backup.' }
+    $backupManifest = Read-WatchdogJson (Join-Path $firstBackup[0].FullName 'runtime-update-manifest.json')
+    $taskBackup = Join-Path $firstBackup[0].FullName 'previous-supervisor-task.xml'
+    if ($backupManifest.supervisorTaskName -cne $spec.name -or
+        $backupManifest.supervisorTaskXmlSha256 -ne (Get-WatchdogFileSha256 $taskBackup) -or
+        [IO.File]::ReadAllText($taskBackup) -cne $taskXmlBeforeUpdate) { throw 'Backup did not preserve the exact original supervisor task.' }
     $updated = Read-WatchdogJson $recordPath
     foreach ($name in $files[11..13]) {
         if ($updated.backendFileHashes.$name -ne (Get-WatchdogFileSha256 (Join-Path $runtime $name))) { throw "Missing backend receipt: $name" }
@@ -175,6 +183,25 @@ try {
             Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $spec.name) $spec
             Unregister-ScheduledTask -TaskName $spec.name -TaskPath '\' -Confirm:$false
             $report.taskRemoved = $true
+            if ($report.passed) {
+                Register-ScheduledTask -TaskName $spec.name -TaskPath '\' -Xml ([IO.File]::ReadAllText($taskBackup)) -ErrorAction Stop | Out-Null
+                $report.taskRemoved = $false
+                try {
+                    $restored = Get-ScheduledTask -TaskName $spec.name -TaskPath '\'
+                    Assert-InstallSupervisorTask $restored $spec
+                    [xml]$actualXml = Export-ScheduledTask -TaskName $spec.name -TaskPath '\'
+                    [xml]$originalXml = $taskXmlBeforeUpdate
+                    foreach ($section in @('Actions','Triggers','Principals','Settings')) {
+                        $xpath = "/*/*[local-name()='$section']"
+                        if ($actualXml.SelectSingleNode($xpath).OuterXml -cne $originalXml.SelectSingleNode($xpath).OuterXml) { throw "Restored supervisor $section differs." }
+                    }
+                    $report.supervisorRestoredFromBackup = $true
+                } finally {
+                    Assert-InstallSupervisorTask (Get-ScheduledTask -TaskName $spec.name -TaskPath '\') $spec
+                    Unregister-ScheduledTask -TaskName $spec.name -TaskPath '\' -Confirm:$false -ErrorAction Stop
+                    $report.taskRemoved = $true
+                }
+            }
         } catch { $report.cleanupError = $_.Exception.Message; $report.passed = $false }
     }
     $report.finishedAt = [DateTimeOffset]::UtcNow.ToString('o')
