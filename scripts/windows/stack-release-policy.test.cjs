@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -9,6 +10,9 @@ try {
   const policy = readReleasePolicy(__dirname);
   assert.equal(policy.channel, "candidate", "unverified release must remain a candidate");
   assert.match(policy.components["hermes-gpt"].revision, /^[a-f0-9]{40}$/);
+  const hermes = policy.components["hermes-gpt"];
+  const wheel = path.join(__dirname, "wheels", `hermes_gpt-${hermes.version}-py3-none-any.whl`);
+  assert.equal(createHash("sha256").update(fs.readFileSync(wheel)).digest("hex"), hermes.wheelSha256);
   const file = path.join(root, "stack-release-manifest.json");
   const changed = structuredClone(policy);
   changed.components["hermes-gpt"].revision = "master";

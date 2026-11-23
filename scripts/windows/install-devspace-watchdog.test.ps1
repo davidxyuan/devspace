@@ -92,7 +92,6 @@ public static class NativePythonProbeFixture {
     if (-not (Test-PythonForHermesGpt $good)) { throw 'Python 3.12 fixture was rejected.' }
     $pin = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'stack-release-manifest.json') -Raw | ConvertFrom-Json).components.'hermes-gpt'
     $wheel = Join-Path $PSScriptRoot ("wheels\hermes_gpt-" + $pin.version + "-py3-none-any.whl")
-    if ((Get-FileHash -LiteralPath $wheel).Hash -ine $pin.wheelSha256) { throw 'Wrong Hermes GPT wheel in the release.' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($wheel)
     try {
