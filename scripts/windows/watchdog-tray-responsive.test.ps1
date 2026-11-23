@@ -27,6 +27,7 @@ try {
     [IO.File]::WriteAllText($corePath, @'
 function ConvertTo-WatchdogIso($Value) { $Value.ToString("o") }
 function Write-WatchdogAtomicJson($Path, $Value, $Timeout) {
+    if (-not $Shared.UiReady.Wait(5000)) { throw 'UI timer never entered its message loop.' }
     $Shared.WriteStarted = $true
     Start-Sleep -Milliseconds 1400
     $Shared.WriteCompleted = $true
@@ -36,7 +37,7 @@ function Write-WatchdogAtomicJson($Path, $Value, $Timeout) {
     $script:trayShared = [hashtable]::Synchronized(@{
         Stop=$false; ExitRequested=$false; OpenDashboard=$false; OpenLogs=$false; RepairRequested=$false
         EnsureRequested=$false; ManagementBusy=$true; ChildRunning=$false; StatusText="Checking"; WorkerMessage=""
-        WriteStarted=$false; WriteCompleted=$false
+        UiReady=[Threading.ManualResetEventSlim]::new($false); WriteStarted=$false; WriteCompleted=$false
     })
     $script:lastStatus = $null; $script:statusFailures = 0
     $script:ticksDuringWrite = 0; $script:totalTicks = 0
@@ -44,6 +45,7 @@ function Write-WatchdogAtomicJson($Path, $Value, $Timeout) {
     $statusItem = [pscustomobject]@{Text=""}
     function Complete-StatusProbe {
         $script:totalTicks++
+        if ($script:totalTicks -eq 1) { $script:trayShared.UiReady.Set() }
         if ($script:trayShared.WriteStarted -and -not $script:trayShared.WriteCompleted) { $script:ticksDuringWrite++ }
     }
     function Start-StatusProbe {}
@@ -61,7 +63,7 @@ function Write-WatchdogAtomicJson($Path, $Value, $Timeout) {
     $timer.Start(); $finishTimer.Start()
     [Windows.Forms.Application]::Run((New-Object Windows.Forms.ApplicationContext))
     Assert-True "background delayed heartbeat completed" $script:trayShared.WriteCompleted
-    Assert-True "real STA timer pumps during slow heartbeat I/O" ($script:ticksDuringWrite -ge 10)
+    Assert-True "real STA timer pumps during slow heartbeat I/O (observed $script:ticksDuringWrite ticks, expected at least 10)" ($script:ticksDuringWrite -ge 10)
     Assert-True "cached repair state remains usable" $repairHostItem.Enabled
     Write-Host "Tray responsiveness passed: $($script:ticksDuringWrite) UI timer ticks during 1.4s background write; no real role or process launched."
 } finally {
@@ -72,6 +74,7 @@ function Write-WatchdogAtomicJson($Path, $Value, $Timeout) {
         try { [void]$worker.pipeline.EndInvoke($worker.result) } finally { $worker.pipeline.Dispose() }
     }
     if ($stopEvent) { $stopEvent.Dispose() }
+    if ($script:trayShared.UiReady) { $script:trayShared.UiReady.Dispose() }
     $resolved = [IO.Path]::GetFullPath($tempRoot)
     $parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if ($resolved.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved).StartsWith("devspace-tray-responsive-")) { Remove-Item -LiteralPath $resolved -Force -Recurse }
