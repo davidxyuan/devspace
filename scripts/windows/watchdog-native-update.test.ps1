@@ -111,7 +111,8 @@ try {
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $spec.name -TaskPath '\' -Action (New-ScheduledTaskAction -Execute $spec.executable -Argument $spec.arguments) -Principal (New-ScheduledTaskPrincipal -UserId $spec.user -LogonType Interactive -RunLevel Limited) -Settings $settings | Out-Null
     $taskCreated = $true
-    Export-ScheduledTask -TaskName $spec.name | Set-Content -LiteralPath (Join-Path $WorkRoot 'task.xml')
+    $taskXmlBeforeUpdate = Export-ScheduledTask -TaskName $spec.name -TaskPath '\'
+    [IO.File]::WriteAllText((Join-Path $WorkRoot 'task.xml'), $taskXmlBeforeUpdate, [Text.Encoding]::Unicode)
     Start-ScheduledTask -TaskName $spec.name
     Checkpoint 'baseline-ready'
     # An older receipt covers only the Tray files. A locally edited backend must survive Apply.
@@ -131,7 +132,6 @@ try {
         [IO.Directory]::Exists((Join-Path $runtime 'configuration-backups'))) { throw 'Backend preflight did not preserve the original installation.' }
     $report.locallyModifiedBackendPreserved = $true
     [IO.File]::Copy((Join-Path $BaselineDirectory $legacyName), $legacyPath, $true)
-    $taskXmlBeforeUpdate = Export-ScheduledTask -TaskName $spec.name -TaskPath '\'
     & (Join-Path $PSScriptRoot 'update-installed-watchdog-runtime.ps1') -InstallDir $runtime -SourceDir $PSScriptRoot -ExpectedMachineSlug 'native-ci' -Apply
     Checkpoint 'candidate-ready'
     Assert-Payload $PSScriptRoot
