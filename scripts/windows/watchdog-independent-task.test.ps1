@@ -49,6 +49,26 @@ Write-Host 'Supervisor recovery policy migration to minute trigger passed.'
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'install-devspace-watchdog-tray.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw $errors[0] }
+& {
+    $backupLoop = $ast.Find({param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Body.Extent.Text.Contains('$legacyTaskBackups +=')}, $true)
+    $legacyName = 'fixture-task'
+    $legacySnapshots = @(@{name=$legacyName; path='\'; xml=(Export-ScheduledTask); enabled=$true; running=$false})
+    $legacyTaskBackups = @()
+    $backupPath = Join-Path ([IO.Path]::GetTempPath()) ('watchdog-xml-' + [guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($backupPath)
+    try {
+        . ([scriptblock]::Create($backupLoop.Extent.Text))
+        $saved = Join-Path $backupPath $taskXmlName
+        $parsed = [xml]::new()
+        $parsed.Load($saved)
+        if ($parsed.OuterXml -cne ([xml]$legacySnapshots[0].xml).OuterXml -or (Get-WatchdogFileSha256 $saved) -ne $taskXmlSha256) {
+            throw 'Saved legacy task XML differs from its export or recorded hash.'
+        }
+    } finally {
+        [IO.File]::Delete((Join-Path $backupPath ($legacyName + '.xml')))
+        [IO.Directory]::Delete($backupPath, $false)
+    }
+}
 $create=$ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '-not $supervisorTask'},$true)
 $supervisorSpec=$spec; $supervisorTask=$null; $supervisorTaskCreated=$false; $script:registrations=0; $script:failRegistration=$false
 function New-ScheduledTaskAction { param($Execute,$Argument) if ($Execute -ne $spec.executable -or $Argument -cne $spec.arguments) { throw 'Wrong action' }; return @{} }

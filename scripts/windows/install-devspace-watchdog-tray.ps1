@@ -275,7 +275,7 @@ try {
     foreach ($snapshot in $legacySnapshots) {
         $xmlName = "$($snapshot.name).xml"
         $xmlPath = Join-Path $backupPath $xmlName
-        [IO.File]::WriteAllText($xmlPath, [string]$snapshot.xml, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($xmlPath, [string]$snapshot.xml, [Text.Encoding]::Unicode)
         $xmlHash = Get-WatchdogFileSha256 $xmlPath
         $legacyTaskBackups += [pscustomobject]@{ name=$snapshot.name; path=$snapshot.path; enabled=$snapshot.enabled; running=$snapshot.running; xml=$xmlName; sha256=$xmlHash }
         if ($snapshot.name -eq $legacyName) { $taskXmlName=$xmlName; $taskXmlSha256=$xmlHash }
