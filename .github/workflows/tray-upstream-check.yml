@@ -24,6 +24,8 @@ jobs:
       - name: Verify discovery behavior
         run: node scripts/windows/stack-upstream-check.test.cjs
       - name: Read official releases
+        env:
+          TRAY_UPSTREAM_GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/windows/stack-upstream-check.cjs upstream-releases.json
       - name: Preserve checked and unavailable results
         if: always()

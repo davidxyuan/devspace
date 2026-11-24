@@ -2,11 +2,14 @@
 const fs = require("node:fs");
 const { readReleasePolicy } = require("./stack-release-policy.cjs");
 
-async function checkUpstreams(fetcher = fetch) {
+async function checkUpstreams(fetcher = fetch, githubToken = process.env.TRAY_UPSTREAM_GITHUB_TOKEN) {
   const policy = readReleasePolicy();
   async function get(url) {
-    const response = await fetcher(url, { headers: { Accept: "application/json", "User-Agent": "Tray-release-check" }, redirect: "error", signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`Upstream HTTP ${response.status}`);
+    const endpoint = new URL(url);
+    const headers = { Accept: "application/json", "User-Agent": "Tray-release-check" };
+    if (githubToken && endpoint.origin === "https://api.github.com") headers.Authorization = `Bearer ${githubToken}`;
+    const response = await fetcher(url, { headers, redirect: "error", signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`${endpoint.hostname} HTTP ${response.status}`);
     const body = await response.text();
     if (body.length > 2 * 1024 * 1024) throw new Error("Upstream response exceeds limit");
     return JSON.parse(body);

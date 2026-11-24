@@ -14,7 +14,12 @@ const { readReleasePolicy } = require("./stack-release-policy.cjs");
       : { sha: latest };
     return { ok: true, text: async () => JSON.stringify(body) };
   };
-  const report = await checkUpstreams(fetchRelease);
+  const report = await checkUpstreams((url, options) => {
+    const auth = new Headers(options.headers).get("authorization");
+    assert.equal(auth, new URL(url).origin === "https://api.github.com" ? "Bearer test-read-token" : null);
+    assert.equal(options.redirect, "error");
+    return fetchRelease(url);
+  }, "test-read-token");
   assert.equal(report.components[0].changed, false);
   assert.equal(report.components[1].changed, false, "a fork with local fixes already includes this official release");
   assert.equal(report.components[1].upstream, "asimons81/hermes-gpt", "a candidate fork must not replace official release discovery");
