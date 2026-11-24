@@ -14,6 +14,8 @@ function readReleasePolicy(directory = __dirname) {
   }
   if (!/^sha512-[A-Za-z0-9+/=]+$/.test(policy.components["devspace-official"].integrity)) throw new Error("Missing npm integrity.");
   if (!/^[a-f0-9]{64}$/.test(policy.components["hermes-gpt"].wheelSha256 || "")) throw new Error("Missing Hermes GPT wheel digest.");
+  const minimumPython = policy.components["hermes-gpt"].minimumPythonVersion;
+  if (minimumPython !== undefined && (typeof minimumPython !== "string" || !/^3\.\d+$/.test(minimumPython))) throw new Error("Invalid Hermes GPT minimum Python version.");
   return policy;
 }
 

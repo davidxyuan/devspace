@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "tray-20261121-candidate.1",
+  "id": "tray-20261123-candidate.1",
   "channel": "candidate",
   "description": "Pinned candidate inputs, not a tested stable combination. Preserve existing installations; stage upgrades separately.",
   "components": {
@@ -13,10 +13,11 @@
     "hermes-gpt": {
       "repository": "davidxyuan/hermes-gpt",
       "version": "0.18.0",
-      "revision": "95ea04659b6fda027f970ff75d70fe00a99e772a",
-      "ref": "codex/tyo-tray-v018-20261121",
-      "updateBranch": "codex/tyo-tray-v018-20261121",
-      "wheelSha256": "d8deba5810b092df369aaddf357155c9d5007c2be8791d42ccaedb008ac417a0"
+      "revision": "71805f977a14d5abaeaa86f9e79223aa3282ecbf",
+      "ref": "codex/tray-hermes-upstream-20261123",
+      "updateBranch": "codex/tray-hermes-upstream-20261123",
+      "wheelSha256": "6515547228d4072f6cb0f39baa046a30c015b2b873a2c1873ff4c4709b4e51e9",
+      "minimumPythonVersion": "3.11"
     },
     "hermes-agent": {
       "repository": "davidxyuan/hermes-agent",
