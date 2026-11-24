@@ -316,6 +316,9 @@ try {
         }
         & (Join-Path $InstallDir 'devspace-watchdog-bootstrap.ps1') -Mode Run -ConfigPath $configPath
         Start-ScheduledTask -TaskName $supervisorSpec.name -TaskPath '\' -ErrorAction Stop
+        if (-not (Wait-UpdateRolesReady ([int](Get-WatchdogControlSettings $config).dashboardPort))) {
+            throw 'Restored Host, Tray, Supervisor or dashboard did not become ready.'
+        }
     } catch { throw "Runtime update failed: $failure. Rollback also needs attention: $($_.Exception.Message). Backup: $backupDir" }
     throw "Runtime update failed and payload was restored: $failure. Backup: $backupDir"
 }

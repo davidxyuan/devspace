@@ -171,7 +171,12 @@ switch ($Mode) {
     function Convert-InstallSupervisorTaskAction { param($Path) @{changed=$false} }
     function Start-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) $global:RuntimeRollbackFixture.events.Add('start-supervisor') }
     function Register-ScheduledTask { throw 'Unexpected task registration' }
-    function Wait-UpdateRolesReady { param($Port) $global:RuntimeRollbackFixture.events.Add('readiness'); return $global:RuntimeRollbackFixture.ready }
+    function Wait-UpdateRolesReady {
+        param($Port)
+        $global:RuntimeRollbackFixture.events.Add('readiness')
+        if ($global:RuntimeRollbackFixture.events.Contains('restore')) { return $scenario -ne 'rollback-readiness-failure' }
+        return $global:RuntimeRollbackFixture.ready
+    }
     function Get-WatchdogControlSettings { param($Config) @{dashboardPort=18777} }
     $coreAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'watchdog-control-core.ps1'), [ref]$null, [ref]$null)
     $hashFunction = $coreAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-WatchdogFileSha256'}, $true)
@@ -184,7 +189,7 @@ switch ($Mode) {
         [IO.File]::Copy($Source,$Destination,$true)
         if ($global:RuntimeRollbackFixture.copyFails -and $Source -notlike '*backup*') { throw 'fixture copy failed after replacing its destination' }
     }
-    foreach ($scenario in @('healthy','readiness-failure','partial-start-failure','copy-failure','stop-failure','check-failure')) {
+    foreach ($scenario in @('healthy','readiness-failure','partial-start-failure','copy-failure','stop-failure','check-failure','rollback-readiness-failure')) {
         $global:RuntimeRollbackFixture = @{events=[Collections.Generic.List[string]]::new(); running=$false; ready=$scenario -eq 'healthy'; startFails=$scenario -eq 'partial-start-failure'; copyFails=$scenario -eq 'copy-failure'; stopFails=$scenario -eq 'stop-failure'; checkFails=$scenario -eq 'check-failure'}
         $configPath = Join-Path $InstallDir 'fixture.json'; $config=@{}; $record=@{}; $recordPath=Join-Path $InstallDir 'record.json'
         $payloadFiles=@('payload.ps1'); $changes=@([pscustomobject]@{name='payload.ps1'})
@@ -204,6 +209,12 @@ switch ($Mode) {
             if ([IO.File]::ReadAllText((Join-Path $InstallDir 'payload.ps1')) -ne 'new payload') { throw 'Successful update did not copy its payload.' }
         } elseif ($scenario -in @('stop-failure','check-failure')) {
             if ($failureMessage -notlike '*Rollback also needs attention*' -or $events.Contains('restore')) { throw 'Unconfirmed shutdown must preserve the files.' }
+        } elseif ($scenario -eq 'rollback-readiness-failure') {
+            if ($failureMessage -notlike '*Rollback also needs attention*' -or
+                $failureMessage -notlike "*$backupDir*" -or $events[-1] -ne 'readiness' -or
+                [IO.File]::ReadAllText($recordPath) -ne 'old record') {
+                throw "Rollback reported recovery without confirming the restored installation was ready: $failureMessage"
+            }
         } else {
             if ($failureMessage -notlike '*payload was restored*' -or -not $events.Contains('restore')) { throw "$scenario did not safely restore: $failureMessage" }
             $firstRestore=$events.IndexOf('restore')
