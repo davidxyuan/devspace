@@ -39,7 +39,7 @@ try {
   fs.writeFileSync(path.join(previousPackage, "oneclick-payload.json"), JSON.stringify({
     files: [{path: "scripts/windows/" + router, sha256: baselineHash.toLowerCase()}],
   }));
-  const config = { stateDir: installDir, managementPackageRoot: previousPackage, machineSlug: "fixture", control: { dashboardPort: 18777 } };
+  const config = { stateDir: installDir, managementPackageRoot: previousPackage, machineSlug: "fixture", controlCenter: { dashboardPort: 18777 } };
   fs.writeFileSync(path.join(installDir, "devspace-watchdog.config.json"), JSON.stringify(config), "utf8");
   const record = {
     installDir,
@@ -108,11 +108,17 @@ async function delegationChecks() {
   const vm = require("node:vm");
   const installDir = path.resolve(os.tmpdir(), "runtime fixture-'$();-測試");
   const sourceDir = path.resolve(__dirname);
-  for (const scenario of ["preview", "healthy", "guard", "health", "child-failure", "spawn-failure"]) {
+  for (const scenario of ["preview", "healthy", "invalid-port", "guard", "health", "child-failure", "spawn-failure"]) {
     const invocations = [];
+    const config = {machineSlug: "fixture"};
+    if (scenario === "preview") config.controlCenter = {dashboardPort: "18777"};
+    if (scenario === "invalid-port") config.controlCenter = {dashboardPort: 0};
     const fixture = {
-      plan: () => ({installDir, sourceDir, config: {machineSlug: "fixture"}, changes: [{name: "mcp-router.cjs"}]}),
-      health: async () => { if (scenario === "health") throw new Error("fixture unhealthy"); },
+      plan: () => ({installDir, sourceDir, config, changes: [{name: "mcp-router.cjs"}]}),
+      health: async port => {
+        assert.equal(port, scenario === "preview" ? 18777 : 8777);
+        if (scenario === "health") throw new Error("fixture unhealthy");
+      },
       guarded: () => scenario === "guard",
     };
     const context = vm.createContext({module: {exports: {}}, __dirname, process, Buffer, console: {log() {}}, fixture,
@@ -126,10 +132,15 @@ async function delegationChecks() {
     if (scenario !== "preview") argv.push("--apply");
     let failure, result;
     try { result = await context.module.exports.main(argv); } catch (error) { failure = error; }
+    if (scenario === "invalid-port") {
+      assert.match(failure?.message || "", /Dashboard Port/);
+      assert.equal(invocations.length, 0);
+      continue;
+    }
     if (["preview", "guard", "health"].includes(scenario)) {
       assert.equal(invocations.length, 0, `${scenario}: must not invoke a mutation`);
       if (scenario !== "preview") assert.match(failure?.message || "", scenario === "guard" ? /Kaspersky/ : /fixture unhealthy/);
-      else assert.equal(result.changed, 1);
+      else { assert.ifError(failure); assert.equal(result.changed, 1); }
       continue;
     }
     assert.equal(invocations.length, 1);

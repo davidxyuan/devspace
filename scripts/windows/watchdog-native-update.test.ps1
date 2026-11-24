@@ -115,6 +115,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $WorkRoot 'task.xml'), $taskXmlBeforeUpdate, [Text.Encoding]::Unicode)
     Start-ScheduledTask -TaskName $spec.name
     Checkpoint 'baseline-ready'
+    & node.exe (Join-Path $PSScriptRoot 'update-installed-watchdog-runtime.cjs') --install-dir $runtime --source-dir $PSScriptRoot --expected-machine-slug 'native-ci'
+    if ($LASTEXITCODE -ne 0) { throw "Node update preview failed against the native dashboard on port $port." }
+    $report.nodePreviewDashboardPort = $port
     # An older receipt covers only the Tray files. A locally edited backend must survive Apply.
     $legacyName = 'devspace-watchdog-legacy.ps1'
     $legacyPath = Join-Path $runtime $legacyName

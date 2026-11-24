@@ -167,7 +167,11 @@ function applyWithPowerShell(args) {
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const plan = buildPlan(args);
-  const port = Number(plan.config.control?.dashboardPort || plan.config.dashboardPort || 8777);
+  const setting = plan.config.controlCenter?.dashboardPort ?? 8777;
+  const port = Number(setting);
+  if (!["string", "number"].includes(typeof setting) || !/^\+?\d+$/.test(String(setting).trim()) || port < 1 || port > 65535) {
+    throw new Error("Dashboard Port must be an integer from 1 through 65535.");
+  }
   await stableHealth(port, args.allowHermesBusy);
   console.log(`Machine: ${plan.config.machineSlug}`);
   console.log(`InstallDir: ${plan.installDir}`);
