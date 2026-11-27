@@ -144,6 +144,21 @@ function Assert-UpdateServiceHealth($Snapshot) {
         if (-not (Test-UpdateServiceAcceptable $name $service)) { throw "$name is not healthy or has an identity conflict; refusing runtime payload update." }
     }
 }
+function Wait-UpdateServiceHealth {
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
+    do {
+        try {
+            $snapshot = Get-WatchdogHealthSnapshot $configPath
+            Assert-UpdateServiceHealth $snapshot
+            # Give an explicitly permitted busy Hermes transport time to become fully healthy.
+            $hermes = Get-WatchdogProperty $snapshot.services 'hermes' $null
+            if (-not $hermes.enabled -or $hermes.healthy -or [DateTimeOffset]::UtcNow -ge $deadline) { return }
+        } catch {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) { throw }
+        }
+        Start-Sleep -Milliseconds 500
+    } while ($true)
+}
 function Get-UpdateStableHealth([int]$Attempts = 8, [int]$DelayMilliseconds = 750) {
     $consecutiveHealthy = 0
     $lastSnapshot = $null
@@ -330,18 +345,6 @@ if ($routerChanged) {
         throw "Runtime files were updated, but Router restart failed: $($restart.error). Backup: $backupDir"
     }
 }
-$deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
-do {
-    try {
-        $finalHealth = Get-WatchdogHealthSnapshot $configPath
-        $unhealthy = @('devspace','hermes','router','ngrok' | Where-Object {
-            $service = Get-WatchdogProperty $finalHealth.services $_ $null
-            $service -and $service.enabled -and (-not $service.healthy -or $service.identityConflict)
-        })
-        if (-not $unhealthy.Count) { break }
-    } catch { }
-    Start-Sleep -Milliseconds 500
-} while ([DateTimeOffset]::UtcNow -lt $deadline)
-Assert-UpdateServiceHealth $finalHealth
+Wait-UpdateServiceHealth
 Write-Host "Watchdog runtime update complete. Backup: $backupDir" -ForegroundColor Green
 } finally { Exit-StackOperation $lease }

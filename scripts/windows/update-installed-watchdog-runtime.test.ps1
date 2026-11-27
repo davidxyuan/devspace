@@ -85,6 +85,39 @@ Assert-NotContains 'does not stop ngrok service' "Stop-WatchdogManagedService 'n
 }
 
 & {
+    . (Join-Path $PSScriptRoot 'watchdog-control-core.ps1')
+    foreach ($name in @('Test-UpdateServiceAcceptable','Assert-UpdateServiceHealth','Wait-UpdateServiceHealth')) {
+        $definition = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
+    $healthy = [pscustomobject]@{enabled=$true;healthy=$true}
+    $busy = [pscustomobject]@{enabled=$true;healthy=$false;processFound=$true;listenerFound=$true;busyIndeterminate=$true}
+    $services = [pscustomobject]@{devspace=$healthy;hermes=$healthy;router=$healthy;ngrok=$healthy}
+    $snapshot = [pscustomobject]@{services=$services}
+    $incomplete = [pscustomobject]@{services=[pscustomobject]@{devspace=$healthy;hermes=$healthy;ngrok=$healthy}}
+    $reads = [Collections.Queue]::new()
+    function Get-WatchdogHealthSnapshot {
+        if (-not $reads.Count) { throw 'fixture has no fresh health snapshot' }
+        $reads.Dequeue()
+    }
+    $StartupTimeoutSeconds = 2
+    $reads.Enqueue($incomplete)
+    $reads.Enqueue($snapshot)
+    Wait-UpdateServiceHealth
+    if ($reads.Count) { throw 'Final health check accepted an incomplete snapshot.' }
+
+    $services.hermes = $busy
+    $AllowHermesBusyTransport = $true
+    $reads.Enqueue($snapshot)
+    $failure = ''
+    try { Wait-UpdateServiceHealth } catch { $failure = $_.Exception.Message }
+    if ($failure -ne 'fixture has no fresh health snapshot') { throw 'An earlier busy snapshot survived a later read failure.' }
+    $StartupTimeoutSeconds = 0
+    $reads.Enqueue($snapshot)
+    Wait-UpdateServiceHealth
+}
+
+& {
     $readyFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-UpdateRolesReady'}, $true)
     . ([scriptblock]::Create($readyFunction.Extent.Text))
     $StartupTimeoutSeconds = 0
