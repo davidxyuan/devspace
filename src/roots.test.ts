@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { mock } from "node:test";
 import { editFileTool, readFileTool, writeFileTool } from "./pi-tools.js";
-import { AccessDeniedError, assertAllowedPath, expandHomePath, resolveAllowedPath } from "./roots.js";
+import { AccessDeniedError, assertAllowedPath, expandHomePath, isPathInsideRoot, resolveAllowedPath } from "./roots.js";
 
 const home = homedir();
 
@@ -28,13 +28,6 @@ assert.equal(
   resolve("/workspace", "~/file.txt"),
 );
 
-if (process.platform === "win32") {
-  assert.throws(
-    () => assertAllowedPath("C:\\Users\\Administrator", ["G:\\Projects\\Dev\\Github\\devspace"]),
-    /Path is outside allowed roots/,
-  );
-}
-
 const fixture = mkdtempSync(join(tmpdir(), "devspace-roots-test-"));
 try {
   const allowed = join(fixture, "allowed");
@@ -42,6 +35,10 @@ try {
   const inside = join(allowed, "inside");
   mkdirSync(inside, { recursive: true });
   mkdirSync(outside);
+  if (process.platform === "win32") {
+    assert.equal(isPathInsideRoot("C:\\fixture", "G:\\fixture"), false);
+    assert.throws(() => assertAllowedPath(process.execPath, [allowed]), AccessDeniedError);
+  }
   const ioFailure = Object.assign(new Error("fixture filesystem failure"), { code: "EIO" });
   const realpathMock = mock.method(realpathSync, "native", () => { throw ioFailure; });
   try {
